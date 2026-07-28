@@ -1,71 +1,56 @@
 (() => {
     'use strict';
 
-    const existingPanel = document.getElementById('eas-tw-hub');
+    const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
-    if (existingPanel) {
-        existingPanel.remove();
-        return;
-    }
+    const loadScript = (src) => new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = `${BASE_URL}/${src}?v=${Date.now()}`;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`Falha ao carregar: ${src}`));
+        document.head.appendChild(script);
+    });
 
-    const panel = document.createElement('div');
+    const loadStyle = (src) => new Promise((resolve, reject) => {
+        const existing = document.querySelector(`link[data-eas-style="${src}"]`);
 
-    panel.id = 'eas-tw-hub';
+        if (existing) {
+            resolve();
+            return;
+        }
 
-    panel.style.cssText = `
-        position: fixed;
-        top: 100px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 999999;
-        width: 420px;
-        padding: 20px;
-        background: #f4e4bc;
-        border: 3px solid #6b3d0b;
-        box-shadow: 0 5px 25px rgba(0, 0, 0, 0.7);
-        color: #241608;
-        font-family: Verdana, Arial, sans-serif;
-    `;
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = `${BASE_URL}/${src}?v=${Date.now()}`;
+        link.dataset.easStyle = src;
+        link.onload = resolve;
+        link.onerror = () => reject(new Error(`Falha ao carregar: ${src}`));
+        document.head.appendChild(link);
+    });
 
-    panel.innerHTML = `
-        <div style="
-            display:flex;
-            justify-content:space-between;
-            align-items:center;
-        ">
-            <strong style="font-size:20px">
-                ⚔️ EAS TW Hub
-            </strong>
+    const start = async () => {
+        try {
+            if (window.EAS?.UI?.toggle) {
+                window.EAS.UI.toggle();
+                return;
+            }
 
-            <button id="eas-tw-close">
-                X
-            </button>
-        </div>
+            await loadStyle('css/eas.css');
 
-        <hr>
+            await loadScript('core/eas.js');
+            await loadScript('core/utils.js');
+            await loadScript('core/storage.js');
+            await loadScript('core/ui.js');
+            await loadScript('core/world.js');
+            await loadScript('core/villages.js');
+            await loadScript('core/troops.js');
 
-        <p>
-            O carregamento externo funcionou corretamente!
-        </p>
+            window.EAS.start();
+        } catch (error) {
+            console.error('[EAS TW Hub]', error);
+            alert(`EAS TW Hub: ${error.message}`);
+        }
+    };
 
-        <p>
-            Versão: 0.1.0
-        </p>
-
-        <button id="eas-tw-test">
-            Testar sistema
-        </button>
-    `;
-
-    document.body.appendChild(panel);
-
-    document
-        .getElementById('eas-tw-close')
-        .addEventListener('click', () => panel.remove());
-
-    document
-        .getElementById('eas-tw-test')
-        .addEventListener('click', () => {
-            alert('EAS TW Hub funcionando! 🔥');
-        });
+    start();
 })();
