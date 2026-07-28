@@ -1,96 +1,423 @@
 (() => {
     'use strict';
 
-    const WINDOW_ID = 'eas-tw-hub-window';
+    const DEFAULT_WINDOW_ID = 'eas-tw-hub-window';
 
-    const getWindow = () => document.getElementById(WINDOW_ID);
-
-    EAS.UI.close = () => {
-        getWindow()?.remove();
-    };
-
-    EAS.UI.toggle = () => {
-        const panel = getWindow();
-
-        if (panel) {
-            panel.remove();
-            return;
+    const getElement = (target) => {
+        if (typeof target === 'string') {
+            return document.querySelector(target);
         }
 
-        EAS.UI.openMainWindow();
+        return target;
     };
 
-    EAS.UI.openMainWindow = () => {
-        EAS.UI.close();
+    EAS.UI.closeWindow = (id = DEFAULT_WINDOW_ID) => {
+        document.getElementById(id)?.remove();
+    };
 
-        const panel = document.createElement('div');
-        panel.id = WINDOW_ID;
-        panel.className = 'eas-window';
+    EAS.UI.createWindow = ({
+        id = DEFAULT_WINDOW_ID,
+        title = EAS.name,
+        icon = '⚔️',
+        width = 470,
+        className = '',
+        content = '',
+        closable = true
+    } = {}) => {
+        EAS.UI.closeWindow(id);
 
-        panel.innerHTML = `
+        const windowElement = document.createElement('div');
+
+        windowElement.id = id;
+        windowElement.className = `eas-window ${className}`.trim();
+        windowElement.style.width = `${width}px`;
+
+        windowElement.innerHTML = `
             <div class="eas-window__header">
-                <div>
-                    <span class="eas-window__icon">⚔️</span>
-                    <strong>${EAS.name}</strong>
+                <div class="eas-window__title">
+                    <span class="eas-window__icon">${icon}</span>
+                    <strong>${title}</strong>
                 </div>
 
-                <button
-                    type="button"
-                    class="eas-window__close"
-                    data-eas-action="close"
-                    title="Fechar"
-                >
-                    ×
-                </button>
+                ${
+                    closable
+                        ? `
+                            <button
+                                type="button"
+                                class="eas-window__close"
+                                data-eas-action="close"
+                                title="Fechar"
+                            >
+                                ×
+                            </button>
+                        `
+                        : ''
+                }
             </div>
 
             <div class="eas-window__body">
-                <div class="eas-version">
-                    Versão ${EAS.version}
-                </div>
-
-                <div class="eas-menu">
-                    <button type="button" data-module="attack">
-                        ⚔️ Planejador de Ataques
-                    </button>
-
-                    <button type="button" data-module="support">
-                        🛡️ Planejador de Apoios
-                    </button>
-
-                    <button type="button" data-module="antisnipe">
-                        ⏱️ Anti-Snipe
-                    </button>
-
-                    <button type="button" data-module="noble">
-                        👑 Planejador de Nobres
-                    </button>
-
-                    <button type="button" data-module="resources">
-                        📦 Distribuição de Recursos
-                    </button>
-                </div>
-
-                <div class="eas-status">
-                    Sistema carregado corretamente.
-                </div>
+                ${content}
             </div>
         `;
 
-        document.body.appendChild(panel);
+        document.body.appendChild(windowElement);
 
-        panel
-            .querySelector('[data-eas-action="close"]')
-            .addEventListener('click', EAS.UI.close);
+        const body = windowElement.querySelector('.eas-window__body');
 
-        panel.querySelectorAll('[data-module]').forEach((button) => {
-            button.addEventListener('click', () => {
-                const moduleName = button.dataset.module;
+        if (closable) {
+            windowElement
+                .querySelector('[data-eas-action="close"]')
+                ?.addEventListener('click', () => {
+                    windowElement.remove();
+                });
+        }
 
-                alert(
-                    `O módulo "${moduleName}" será desenvolvido na próxima etapa.`
+        return {
+            element: windowElement,
+            body,
+
+            close() {
+                windowElement.remove();
+            },
+
+            setTitle(newTitle) {
+                const titleElement = windowElement.querySelector(
+                    '.eas-window__title strong'
                 );
-            });
-        });
+
+                if (titleElement) {
+                    titleElement.textContent = newTitle;
+                }
+            },
+
+            setContent(html) {
+                body.innerHTML = html;
+            }
+        };
     };
+
+    EAS.UI.createButton = ({
+        text,
+        icon = '',
+        className = '',
+        type = 'button',
+        disabled = false,
+        onClick = null
+    }) => {
+        const button = document.createElement('button');
+
+        button.type = type;
+        button.className = `eas-button ${className}`.trim();
+        button.disabled = disabled;
+        button.innerHTML = `${icon ? `${icon} ` : ''}${text}`;
+
+        if (typeof onClick === 'function') {
+            button.addEventListener('click', onClick);
+        }
+
+        return button;
+    };
+
+    EAS.UI.createInput = ({
+        type = 'text',
+        value = '',
+        placeholder = '',
+        className = '',
+        name = '',
+        min = '',
+        max = ''
+    } = {}) => {
+        const input = document.createElement('input');
+
+        input.type = type;
+        input.value = value;
+        input.placeholder = placeholder;
+        input.className = `eas-input ${className}`.trim();
+        input.name = name;
+
+        if (min !== '') {
+            input.min = min;
+        }
+
+        if (max !== '') {
+            input.max = max;
+        }
+
+        return input;
+    };
+
+    EAS.UI.createField = ({
+        label,
+        input,
+        helpText = ''
+    }) => {
+        const field = document.createElement('div');
+
+        field.className = 'eas-field';
+
+        const labelElement = document.createElement('label');
+        labelElement.className = 'eas-field__label';
+        labelElement.textContent = label;
+
+        field.appendChild(labelElement);
+        field.appendChild(input);
+
+        if (helpText) {
+            const help = document.createElement('small');
+            help.className = 'eas-field__help';
+            help.textContent = helpText;
+            field.appendChild(help);
+        }
+
+        return field;
+    };
+
+    EAS.UI.createTable = ({
+        columns = [],
+        rows = []
+    } = {}) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'eas-table-wrapper';
+
+        const table = document.createElement('table');
+        table.className = 'eas-table';
+
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+
+        columns.forEach((column) => {
+            const th = document.createElement('th');
+            th.textContent = column.label ?? column.key;
+            headerRow.appendChild(th);
+        });
+
+        thead.appendChild(headerRow);
+
+        const tbody = document.createElement('tbody');
+
+        rows.forEach((row) => {
+            const tr = document.createElement('tr');
+
+            columns.forEach((column) => {
+                const td = document.createElement('td');
+                const value = row[column.key];
+
+                td.textContent = value ?? '';
+                tr.appendChild(td);
+            });
+
+            tbody.appendChild(tr);
+        });
+
+        table.appendChild(thead);
+        table.appendChild(tbody);
+        wrapper.appendChild(table);
+
+        return {
+            element: wrapper,
+            table,
+            tbody,
+
+            setRows(newRows = []) {
+                tbody.innerHTML = '';
+
+                newRows.forEach((row) => {
+                    const tr = document.createElement('tr');
+
+                    columns.forEach((column) => {
+                        const td = document.createElement('td');
+                        td.textContent = row[column.key] ?? '';
+                        tr.appendChild(td);
+                    });
+
+                    tbody.appendChild(tr);
+                });
+            }
+        };
+    };
+
+    EAS.UI.showStatus = ({
+        target,
+        message,
+        type = 'info'
+    }) => {
+        const container = getElement(target);
+
+        if (!container) {
+            return;
+        }
+
+        container.textContent = message;
+        container.className = `eas-status eas-status--${type}`;
+    };
+
+    EAS.UI.openMainWindow = () => {
+        const existing = document.getElementById(DEFAULT_WINDOW_ID);
+
+        if (existing) {
+            existing.remove();
+            return;
+        }
+
+        const win = EAS.UI.createWindow({
+            title: EAS.name,
+            icon: '⚔️',
+            width: 470
+        });
+
+        const version = document.createElement('div');
+        version.className = 'eas-version';
+        version.textContent = `Versão ${EAS.version}`;
+
+        const menu = document.createElement('div');
+        menu.className = 'eas-menu';
+
+        const modules = [
+            {
+                id: 'attack',
+                icon: '⚔️',
+                text: 'Planejador de Ataques'
+            },
+            {
+                id: 'support',
+                icon: '🛡️',
+                text: 'Planejador de Apoios'
+            },
+            {
+                id: 'antisnipe',
+                icon: '⏱️',
+                text: 'Anti-Snipe'
+            },
+            {
+                id: 'noble',
+                icon: '👑',
+                text: 'Planejador de Nobres'
+            },
+            {
+                id: 'resources',
+                icon: '📦',
+                text: 'Distribuição de Recursos'
+            }
+        ];
+
+        modules.forEach((module) => {
+            const button = EAS.UI.createButton({
+                text: module.text,
+                icon: module.icon,
+                className: 'eas-menu__button',
+                onClick: () => {
+                    EAS.UI.openModuleTest(module);
+                }
+            });
+
+            menu.appendChild(button);
+        });
+
+        const status = document.createElement('div');
+        status.className = 'eas-status eas-status--success';
+        status.textContent = 'Sistema carregado corretamente.';
+
+        win.body.appendChild(version);
+        win.body.appendChild(menu);
+        win.body.appendChild(status);
+    };
+
+    EAS.UI.openModuleTest = (module) => {
+        const win = EAS.UI.createWindow({
+            id: `eas-module-${module.id}`,
+            title: module.text,
+            icon: module.icon,
+            width: 650
+        });
+
+        const form = document.createElement('div');
+        form.className = 'eas-form';
+
+        const coordinateInput = EAS.UI.createInput({
+            placeholder: 'Exemplo: 500|500',
+            name: 'coordinate'
+        });
+
+        const dateInput = EAS.UI.createInput({
+            type: 'date',
+            name: 'date'
+        });
+
+        const timeInput = EAS.UI.createInput({
+            type: 'time',
+            name: 'time'
+        });
+
+        form.appendChild(
+            EAS.UI.createField({
+                label: 'Coordenada de destino',
+                input: coordinateInput,
+                helpText: 'Informe a coordenada no formato 500|500.'
+            })
+        );
+
+        form.appendChild(
+            EAS.UI.createField({
+                label: 'Data de chegada',
+                input: dateInput
+            })
+        );
+
+        form.appendChild(
+            EAS.UI.createField({
+                label: 'Horário de chegada',
+                input: timeInput
+            })
+        );
+
+        const actions = document.createElement('div');
+        actions.className = 'eas-actions';
+
+        const status = document.createElement('div');
+        status.className = 'eas-status eas-status--info';
+        status.textContent = 'Módulo em preparação.';
+
+        const calculateButton = EAS.UI.createButton({
+            text: 'Testar componentes',
+            icon: '🧪',
+            onClick: () => {
+                const coordinate = coordinateInput.value.trim();
+
+                if (!/^\d{1,3}\|\d{1,3}$/.test(coordinate)) {
+                    EAS.UI.showStatus({
+                        target: status,
+                        message: 'Informe uma coordenada válida, como 500|500.',
+                        type: 'error'
+                    });
+
+                    return;
+                }
+
+                EAS.UI.showStatus({
+                    target: status,
+                    message: `Componentes funcionando para o destino ${coordinate}.`,
+                    type: 'success'
+                });
+            }
+        });
+
+        const backButton = EAS.UI.createButton({
+            text: 'Voltar ao menu',
+            icon: '↩️',
+            className: 'eas-button--secondary',
+            onClick: () => {
+                win.close();
+                EAS.UI.openMainWindow();
+            }
+        });
+
+        actions.appendChild(calculateButton);
+        actions.appendChild(backButton);
+
+        win.body.appendChild(form);
+        win.body.appendChild(actions);
+        win.body.appendChild(status);
+    };
+
+    EAS.UI.toggle = EAS.UI.openMainWindow;
 })();
