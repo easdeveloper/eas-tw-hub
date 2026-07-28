@@ -48,6 +48,11 @@
     const start = async () => {
         try {
             if (window.EAS?.UI?.toggle) {
+                if (!window.EAS.Place?.fillTargetFromUrl) {
+                    await loadScript('services/place.js');
+                }
+
+                window.EAS.Place.fillTargetFromUrl();
                 window.EAS.UI.toggle();
                 return;
             }
@@ -61,8 +66,10 @@
             await loadScript('core/world.js');
             await loadScript('core/villages.js');
             await loadScript('core/troops.js');
+            await loadScript('services/place.js');
 
             window.EAS.start();
+            window.EAS.Place.fillTargetFromUrl();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
             alert(`EAS TW Hub: ${error.message}`);

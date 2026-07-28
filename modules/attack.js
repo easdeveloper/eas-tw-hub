@@ -149,12 +149,29 @@
         return `${sourceInfo.error ? `${sourceInfo.error} ` : ''}Dados de tropas: ${sourceLabel}${rowLabel}, atualizados às ${updatedAt} do servidor.`;
     };
 
-    const getPlaceUrl = (villageId) => {
+    const getPlaceUrl = (villageId, targetCoordinate = '') => {
         const url = new URL('game.php', location.origin);
         url.searchParams.set('village', villageId);
         url.searchParams.set('screen', 'place');
 
+        if (targetCoordinate) {
+            url.searchParams.set('eas_target', targetCoordinate);
+        }
+
         return url.toString();
+    };
+
+    const saveTemporaryTarget = (villageId, targetCoordinate) => {
+        const parsed = EAS.Utils.parseCoordinate(targetCoordinate);
+
+        if (!parsed || !villageId) {
+            return;
+        }
+
+        sessionStorage.setItem(
+            `eas_tw_target_${villageId}`,
+            parsed.coordinate
+        );
     };
 
     const createSelect = (value) => {
@@ -264,12 +281,13 @@
                 }
 
                 summary.canSend += 1;
-                result.push({
-                    village,
-                    available,
-                    distance,
-                    durationMs,
-                    sendTimestamp,
+                    result.push({
+                        village,
+                        available,
+                        destination: parsedDestination.coordinate,
+                        distance,
+                        durationMs,
+                        sendTimestamp,
                     status: 'Pronto'
                 });
 
@@ -332,8 +350,9 @@
                 icon: '🏛️',
                 disabled: !village.id,
                 onClick: () => {
+                    saveTemporaryTarget(village.id, row.destination);
                     window.open(
-                        getPlaceUrl(village.id),
+                        getPlaceUrl(village.id, row.destination),
                         '_blank',
                         'noopener,noreferrer'
                     );
