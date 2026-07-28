@@ -149,31 +149,6 @@
         return `${sourceInfo.error ? `${sourceInfo.error} ` : ''}Dados de tropas: ${sourceLabel}${rowLabel}, atualizados às ${updatedAt} do servidor.`;
     };
 
-    const getPlaceUrl = (villageId, targetCoordinate = '') => {
-        const url = new URL('game.php', location.origin);
-        url.searchParams.set('village', villageId);
-        url.searchParams.set('screen', 'place');
-
-        if (targetCoordinate) {
-            url.searchParams.set('eas_target', targetCoordinate);
-        }
-
-        return url.toString();
-    };
-
-    const saveTemporaryTarget = (villageId, targetCoordinate) => {
-        const parsed = EAS.Utils.parseCoordinate(targetCoordinate);
-
-        if (!parsed || !villageId) {
-            return;
-        }
-
-        sessionStorage.setItem(
-            `eas_tw_target_${villageId}`,
-            parsed.coordinate
-        );
-    };
-
     const createSelect = (value) => {
         const select = document.createElement('select');
         select.className = 'eas-input';
@@ -350,12 +325,10 @@
                 icon: '🏛️',
                 disabled: !village.id,
                 onClick: () => {
-                    saveTemporaryTarget(village.id, row.destination);
-                    window.open(
-                        getPlaceUrl(village.id, row.destination),
-                        '_blank',
-                        'noopener,noreferrer'
-                    );
+                    EAS.Place.openAndFillTarget({
+                        villageId: village.id,
+                        coordinate: row.destination
+                    });
                 }
             });
 
