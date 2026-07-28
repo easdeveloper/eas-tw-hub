@@ -386,7 +386,9 @@
             : null;
         const villageSources = villagesInfo.sources || {};
         const troopRows = troopsInfo.rows || [];
-        const troopUnits = Object.keys(troopsInfo.unitColumns || {});
+        const troopColumnDetails = troopsInfo.unitColumnDetails || [];
+        const troopUnits = troopColumnDetails.map((column) => column.unit);
+        const rowTypeCounts = troopsInfo.rowTypeCounts || {};
 
         container.innerHTML = '';
 
@@ -443,6 +445,10 @@
                 <span>${EAS.Utils.escapeHtml(troopsInfo.source || '-')}</span>
             </div>
             <div>
+                <strong>Tabela de tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.selectedTable || '-')}</span>
+            </div>
+            <div>
                 <strong>Atualização das tropas</strong>
                 <span>${EAS.Utils.escapeHtml(troopsInfo.updatedAtServer ? `${formatTime(troopsInfo.updatedAtServer)} servidor` : '-')}</span>
             </div>
@@ -460,7 +466,14 @@
             </div>
             <div>
                 <strong>Tipos das linhas</strong>
-                <span>${EAS.Utils.escapeHtml(troopRows.map((row) => row.type).join(', ') || '-')}</span>
+                <span>${EAS.Utils.escapeHtml([
+                    `home=${rowTypeCounts.home || 0}`,
+                    `away=${rowTypeCounts.away || 0}`,
+                    `moving=${rowTypeCounts.moving || 0}`,
+                    `total=${rowTypeCounts.total || 0}`,
+                    `support=${rowTypeCounts.support || 0}`,
+                    `unknown=${rowTypeCounts.unknown || 0}`
+                ].join(', '))}</span>
             </div>
             <div>
                 <strong>Colunas de unidades</strong>
@@ -497,6 +510,31 @@
 
             rowsDetails.appendChild(rowsTable.element);
             details.appendChild(rowsDetails);
+        }
+
+        if (troopColumnDetails.length) {
+            const columnsDetails = document.createElement('details');
+            columnsDetails.className = 'eas-details';
+
+            const columnsSummary = document.createElement('summary');
+            columnsSummary.textContent = 'Colunas detectadas';
+            columnsDetails.appendChild(columnsSummary);
+
+            const columnsTable = EAS.UI.createTable({
+                columns: [
+                    { key: 'index', label: 'Índice' },
+                    { key: 'unit', label: 'Unidade interna' },
+                    { key: 'identifier', label: 'Identificador encontrado' }
+                ],
+                rows: troopColumnDetails.map((column) => ({
+                    index: column.index,
+                    unit: column.unit,
+                    identifier: column.identifier
+                }))
+            });
+
+            columnsDetails.appendChild(columnsTable.element);
+            details.appendChild(columnsDetails);
         }
 
         container.appendChild(details);

@@ -18,6 +18,7 @@
         'snob'
     ];
     const CACHE_KEY = 'troops.available';
+    const CACHE_SCHEMA_VERSION = 2;
 
     let troopsByVillage = {};
     let sourceInfo = {
@@ -28,7 +29,10 @@
         updatedAtServer: null,
         updatedAtLocal: null,
         rows: [],
-        unitColumns: {}
+        unitColumns: {},
+        unitColumnDetails: [],
+        rowTypeCounts: {},
+        selectedTable: null
     };
     let hasAttemptedRefresh = false;
 
@@ -61,6 +65,7 @@
     const parseAmount = (value) => {
         const normalized = String(value ?? '')
             .replace(/\./g, '')
+            .replace(/,/g, '')
             .replace(/\s/g, '');
         const match = normalized.match(/\d+/);
 
@@ -180,46 +185,149 @@
         };
     };
 
-    const detectUnit = (element) => {
-        const text = [
-            element.dataset?.unit,
-            element.className,
-            element.getAttribute?.('title'),
-            element.getAttribute?.('alt'),
-            element.getAttribute?.('src'),
-            element.textContent
-        ].join(' ').toLowerCase();
+    const detectUnitFromText = (text) => {
+        const normalized = String(text ?? '').toLowerCase();
 
         return UNITS.find((unit) => {
-            const pattern = new RegExp(`(^|[^a-z])${unit}([^a-z]|$)`, 'i');
+            const patterns = [
+                `unit_${unit}`,
+                `unit-${unit}`,
+                `unit ${unit}`,
+                `${unit}.png`,
+                `/${unit}.png`,
+                `/${unit}.webp`,
+                `/${unit}.gif`
+            ];
+            const boundary = new RegExp(`(^|[^a-z])${unit}([^a-z]|$)`, 'i');
 
-            return pattern.test(text) ||
-                text.includes(`unit_${unit}`) ||
-                text.includes(`unit-${unit}`) ||
-                text.includes(`unit ${unit}`);
+            return patterns.some((pattern) => normalized.includes(pattern)) ||
+                boundary.test(normalized);
         }) || null;
     };
 
-    const detectUnitColumns = (table) => {
-        const headerRows = Array.from(table.querySelectorAll('thead tr, tr'))
-            .slice(0, 3);
-        const columns = {};
+    const detectUnitInElement = (element) => {
+        if (!element) {
+            return null;
+        }
 
-        headerRows.forEach((row) => {
-            Array.from(row.children).forEach((cell, index) => {
-                const unit =
-                    detectUnit(cell) ||
-                    Array.from(cell.querySelectorAll('*'))
-                        .map(detectUnit)
-                        .find(Boolean);
+        const dataUnit = element.dataset?.unit;
+        const unitFromData = detectUnitFromText(dataUnit);
 
-                if (unit && columns[unit] === undefined) {
-                    columns[unit] = index;
+        if (unitFromData) {
+            return {
+                unit: unitFromData,
+                identifier: `data-unit=${dataUnit}`
+            };
+        }
+
+        const className = String(element.className || '');
+        const classUnit =
+            className.match(/unit-item-([a-z_]+)/i)?.[1] ||
+            className.match(/unit[_-]([a-z_]+)/i)?.[1];
+        const unitFromClass = detectUnitFromText(classUnit || className);
+
+        if (unitFromClass) {
+            return {
+                unit: unitFromClass,
+                identifier: classUnit
+                    ? `class=${classUnit}`
+                    : `class=${className}`
+            };
+        }
+
+        const childWithUnitClass = element.querySelector(
+            '[class*="unit-item-"], [class*="unit_"], [class*="unit-"]'
+        );
+
+        if (childWithUnitClass) {
+            const detected = detectUnitInElement(childWithUnitClass);
+
+            if (detected) {
+                return detected;
+            }
+        }
+
+        const image = element.matches?.('img')
+            ? element
+            : element.querySelector('img');
+        const src = image?.getAttribute('src') || '';
+        const unitFromSrc = detectUnitFromText(src.split('/').pop() || src);
+
+        if (unitFromSrc) {
+            return {
+                unit: unitFromSrc,
+                identifier: src.split('/').pop() || src
+            };
+        }
+
+        const alt = image?.getAttribute('alt') || element.getAttribute?.('alt') || '';
+        const unitFromAlt = detectUnitFromText(alt);
+
+        if (unitFromAlt) {
+            return {
+                unit: unitFromAlt,
+                identifier: `alt=${alt}`
+            };
+        }
+
+        const title = image?.getAttribute('title') || element.getAttribute?.('title') || '';
+        const unitFromTitle = detectUnitFromText(title);
+
+        if (unitFromTitle) {
+            return {
+                unit: unitFromTitle,
+                identifier: `title=${title}`
+            };
+        }
+
+        const unitFromText = detectUnitFromText(element.textContent);
+
+        if (unitFromText) {
+            return {
+                unit: unitFromText,
+                identifier: `text=${element.textContent?.trim() || unitFromText}`
+            };
+        }
+
+        return null;
+    };
+
+    const detectUnitColumnDetails = (table) => {
+        const headerRows = Array.from(table.querySelectorAll('thead tr'));
+        const rows = headerRows.length
+            ? headerRows
+            : Array.from(table.querySelectorAll('tr')).slice(0, 1);
+        const details = [];
+        const seenUnits = new Set();
+
+        rows.forEach((row) => {
+            let columnIndex = 0;
+
+            Array.from(row.children).forEach((cell) => {
+                const detected = detectUnitInElement(cell);
+                const span = Math.max(1, Number(cell.colSpan || 1));
+
+                if (detected && !seenUnits.has(detected.unit)) {
+                    details.push({
+                        index: columnIndex,
+                        unit: detected.unit,
+                        identifier: detected.identifier
+                    });
+                    seenUnits.add(detected.unit);
                 }
+
+                columnIndex += span;
             });
         });
 
-        return columns;
+        return details.sort((a, b) => a.index - b.index);
+    };
+
+    EAS.Troops.detectUnitColumns = (table) => {
+        return detectUnitColumnDetails(table).reduce((columns, item) => {
+            columns[item.index] = item.unit;
+            return columns;
+        }, {});
     };
 
     const readFromGameData = () => {
@@ -253,78 +361,137 @@
         return result;
     };
 
+    const getTableIdentifier = (table) => {
+        if (table.id) {
+            return `#${table.id}`;
+        }
+
+        const classes = String(table.className || '').trim().split(/\s+/)
+            .filter(Boolean);
+
+        if (classes.length) {
+            return `table.${classes.join('.')}`;
+        }
+
+        return 'table';
+    };
+
+    const getCandidateTroopTable = () => {
+        return Array.from(document.querySelectorAll('table'))
+            .map((table) => {
+                const unitColumns = EAS.Troops.detectUnitColumns(table);
+                const unitColumnDetails = detectUnitColumnDetails(table);
+                const rows = Array.from(table.querySelectorAll('tbody tr, tr'));
+                const villageRows = rows.filter(extractVillageId);
+                const homeRows = rows.filter((row, index) => {
+                    return EAS.Troops.detectRowType(row, {
+                        rowIndex: index,
+                        hasUnitColumns: Object.keys(unitColumns).length > 0
+                    }).rowType === 'home';
+                });
+
+                return {
+                    table,
+                    unitColumns,
+                    unitColumnDetails,
+                    rows,
+                    villageRows,
+                    homeRows,
+                    score:
+                        Object.keys(unitColumns).length * 10 +
+                        villageRows.length * 2 +
+                        homeRows.length * 4
+                };
+            })
+            .filter((candidate) => {
+                return Object.keys(candidate.unitColumns).length >= 2 &&
+                    candidate.villageRows.length > 0;
+            })
+            .sort((a, b) => b.score - a.score)[0] || null;
+    };
+
     const readFromTables = () => {
         const result = {
             villages: {},
             rowType: null,
             label: null,
             rows: [],
-            unitColumns: {}
+            unitColumns: {},
+            unitColumnDetails: [],
+            rowTypeCounts: {},
+            selectedTable: null
         };
-        const tables = Array.from(document.querySelectorAll('table'));
 
-        tables.forEach((table) => {
-            const unitColumns = detectUnitColumns(table);
-            const units = Object.keys(unitColumns);
-            result.unitColumns = {
-                ...result.unitColumns,
-                ...unitColumns
+        const candidate = getCandidateTroopTable();
+
+        if (!candidate) {
+            return result;
+        }
+
+        const table = candidate.table;
+        const unitColumns = candidate.unitColumns;
+        const unitColumnDetails = candidate.unitColumnDetails;
+        const rows = candidate.rows;
+        const unitColumnEntries = Object.entries(unitColumns)
+            .map(([index, unit]) => [Number(index), unit])
+            .sort((a, b) => a[0] - b[0]);
+
+        result.unitColumns = unitColumns;
+        result.unitColumnDetails = unitColumnDetails;
+        result.selectedTable = getTableIdentifier(table);
+
+        const rowDiagnostics = rows.map((row, index) => {
+            const info = EAS.Troops.detectRowType(row, {
+                rowIndex: index,
+                hasUnitColumns: unitColumnEntries.length > 0
+            });
+
+            return {
+                index: index + 1,
+                text: row.textContent?.trim().replace(/\s+/g, ' ').slice(0, 80) || '',
+                type: info.rowType
             };
+        });
 
-            if (!units.length) {
+        result.rows = rowDiagnostics;
+        result.rowTypeCounts = rowDiagnostics.reduce((counts, row) => {
+            counts[row.type] = (counts[row.type] || 0) + 1;
+            return counts;
+        }, {});
+        result.rowType = rowDiagnostics.find((row) => row.type === 'home')
+            ? 'home'
+            : rowDiagnostics.find((row) => row.type === 'unknown')?.type || null;
+
+        rows.forEach((row, index) => {
+            const villageId = extractVillageId(row);
+
+            if (!villageId) {
                 return;
             }
 
-            const rows = Array.from(table.querySelectorAll('tbody tr, tr'));
-            const rowDiagnostics = rows.map((row, index) => {
-                const info = EAS.Troops.detectRowType(row, {
-                    rowIndex: index,
-                    hasUnitColumns: units.length > 0
-                });
-
-                return {
-                    index: result.rows.length + index + 1,
-                    text: row.textContent?.trim().replace(/\s+/g, ' ').slice(0, 80) || '',
-                    type: info.rowType
-                };
+            const cells = Array.from(row.children);
+            const rowInfo = EAS.Troops.detectRowType(row, {
+                rowIndex: index,
+                hasUnitColumns: unitColumnEntries.length > 0
             });
 
-            result.rows.push(...rowDiagnostics);
-            result.rowType = result.rowType ||
-                rowDiagnostics.find((row) => row.type === 'unknown')?.type ||
-                null;
+            if (rowInfo.rowType !== 'home') {
+                return;
+            }
 
-            rows.forEach((row, index) => {
-                const villageId = extractVillageId(row);
+            const troops = result.villages[villageId] || createEmptyTroops();
 
-                if (!villageId) {
-                    return;
+            unitColumnEntries.forEach(([columnIndex, unit]) => {
+                const cell = cells[columnIndex];
+
+                if (cell) {
+                    troops[unit] = parseAmount(cell.textContent);
                 }
-
-                const cells = Array.from(row.children);
-                const rowInfo = EAS.Troops.detectRowType(row, {
-                    rowIndex: index,
-                    hasUnitColumns: units.length > 0
-                });
-
-                if (rowInfo.rowType !== 'home') {
-                    return;
-                }
-
-                const troops = result.villages[villageId] || createEmptyTroops();
-
-                units.forEach((unit) => {
-                    const cell = cells[unitColumns[unit]];
-
-                    if (cell) {
-                        troops[unit] = parseAmount(cell.textContent);
-                    }
-                });
-
-                result.villages[villageId] = troops;
-                result.rowType = 'home';
-                result.label = rowInfo.label || 'Na aldeia';
             });
+
+            result.villages[villageId] = troops;
+            result.rowType = 'home';
+            result.label = rowInfo.label || 'Na aldeia';
         });
 
         return result;
@@ -357,6 +524,7 @@
 
         if (
             !cache ||
+            Number(cache.schemaVersion || 0) !== CACHE_SCHEMA_VERSION ||
             cache.world !== scope.world ||
             Number(cache.playerId || 0) !== Number(scope.playerId || 0) ||
             !cache.villages &&
@@ -377,12 +545,15 @@
         const serverNow = EAS.World.getServerDateTime();
 
         EAS.Storage.set(CACHE_KEY, {
+            schemaVersion: CACHE_SCHEMA_VERSION,
             ...scope,
             updatedAtServer: serverNow.available ? serverNow.timestamp : null,
             updatedAtLocal: Date.now(),
             source,
             rowType: sourceInfo.rowType,
             label: sourceInfo.label,
+            selectedTable: sourceInfo.selectedTable,
+            unitColumnDetails: sourceInfo.unitColumnDetails,
             villages: data
         });
     };
@@ -413,7 +584,10 @@
                 updatedAtServer: EAS.World.getServerNowTimestamp(),
                 updatedAtLocal: Date.now(),
                 rows: [],
-                unitColumns: {}
+                unitColumns: {},
+                unitColumnDetails: [],
+                rowTypeCounts: {},
+                selectedTable: 'game_data'
             });
             saveCache('game_data', troopsByVillage);
             return troopsByVillage;
@@ -431,7 +605,10 @@
                 updatedAtServer: EAS.World.getServerNowTimestamp(),
                 updatedAtLocal: Date.now(),
                 rows: tableTroops.rows,
-                unitColumns: tableTroops.unitColumns
+                unitColumns: tableTroops.unitColumns,
+                unitColumnDetails: tableTroops.unitColumnDetails,
+                rowTypeCounts: tableTroops.rowTypeCounts,
+                selectedTable: tableTroops.selectedTable
             });
             saveCache('troop_overview', troopsByVillage);
             return troopsByVillage;
@@ -447,7 +624,17 @@
                 updatedAtServer: cache.updatedAtServer || cache.updatedAt || null,
                 updatedAtLocal: cache.updatedAtLocal || null,
                 rows: tableTroops.rows,
-                unitColumns: tableTroops.unitColumns
+                unitColumns: Object.keys(tableTroops.unitColumns).length
+                    ? tableTroops.unitColumns
+                    : (cache.unitColumnDetails || []).reduce((columns, item) => {
+                        columns[item.index] = item.unit;
+                        return columns;
+                    }, {}),
+                unitColumnDetails: tableTroops.unitColumnDetails.length
+                    ? tableTroops.unitColumnDetails
+                    : cache.unitColumnDetails || [],
+                rowTypeCounts: tableTroops.rowTypeCounts,
+                selectedTable: tableTroops.selectedTable || cache.selectedTable || null
             });
             return troopsByVillage;
         }
@@ -461,7 +648,10 @@
             updatedAtServer: null,
             updatedAtLocal: null,
             rows: tableTroops.rows,
-            unitColumns: tableTroops.unitColumns
+            unitColumns: tableTroops.unitColumns,
+            unitColumnDetails: tableTroops.unitColumnDetails,
+            rowTypeCounts: tableTroops.rowTypeCounts,
+            selectedTable: tableTroops.selectedTable
         });
         return troopsByVillage;
     };
