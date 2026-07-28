@@ -134,7 +134,10 @@
         const sourceLabel = {
             game_data: 'dados globais da página',
             troop_overview: 'visualização de Tropas',
-            cache: 'cache do EAS TW Hub'
+            remote_units_overview: 'visão geral de Tropas',
+            cache: sourceInfo.stale
+                ? 'cache de tropas desatualizado'
+                : 'cache do EAS TW Hub'
         }[sourceInfo.source] || sourceInfo.source;
         const updatedAt = sourceInfo.updatedAtServer
             ? formatTime(sourceInfo.updatedAtServer)
@@ -143,7 +146,7 @@
             ? `, linha: ${sourceInfo.label || sourceInfo.rowType}`
             : '';
 
-        return `Dados de tropas: ${sourceLabel}${rowLabel}, atualizados às ${updatedAt} do servidor.`;
+        return `${sourceInfo.error ? `${sourceInfo.error} ` : ''}Dados de tropas: ${sourceLabel}${rowLabel}, atualizados às ${updatedAt} do servidor.`;
     };
 
     const getPlaceUrl = (villageId) => {
@@ -385,10 +388,8 @@
             ? serverDateTime.timestamp - localNow
             : null;
         const villageSources = villagesInfo.sources || {};
-        const troopRows = troopsInfo.rows || [];
         const troopColumnDetails = troopsInfo.unitColumnDetails || [];
         const troopUnits = troopColumnDetails.map((column) => column.unit);
-        const rowTypeCounts = troopsInfo.rowTypeCounts || {};
 
         container.innerHTML = '';
 
@@ -457,23 +458,16 @@
                 <span>${EAS.Utils.escapeHtml(unitId)}</span>
             </div>
             <div>
-                <strong>Linha de tropas</strong>
-                <span>${EAS.Utils.escapeHtml(troopsInfo.label || troopsInfo.rowType || '-')}</span>
+                <strong>Schema tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.schemaVersion || '-')}</span>
             </div>
             <div>
-                <strong>Linhas de tropas</strong>
-                <span>${EAS.Utils.escapeHtml(troopRows.length)}</span>
+                <strong>Aldeias com tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.villageCount || 0)}</span>
             </div>
             <div>
-                <strong>Tipos das linhas</strong>
-                <span>${EAS.Utils.escapeHtml([
-                    `home=${rowTypeCounts.home || 0}`,
-                    `away=${rowTypeCounts.away || 0}`,
-                    `moving=${rowTypeCounts.moving || 0}`,
-                    `total=${rowTypeCounts.total || 0}`,
-                    `support=${rowTypeCounts.support || 0}`,
-                    `unknown=${rowTypeCounts.unknown || 0}`
-                ].join(', '))}</span>
+                <strong>Leitura</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.complete ? 'completa' : 'parcial')}</span>
             </div>
             <div>
                 <strong>Colunas de unidades</strong>
@@ -487,31 +481,6 @@
 
         details.appendChild(grid);
 
-        if (troopRows.length) {
-            const rowsDetails = document.createElement('details');
-            rowsDetails.className = 'eas-details';
-
-            const rowsSummary = document.createElement('summary');
-            rowsSummary.textContent = 'Linhas de tropas detectadas';
-            rowsDetails.appendChild(rowsSummary);
-
-            const rowsTable = EAS.UI.createTable({
-                columns: [
-                    { key: 'line', label: 'Linha' },
-                    { key: 'text', label: 'Texto resumido' },
-                    { key: 'type', label: 'Tipo detectado' }
-                ],
-                rows: troopRows.map((row) => ({
-                    line: row.index,
-                    text: row.text,
-                    type: row.type
-                }))
-            });
-
-            rowsDetails.appendChild(rowsTable.element);
-            details.appendChild(rowsDetails);
-        }
-
         if (troopColumnDetails.length) {
             const columnsDetails = document.createElement('details');
             columnsDetails.className = 'eas-details';
@@ -522,14 +491,14 @@
 
             const columnsTable = EAS.UI.createTable({
                 columns: [
-                    { key: 'index', label: 'Índice' },
-                    { key: 'unit', label: 'Unidade interna' },
-                    { key: 'identifier', label: 'Identificador encontrado' }
+                    { key: 'unit', label: 'Unidade' },
+                    { key: 'identifier', label: 'Identificador' },
+                    { key: 'position', label: 'Posição' }
                 ],
                 rows: troopColumnDetails.map((column) => ({
-                    index: column.index,
                     unit: column.unit,
-                    identifier: column.identifier
+                    identifier: column.identifier,
+                    position: column.position
                 }))
             });
 
@@ -640,7 +609,7 @@
         const calculateButton = EAS.UI.createButton({
             text: 'Calcular',
             icon: '🧮',
-            onClick: () => {
+            onClick: async () => {
                 const destination = coordinateInput.value.trim();
                 const serverDateTime = EAS.World.getServerDateTime();
                 const arrivalTimestamp = parseArrivalTimestamp(
@@ -678,14 +647,35 @@
                     return;
                 }
 
+                EAS.UI.showStatus({
+                    target: status,
+                    message: 'Atualizando tropas...',
+                    type: 'info'
+                });
+
+                try {
+                    await EAS.Troops.ensureLoaded();
+                } catch (error) {
+                    EAS.UI.showStatus({
+                        target: status,
+                        message: error.message,
+                        type: 'error'
+                    });
+                    table.setRows([]);
+                    table.element.hidden = true;
+                    emptyState.hidden = false;
+                    emptyState.textContent = 'Não foi possível carregar a visão geral de tropas.';
+                    renderExclusions(exclusionsContainer, []);
+                    renderDiagnostics(diagnosticsContainer, unitSelect.value);
+                    return;
+                }
+
                 saveSettings({
                     destination,
                     arrivalDate: dateInput.value.trim(),
                     arrivalTime: timeInput.value.trim(),
                     unit: unitSelect.value
                 });
-
-                EAS.Troops.refresh();
 
                 const calculation = calculateRows({
                     destination,
@@ -748,6 +738,34 @@
             }
         });
 
+        const refreshTroopsButton = EAS.UI.createButton({
+            text: 'Atualizar tropas',
+            icon: '🔄',
+            className: 'eas-button--secondary',
+            onClick: async () => {
+                EAS.UI.showStatus({
+                    target: status,
+                    message: 'Atualizando tropas...',
+                    type: 'info'
+                });
+
+                try {
+                    await EAS.Troops.ensureLoaded({
+                        forceRefresh: true
+                    });
+                    renderDiagnostics(diagnosticsContainer, unitSelect.value);
+                    calculateButton.click();
+                } catch (error) {
+                    EAS.UI.showStatus({
+                        target: status,
+                        message: error.message,
+                        type: 'error'
+                    });
+                    renderDiagnostics(diagnosticsContainer, unitSelect.value);
+                }
+            }
+        });
+
         const backButton = EAS.UI.createButton({
             text: 'Voltar ao menu',
             icon: '↩️',
@@ -759,6 +777,7 @@
         });
 
         actions.appendChild(calculateButton);
+        actions.appendChild(refreshTroopsButton);
         actions.appendChild(clearButton);
         actions.appendChild(backButton);
 
