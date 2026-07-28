@@ -23,7 +23,10 @@
     let sourceInfo = {
         available: false,
         source: 'none',
-        updatedAt: null
+        rowType: null,
+        label: null,
+        updatedAtServer: null,
+        updatedAtLocal: null
     };
     let hasAttemptedRefresh = false;
 
@@ -76,6 +79,48 @@
             const match = link.href.match(/[?&]village=(\d+)/);
             return Number(match?.[1] || 0);
         }
+    };
+
+    const classifyTroopRow = (row) => {
+        const text = row.textContent?.trim().toLowerCase() || '';
+        const technicalText = [
+            row.dataset?.type,
+            row.dataset?.row,
+            row.className,
+            row.id
+        ].join(' ').toLowerCase();
+
+        if (
+            technicalText.includes('home') ||
+            technicalText.includes('own') ||
+            text.includes('na aldeia') ||
+            text.includes('in village') ||
+            text.includes('available')
+        ) {
+            return {
+                rowType: 'home',
+                label: 'Na aldeia'
+            };
+        }
+
+        if (
+            text.includes('total') ||
+            text.includes('em movimento') ||
+            text.includes('fora') ||
+            text.includes('apoio') ||
+            text.includes('próprias') ||
+            text.includes('proprias')
+        ) {
+            return {
+                rowType: 'ignored',
+                label: row.textContent?.trim() || ''
+            };
+        }
+
+        return {
+            rowType: 'unknown',
+            label: row.textContent?.trim() || ''
+        };
     };
 
     const detectUnit = (element) => {
@@ -152,7 +197,11 @@
     };
 
     const readFromTables = () => {
-        const result = {};
+        const result = {
+            villages: {},
+            rowType: null,
+            label: null
+        };
         const tables = Array.from(document.querySelectorAll('table'));
 
         tables.forEach((table) => {
@@ -163,7 +212,12 @@
                 return;
             }
 
-            Array.from(table.querySelectorAll('tbody tr, tr')).forEach((row) => {
+            const rows = Array.from(table.querySelectorAll('tbody tr, tr'));
+            const hasHomeRows = rows.some((row) => {
+                return classifyTroopRow(row).rowType === 'home';
+            });
+
+            rows.forEach((row) => {
                 const villageId = extractVillageId(row);
 
                 if (!villageId) {
@@ -171,7 +225,17 @@
                 }
 
                 const cells = Array.from(row.children);
-                const troops = result[villageId] || createEmptyTroops();
+                const rowInfo = classifyTroopRow(row);
+
+                if (rowInfo.rowType === 'ignored') {
+                    return;
+                }
+
+                if (hasHomeRows && rowInfo.rowType !== 'home') {
+                    return;
+                }
+
+                const troops = result.villages[villageId] || createEmptyTroops();
 
                 units.forEach((unit) => {
                     const cell = cells[unitColumns[unit]];
@@ -181,7 +245,13 @@
                     }
                 });
 
-                result[villageId] = troops;
+                result.villages[villageId] = troops;
+                result.rowType = rowInfo.rowType === 'home'
+                    ? 'home'
+                    : result.rowType || 'unknown';
+                result.label = rowInfo.rowType === 'home'
+                    ? rowInfo.label
+                    : result.label;
             });
         });
 
@@ -195,12 +265,12 @@
     const mergeWithCache = (data) => {
         const cache = readCache();
 
-        if (!cache?.troopsByVillage) {
+        if (!cache?.villages && !cache?.troopsByVillage) {
             return data;
         }
 
         return {
-            ...cache.troopsByVillage,
+            ...(cache.villages || cache.troopsByVillage),
             ...data
         };
     };
@@ -217,6 +287,7 @@
             !cache ||
             cache.world !== scope.world ||
             Number(cache.playerId || 0) !== Number(scope.playerId || 0) ||
+            !cache.villages &&
             !cache.troopsByVillage
         ) {
             return null;
@@ -231,13 +302,16 @@
         }
 
         const scope = getCacheScope();
-        const updatedAt = Date.now();
+        const serverNow = EAS.World.getServerDateTime();
 
         EAS.Storage.set(CACHE_KEY, {
             ...scope,
+            updatedAtServer: serverNow.available ? serverNow.timestamp : null,
+            updatedAtLocal: Date.now(),
             source,
-            updatedAt,
-            troopsByVillage: data
+            rowType: sourceInfo.rowType,
+            label: sourceInfo.label,
+            villages: data
         });
     };
 
@@ -262,7 +336,10 @@
         if (hasTroopData(gameDataTroops)) {
             setData(gameDataTroops, {
                 source: 'game_data',
-                updatedAt: Date.now()
+                rowType: 'home',
+                label: 'Dados globais',
+                updatedAtServer: EAS.World.getServerNowTimestamp(),
+                updatedAtLocal: Date.now()
             });
             saveCache('game_data', troopsByVillage);
             return troopsByVillage;
@@ -270,12 +347,15 @@
 
         const tableTroops = readFromTables();
 
-        if (hasTroopData(tableTroops)) {
-            const mergedTroops = mergeWithCache(tableTroops);
+        if (hasTroopData(tableTroops.villages)) {
+            const mergedTroops = mergeWithCache(tableTroops.villages);
 
             setData(mergedTroops, {
                 source: 'troop_overview',
-                updatedAt: Date.now()
+                rowType: tableTroops.rowType || 'unknown',
+                label: tableTroops.label || null,
+                updatedAtServer: EAS.World.getServerNowTimestamp(),
+                updatedAtLocal: Date.now()
             });
             saveCache('troop_overview', troopsByVillage);
             return troopsByVillage;
@@ -284,16 +364,22 @@
         const cache = readCache();
 
         if (cache) {
-            setData(cache.troopsByVillage, {
+            setData(cache.villages || cache.troopsByVillage, {
                 source: 'cache',
-                updatedAt: cache.updatedAt || null
+                rowType: cache.rowType || null,
+                label: cache.label || null,
+                updatedAtServer: cache.updatedAtServer || cache.updatedAt || null,
+                updatedAtLocal: cache.updatedAtLocal || null
             });
             return troopsByVillage;
         }
 
         setData({}, {
             source: 'none',
-            updatedAt: null
+            rowType: null,
+            label: null,
+            updatedAtServer: null,
+            updatedAtLocal: null
         });
         return troopsByVillage;
     };

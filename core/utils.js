@@ -51,6 +51,106 @@
         });
     };
 
+    EAS.Utils.parseBrazilianDate = (value) => {
+        const match = String(value ?? '').trim().match(
+            /^(\d{2})\/(\d{2})\/(\d{4})$/
+        );
+
+        if (!match) {
+            return null;
+        }
+
+        const day = Number(match[1]);
+        const month = Number(match[2]);
+        const year = Number(match[3]);
+        const timestamp = new Date(year, month - 1, day).getTime();
+        const date = new Date(timestamp);
+
+        if (
+            year < 1970 ||
+            date.getFullYear() !== year ||
+            date.getMonth() !== month - 1 ||
+            date.getDate() !== day
+        ) {
+            return null;
+        }
+
+        return {
+            day,
+            month,
+            year,
+            formatted: [
+                String(day).padStart(2, '0'),
+                String(month).padStart(2, '0'),
+                String(year)
+            ].join('/')
+        };
+    };
+
+    EAS.Utils.parseTime = (value) => {
+        const match = String(value ?? '').trim().match(
+            /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/
+        );
+
+        if (!match) {
+            return null;
+        }
+
+        const hours = Number(match[1]);
+        const minutes = Number(match[2]);
+        const seconds = Number(match[3]);
+        const milliseconds = Number(String(match[4] || '0').padEnd(3, '0'));
+
+        if (
+            hours > 23 ||
+            minutes > 59 ||
+            seconds > 59 ||
+            milliseconds > 999
+        ) {
+            return null;
+        }
+
+        return {
+            hours,
+            minutes,
+            seconds,
+            milliseconds,
+            formatted: [
+                String(hours).padStart(2, '0'),
+                String(minutes).padStart(2, '0'),
+                String(seconds).padStart(2, '0')
+            ].join(':')
+        };
+    };
+
+    EAS.Utils.createServerDateTime = (dateValue, timeValue) => {
+        const date = EAS.Utils.parseBrazilianDate(dateValue);
+        const time = EAS.Utils.parseTime(timeValue);
+
+        if (!date || !time) {
+            return null;
+        }
+
+        const timestamp = new Date(
+            date.year,
+            date.month - 1,
+            date.day,
+            time.hours,
+            time.minutes,
+            time.seconds,
+            time.milliseconds
+        ).getTime();
+
+        return {
+            ...date,
+            ...time,
+            date: date.formatted,
+            time: time.formatted,
+            timestamp,
+            formatted: `${date.formatted} ${time.formatted}`
+        };
+    };
+
     EAS.Utils.escapeHtml = (value) => {
         const element = document.createElement('div');
         element.textContent = String(value ?? '');

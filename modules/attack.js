@@ -45,56 +45,30 @@
     };
 
     const getServerTimestamp = () => {
-        const serverDateTime = EAS.World.getServerDateTime();
-
-        return Number(serverDateTime.timestamp || Date.now());
+        return EAS.World.getServerNowTimestamp();
     };
 
     const parseArrivalTimestamp = (dateValue, timeValue) => {
-        const dateMatch = String(dateValue).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-        const timeMatch = String(timeValue).match(/^(\d{2}):(\d{2}):(\d{2})$/);
+        const serverDateTime = EAS.Utils.createServerDateTime(
+            dateValue,
+            timeValue
+        );
 
-        if (!dateMatch || !timeMatch) {
-            return null;
+        return serverDateTime?.timestamp ?? null;
+    };
+
+    const formatTime = (timestamp) => {
+        if (!Number.isFinite(timestamp)) {
+            return '-';
         }
 
-        const year = Number(dateMatch[1]);
-        const month = Number(dateMatch[2]);
-        const day = Number(dateMatch[3]);
-        const hours = Number(timeMatch[1]);
-        const minutes = Number(timeMatch[2]);
-        const seconds = Number(timeMatch[3]);
-
-        if (
-            hours > 23 ||
-            minutes > 59 ||
-            seconds > 59
-        ) {
-            return null;
-        }
-
-        const timestamp = new Date(
-            year,
-            month - 1,
-            day,
-            hours,
-            minutes,
-            seconds
-        ).getTime();
         const date = new Date(timestamp);
 
-        if (
-            date.getFullYear() !== year ||
-            date.getMonth() !== month - 1 ||
-            date.getDate() !== day ||
-            date.getHours() !== hours ||
-            date.getMinutes() !== minutes ||
-            date.getSeconds() !== seconds
-        ) {
-            return null;
-        }
-
-        return timestamp;
+        return [
+            date.getHours(),
+            date.getMinutes(),
+            date.getSeconds()
+        ].map((value) => String(value).padStart(2, '0')).join(':');
     };
 
     const formatDuration = (durationMs) => {
@@ -158,11 +132,14 @@
             troop_overview: 'visualização de Tropas',
             cache: 'cache do EAS TW Hub'
         }[sourceInfo.source] || sourceInfo.source;
-        const updatedAt = sourceInfo.updatedAt
-            ? formatDateTime(sourceInfo.updatedAt)
+        const updatedAt = sourceInfo.updatedAtServer
+            ? formatTime(sourceInfo.updatedAtServer)
             : 'horário desconhecido';
+        const rowLabel = sourceInfo.rowType
+            ? `, linha: ${sourceInfo.label || sourceInfo.rowType}`
+            : '';
 
-        return `Dados de tropas: ${sourceLabel}, atualizados em ${updatedAt}.`;
+        return `Dados de tropas: ${sourceLabel}${rowLabel}, atualizados às ${updatedAt} do servidor.`;
     };
 
     const getPlaceUrl = (villageId) => {
@@ -201,11 +178,18 @@
         const speedFactor = getWorldSpeed() * getUnitSpeed();
         const now = getServerTimestamp();
         const summary = {
-            total: villages.length,
+            registered: villages.length,
+            withTroopData: 0,
             withUnit: 0,
+            canSend: 0,
+            displayed: 0,
             withoutUnit: 0,
-            unavailable: 0
+            unavailable: 0,
+            sameDestination: 0,
+            pastSend: 0,
+            invalidData: 0
         };
+        const exclusions = [];
 
         const rows = villages
             .reduce((result, village) => {
@@ -215,24 +199,31 @@
 
                 if (!hasTroopData) {
                     summary.unavailable += 1;
+                    exclusions.push({
+                        village,
+                        reason: 'sem dados de tropas'
+                    });
                     return result;
                 }
 
+                summary.withTroopData += 1;
+
                 if (available < 1) {
                     summary.withoutUnit += 1;
+                    exclusions.push({
+                        village,
+                        reason: 'sem a unidade selecionada'
+                    });
                     return result;
                 }
 
                 summary.withUnit += 1;
 
                 if (!parsedDestination) {
-                    result.push({
+                    summary.invalidData += 1;
+                    exclusions.push({
                         village,
-                        available,
-                        distance: null,
-                        durationMs: null,
-                        sendTimestamp: null,
-                        status: 'Coordenada inválida'
+                        reason: 'dados inválidos'
                     });
                     return result;
                 }
@@ -243,13 +234,10 @@
                 );
 
                 if (distance === 0) {
-                    result.push({
+                    summary.sameDestination += 1;
+                    exclusions.push({
                         village,
-                        available,
-                        distance,
-                        durationMs: 0,
-                        sendTimestamp: arrivalTimestamp,
-                        status: 'Destino igual à origem'
+                        reason: 'destino igual à origem'
                     });
                     return result;
                 }
@@ -259,16 +247,23 @@
                     speedFactor;
                 const sendTimestamp = arrivalTimestamp - durationMs;
 
+                if (sendTimestamp < now) {
+                    summary.pastSend += 1;
+                    exclusions.push({
+                        village,
+                        reason: 'horário de envio já passou'
+                    });
+                    return result;
+                }
+
+                summary.canSend += 1;
                 result.push({
                     village,
                     available,
                     distance,
                     durationMs,
                     sendTimestamp,
-                    status:
-                        sendTimestamp < now
-                            ? 'Horário já passou'
-                            : 'Pronto'
+                    status: 'Pronto'
                 });
 
                 return result;
@@ -285,9 +280,12 @@
                 return a.sendTimestamp - b.sendTimestamp;
             });
 
+        summary.displayed = rows.length;
+
         return {
             rows,
-            summary
+            summary,
+            exclusions
         };
     };
 
@@ -341,6 +339,106 @@
         });
     };
 
+    const renderExclusions = (container, exclusions) => {
+        container.innerHTML = '';
+
+        if (!exclusions.length) {
+            container.hidden = true;
+            return;
+        }
+
+        const details = document.createElement('details');
+        details.className = 'eas-details';
+
+        const summary = document.createElement('summary');
+        summary.textContent = 'Ver aldeias não incluídas';
+        details.appendChild(summary);
+
+        const table = EAS.UI.createTable({
+            columns: [
+                { key: 'village', label: 'Aldeia' },
+                { key: 'coordinate', label: 'Coordenada' },
+                { key: 'reason', label: 'Motivo' }
+            ],
+            rows: exclusions.map((item) => ({
+                village: item.village.name,
+                coordinate: item.village.coordinate,
+                reason: item.reason
+            }))
+        });
+
+        details.appendChild(table.element);
+        container.appendChild(details);
+        container.hidden = false;
+    };
+
+    const renderDiagnostics = (container, unitId) => {
+        const serverDateTime = EAS.World.getServerDateTime();
+        const villagesInfo = EAS.Villages.getSourceInfo?.() || {};
+        const troopsInfo = EAS.Troops.getSourceInfo();
+        const localNow = Date.now();
+        const difference = serverDateTime.available
+            ? serverDateTime.timestamp - localNow
+            : null;
+
+        container.innerHTML = '';
+
+        const details = document.createElement('details');
+        details.className = 'eas-details';
+
+        const summary = document.createElement('summary');
+        summary.textContent = 'Diagnóstico técnico';
+        details.appendChild(summary);
+
+        const grid = document.createElement('div');
+        grid.className = 'eas-diagnostic__grid';
+        grid.innerHTML = `
+            <div>
+                <strong>Horário do servidor</strong>
+                <span>${EAS.Utils.escapeHtml(serverDateTime.formatted || '-')}</span>
+            </div>
+            <div>
+                <strong>Fonte do horário</strong>
+                <span>${EAS.Utils.escapeHtml(serverDateTime.source || '-')}</span>
+            </div>
+            <div>
+                <strong>Horário local</strong>
+                <span>${EAS.Utils.escapeHtml(formatDateTime(localNow))}</span>
+            </div>
+            <div>
+                <strong>Diferença servidor/local</strong>
+                <span>${difference === null ? '-' : EAS.Utils.escapeHtml(formatDuration(Math.abs(difference)))}</span>
+            </div>
+            <div>
+                <strong>Aldeias carregadas</strong>
+                <span>${EAS.Utils.escapeHtml(villagesInfo.total ?? '-')}</span>
+            </div>
+            <div>
+                <strong>Fonte das aldeias</strong>
+                <span>${EAS.Utils.escapeHtml(villagesInfo.completeness || '-')}</span>
+            </div>
+            <div>
+                <strong>Fonte das tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.source || '-')}</span>
+            </div>
+            <div>
+                <strong>Atualização das tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.updatedAtServer ? `${formatTime(troopsInfo.updatedAtServer)} servidor` : '-')}</span>
+            </div>
+            <div>
+                <strong>Unidade interna</strong>
+                <span>${EAS.Utils.escapeHtml(unitId)}</span>
+            </div>
+            <div>
+                <strong>Linha de tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopsInfo.label || troopsInfo.rowType || '-')}</span>
+            </div>
+        `;
+
+        details.appendChild(grid);
+        container.appendChild(details);
+    };
+
     EAS.Modules.Attack.open = () => {
         const savedSettings = getSettings();
         const win = EAS.UI.createWindow({
@@ -360,15 +458,18 @@
         });
 
         const dateInput = EAS.UI.createInput({
-            type: 'date',
+            value: savedSettings.arrivalDate || '',
+            placeholder: 'DD/MM/AAAA',
             name: 'arrival-date'
         });
+        dateInput.maxLength = 10;
 
         const timeInput = EAS.UI.createInput({
-            type: 'time',
+            value: savedSettings.arrivalTime || '',
+            placeholder: 'HH:MM:SS',
             name: 'arrival-time'
         });
-        timeInput.step = '1';
+        timeInput.maxLength = 8;
 
         const unitSelect = createSelect(savedSettings.unit);
 
@@ -382,7 +483,8 @@
         form.appendChild(
             EAS.UI.createField({
                 label: 'Data de chegada',
-                input: dateInput
+                input: dateInput,
+                helpText: 'Use o formato DD/MM/AAAA.'
             })
         );
         form.appendChild(
@@ -410,6 +512,15 @@
         emptyState.className = 'eas-status eas-status--info';
         emptyState.textContent = 'Informe os dados de chegada e calcule os envios.';
 
+        const exclusionsContainer = document.createElement('div');
+        exclusionsContainer.hidden = true;
+
+        const diagnosticsContainer = document.createElement('div');
+        renderDiagnostics(diagnosticsContainer, unitSelect.value);
+        unitSelect.addEventListener('change', () => {
+            renderDiagnostics(diagnosticsContainer, unitSelect.value);
+        });
+
         const table = EAS.UI.createTable({
             columns: [
                 { key: 'village', label: 'Aldeia' },
@@ -430,10 +541,27 @@
             icon: '🧮',
             onClick: () => {
                 const destination = coordinateInput.value.trim();
+                const serverDateTime = EAS.World.getServerDateTime();
                 const arrivalTimestamp = parseArrivalTimestamp(
                     dateInput.value,
                     timeInput.value
                 );
+
+                renderDiagnostics(diagnosticsContainer, unitSelect.value);
+
+                if (!serverDateTime.available) {
+                    EAS.UI.showStatus({
+                        target: status,
+                        message: 'Não foi possível identificar o horário do servidor do Tribal Wars.',
+                        type: 'error'
+                    });
+                    table.setRows([]);
+                    table.element.hidden = true;
+                    emptyState.hidden = false;
+                    emptyState.textContent = 'Abra uma tela do jogo que contenha #serverDate e #serverTime e tente novamente.';
+                    renderExclusions(exclusionsContainer, []);
+                    return;
+                }
 
                 if (arrivalTimestamp === null) {
                     EAS.UI.showStatus({
@@ -445,11 +573,14 @@
                     table.element.hidden = true;
                     emptyState.hidden = false;
                     emptyState.textContent = 'Corrija data e horário para calcular.';
+                    renderExclusions(exclusionsContainer, []);
                     return;
                 }
 
                 saveSettings({
                     destination,
+                    arrivalDate: dateInput.value.trim(),
+                    arrivalTime: timeInput.value.trim(),
                     unit: unitSelect.value
                 });
 
@@ -460,20 +591,23 @@
                     arrivalTimestamp,
                     unitId: unitSelect.value
                 });
-                const { rows, summary } = calculation;
+                const { rows, summary, exclusions } = calculation;
                 const unit = getUnitById(unitSelect.value);
                 const sourceInfo = EAS.Troops.getSourceInfo();
 
                 renderRows(table.tbody, rows);
+                renderExclusions(exclusionsContainer, exclusions);
+                renderDiagnostics(diagnosticsContainer, unitSelect.value);
                 table.element.hidden = rows.length === 0;
 
                 EAS.UI.showStatus({
                     target: status,
                     message: `${[
-                        pluralize(summary.total, 'aldeia encontrada', 'aldeias encontradas'),
-                        `${summary.withUnit} com ${unit.name} disponível`,
-                        `${summary.withoutUnit} sem a unidade selecionada`,
-                        `${summary.unavailable} sem dados de tropas`
+                        pluralize(summary.registered, 'aldeia cadastrada', 'aldeias cadastradas'),
+                        pluralize(summary.withTroopData, 'aldeia com dados de tropas', 'aldeias com dados de tropas'),
+                        pluralize(summary.withUnit, `aldeia com ${unit.name} disponível`, `aldeias com ${unit.name} disponível`),
+                        pluralize(summary.canSend, 'aldeia consegue chegar no horário', 'aldeias conseguem chegar no horário'),
+                        pluralize(summary.displayed, 'aldeia exibida', 'aldeias exibidas')
                     ].join(', ')}. ${formatTroopSourceInfo(sourceInfo)}`,
                     type: rows.length > 0 && EAS.Utils.isValidCoordinate(destination)
                         ? 'success'
@@ -502,6 +636,7 @@
                 table.setRows([]);
                 table.element.hidden = true;
                 emptyState.hidden = false;
+                renderExclusions(exclusionsContainer, []);
                 EAS.Storage?.remove?.(STORAGE_KEY);
                 EAS.UI.showStatus({
                     target: status,
@@ -531,5 +666,7 @@
         win.body.appendChild(status);
         win.body.appendChild(emptyState);
         win.body.appendChild(table.element);
+        win.body.appendChild(exclusionsContainer);
+        win.body.appendChild(diagnosticsContainer);
     };
 })();

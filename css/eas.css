@@ -200,6 +200,16 @@
     background: #e6c67e;
 }
 
+.eas-details {
+    margin-top: 14px;
+}
+
+.eas-details > summary {
+    cursor: pointer;
+    color: #4f2f09;
+    font-weight: 700;
+}
+
 .eas-attack-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }

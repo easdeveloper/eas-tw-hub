@@ -3,6 +3,29 @@
 
     EAS.Villages = EAS.Villages || {};
 
+    const CACHE_KEY = 'villages.list';
+    let sourceInfo = {
+        total: 0,
+        completeness: 'empty',
+        sources: {
+            gameData: 0,
+            villageSwitcher: 0,
+            overview: 0,
+            cache: 0,
+            current: 0
+        },
+        updatedAt: null
+    };
+
+    const getCacheScope = () => {
+        const info = EAS.World.getInfo();
+
+        return {
+            world: info.world || location.hostname,
+            playerId: info.player?.id || 0
+        };
+    };
+
     const extractVillageId = (href) => {
         try {
             const url = new URL(href, location.origin);
@@ -44,7 +67,11 @@
     };
 
     const readFromGameData = () => {
-        const source = window.game_data?.player?.villages;
+        const data = EAS.World.getGameData();
+        const source =
+            data.player?.villages ||
+            data.villages ||
+            data.player_villages;
 
         if (!source) {
             return [];
@@ -91,14 +118,55 @@
         return villages;
     };
 
-    const readFromLinks = () => {
+    const readFromVillageSwitcher = () => {
         const selectors = [
-            'a[href*="village="]',
+            '#village_switch_select option',
+            '#village_switch_select a[href*="village="]',
+            '#village_switcher a[href*="village="]',
+            '.village_switcher a[href*="village="]',
             '.village_switch_link',
             '#village_switch_right a',
-            '#village_switch_left a',
+            '#village_switch_left a'
+        ];
+        const elements = document.querySelectorAll(selectors.join(','));
+        const villages = [];
+
+        elements.forEach((element) => {
+            const text = element.textContent?.trim() || '';
+            const title = element.getAttribute('title') || '';
+            const value = element.value || '';
+            const href = element.href || value || '';
+            const coordinate =
+                EAS.Utils.parseCoordinate(text)?.coordinate ||
+                EAS.Utils.parseCoordinate(title)?.coordinate ||
+                EAS.Utils.parseCoordinate(value)?.coordinate;
+
+            if (!coordinate) {
+                return;
+            }
+
+            const village = createVillage({
+                id: Number(element.value || 0) || extractVillageId(href),
+                name: text || title,
+                coordinate,
+                href
+            });
+
+            if (village) {
+                villages.push(village);
+            }
+        });
+
+        return villages;
+    };
+
+    const readFromOverview = () => {
+        const selectors = [
             '#production_table a[href*="village="]',
-            '#overview_villages a[href*="village="]'
+            '#overview_villages a[href*="village="]',
+            '#combined_table a[href*="village="]',
+            '#units_table a[href*="village="]',
+            'table.vis a[href*="village="]'
         ];
 
         const links = document.querySelectorAll(
@@ -133,6 +201,82 @@
         return villages;
     };
 
+    const dedupeVillages = (villages) => {
+        const byId = new Map();
+        const byCoordinate = new Map();
+
+        villages
+            .filter((village) => village.coordinate)
+            .forEach((village) => {
+                if (village.id) {
+                    byId.set(village.id, {
+                        ...byId.get(village.id),
+                        ...village
+                    });
+                    return;
+                }
+
+                if (!byCoordinate.has(village.coordinate)) {
+                    byCoordinate.set(village.coordinate, village);
+                }
+            });
+
+        byId.forEach((village) => {
+            byCoordinate.delete(village.coordinate);
+        });
+
+        return [
+            ...byId.values(),
+            ...byCoordinate.values()
+        ];
+    };
+
+    const readCache = () => {
+        if (!EAS.Storage?.get) {
+            return [];
+        }
+
+        const cache = EAS.Storage.get(CACHE_KEY, null);
+        const scope = getCacheScope();
+
+        if (
+            !cache ||
+            cache.world !== scope.world ||
+            Number(cache.playerId || 0) !== Number(scope.playerId || 0) ||
+            !Array.isArray(cache.villages)
+        ) {
+            return [];
+        }
+
+        return cache.villages
+            .map(createVillage)
+            .filter(Boolean);
+    };
+
+    const saveCache = (villages) => {
+        if (!EAS.Storage?.set || villages.length <= 1) {
+            return;
+        }
+
+        const cache = readCache();
+
+        if (cache.length > villages.length) {
+            return;
+        }
+
+        EAS.Storage.set(CACHE_KEY, {
+            ...getCacheScope(),
+            updatedAt: Date.now(),
+            villages: villages.map((village) => ({
+                id: village.id,
+                name: village.name,
+                x: village.x,
+                y: village.y,
+                coordinate: village.coordinate
+            }))
+        });
+    };
+
     const includeCurrentVillage = (villages) => {
         const current = EAS.World.getCurrentVillage();
 
@@ -154,17 +298,23 @@
     };
 
     EAS.Villages.list = () => {
+        const gameData = readFromGameData();
+        const villageSwitcher = readFromVillageSwitcher();
+        const overview = readFromOverview();
+        const cache = readCache();
         let villages = [
-            ...readFromGameData(),
-            ...readFromLinks()
+            ...gameData,
+            ...villageSwitcher,
+            ...overview
         ];
 
         villages = includeCurrentVillage(villages);
+        const liveVillages = dedupeVillages(villages);
+        const isPartial = cache.length > liveVillages.length;
 
-        villages = EAS.Utils.uniqueBy(
-            villages.filter((village) => village.coordinate),
-            'coordinate'
-        );
+        villages = isPartial
+            ? dedupeVillages([...cache, ...liveVillages])
+            : liveVillages;
 
         villages.sort((a, b) => {
             if (a.id === EAS.World.getCurrentVillage().id) {
@@ -178,7 +328,31 @@
             return a.name.localeCompare(b.name, 'pt-BR');
         });
 
+        saveCache(villages);
+
+        sourceInfo = {
+            total: villages.length,
+            completeness: isPartial
+                ? 'cache_with_partial'
+                : villages.length > 1
+                    ? 'complete_or_overview'
+                    : 'current_only',
+            sources: {
+                gameData: gameData.length,
+                villageSwitcher: villageSwitcher.length,
+                overview: overview.length,
+                cache: cache.length,
+                current: EAS.World.getCurrentVillage().coordinate ? 1 : 0
+            },
+            updatedAt: Date.now()
+        };
+
         return villages;
+    };
+
+    EAS.Villages.getSourceInfo = () => {
+        EAS.Villages.list();
+        return { ...sourceInfo };
     };
 
     EAS.Villages.current = () => {

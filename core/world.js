@@ -9,6 +9,23 @@
         return document.querySelector(selector)?.textContent?.trim() || '';
     };
 
+    const findServerDateTimeText = () => {
+        const bodyText = document.body?.textContent || '';
+        const match = bodyText.match(
+            /Hora do servidor:\s*(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(\d{2}\/\d{2}\/\d{4})/i
+        );
+
+        if (!match) {
+            return null;
+        }
+
+        return {
+            time: match[1],
+            date: match[2],
+            source: 'server_text'
+        };
+    };
+
     EAS.World.getGameData = () => {
         return getGameData();
     };
@@ -63,53 +80,37 @@
         const timeText =
             getText('#serverTime') ||
             getText('[data-endtime] #serverTime');
+        const textFallback = findServerDateTimeText();
+        const date = dateText || textFallback?.date || '';
+        const time = timeText || textFallback?.time || '';
+        const parsed = EAS.Utils.createServerDateTime(date, time);
 
-        const dateMatch = dateText.match(
-            /(\d{1,2})\/(\d{1,2})\/(\d{4})/
-        );
-
-        const timeMatch = timeText.match(
-            /(\d{1,2}):(\d{2}):(\d{2})/
-        );
-
-        if (!dateMatch || !timeMatch) {
+        if (!parsed) {
             return {
-                date: dateText || null,
-                time: timeText || null,
+                available: false,
+                date: date || null,
+                time: time || null,
                 timestamp: null,
-                formatted: `${dateText} ${timeText}`.trim()
+                formatted: `${date} ${time}`.trim(),
+                source: 'unavailable'
             };
         }
 
-        const day = Number(dateMatch[1]);
-        const month = Number(dateMatch[2]);
-        const year = Number(dateMatch[3]);
-
-        const hours = Number(timeMatch[1]);
-        const minutes = Number(timeMatch[2]);
-        const seconds = Number(timeMatch[3]);
-
-        const timestamp = new Date(
-            year,
-            month - 1,
-            day,
-            hours,
-            minutes,
-            seconds
-        ).getTime();
-
         return {
-            date: dateText,
-            time: timeText,
-            day,
-            month,
-            year,
-            hours,
-            minutes,
-            seconds,
-            timestamp,
-            formatted: `${dateText} ${timeText}`
+            available: true,
+            ...parsed,
+            source: dateText && timeText
+                ? 'server_elements'
+                : textFallback?.source || 'server_elements'
         };
+    };
+
+    EAS.World.getServerNowTimestamp = () => {
+        const serverDateTime = EAS.World.getServerDateTime();
+
+        return serverDateTime.available
+            ? serverDateTime.timestamp
+            : null;
     };
 
     EAS.World.getScreen = () => {
