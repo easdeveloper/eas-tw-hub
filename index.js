@@ -3,13 +3,30 @@
 
     const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
+    const loadedScripts = new Set();
+
     const loadScript = (src) => new Promise((resolve, reject) => {
+        const existing = document.querySelector(`script[data-eas-script="${src}"]`);
+
+        if (loadedScripts.has(src) || existing) {
+            resolve();
+            return;
+        }
+
         const script = document.createElement('script');
         script.src = `${BASE_URL}/${src}?v=${Date.now()}`;
-        script.onload = resolve;
+        script.dataset.easScript = src;
+        script.onload = () => {
+            loadedScripts.add(src);
+            resolve();
+        };
         script.onerror = () => reject(new Error(`Falha ao carregar: ${src}`));
         document.head.appendChild(script);
     });
+
+    window.EASLoader = {
+        loadScript
+    };
 
     const loadStyle = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`link[data-eas-style="${src}"]`);

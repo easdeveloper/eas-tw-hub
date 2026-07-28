@@ -200,6 +200,23 @@
     background: #e6c67e;
 }
 
+.eas-attack-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.eas-attack-row--pronto td {
+    background: #f7ffe9;
+}
+
+.eas-attack-row--horario-ja-passou td {
+    background: #f8deda;
+}
+
+.eas-attack-row--coordenada-invalida td,
+.eas-attack-row--destino-igual-a-origem td {
+    background: #fff3ce;
+}
+
 .eas-diagnostic {
     margin-bottom: 14px;
 }
@@ -230,6 +247,10 @@
 
 @media (max-width: 600px) {
     .eas-diagnostic__grid {
+        grid-template-columns: 1fr;
+    }
+
+    .eas-attack-form {
         grid-template-columns: 1fr;
     }
 

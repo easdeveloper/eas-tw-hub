@@ -251,6 +251,37 @@
         container.className = `eas-status eas-status--${type}`;
     };
 
+    EAS.UI.loadModule = async (moduleId) => {
+        const moduleNames = {
+            attack: 'Attack',
+            support: 'Support',
+            antisnipe: 'Antisnipe',
+            noble: 'Noble',
+            resources: 'Resources'
+        };
+        const moduleName = moduleNames[moduleId];
+
+        if (!moduleName) {
+            throw new Error(`Módulo desconhecido: ${moduleId}`);
+        }
+
+        if (EAS.Modules?.[moduleName]?.open) {
+            return EAS.Modules[moduleName];
+        }
+
+        if (!window.EASLoader?.loadScript) {
+            throw new Error('Carregador de módulos indisponível.');
+        }
+
+        await window.EASLoader.loadScript(`modules/${moduleId}.js`);
+
+        if (!EAS.Modules?.[moduleName]?.open) {
+            throw new Error(`Módulo não registrado: ${moduleId}`);
+        }
+
+        return EAS.Modules[moduleName];
+    };
+
     EAS.UI.openMainWindow = () => {
         const existing = document.getElementById(DEFAULT_WINDOW_ID);
 
@@ -330,6 +361,19 @@
     EAS.UI.openModuleTest = (module) => {
         if (module.id === 'diagnostic') {
             EAS.UI.openDiagnostic();
+            return;
+        }
+
+        if (module.id === 'attack') {
+            EAS.UI.loadModule('attack')
+                .then((attackModule) => {
+                    EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
+                    attackModule.open();
+                })
+                .catch((error) => {
+                    alert(`EAS TW Hub: ${error.message}`);
+                });
+
             return;
         }
 
