@@ -144,6 +144,27 @@
         return UNIT_SPEEDS.find((unit) => unit.id === unitId) || UNIT_SPEEDS[0];
     };
 
+    const pluralize = (count, singular, plural) => {
+        return `${count} ${count === 1 ? singular : plural}`;
+    };
+
+    const formatTroopSourceInfo = (sourceInfo) => {
+        if (!sourceInfo.available) {
+            return 'Dados de tropas indisponíveis nesta tela.';
+        }
+
+        const sourceLabel = {
+            game_data: 'dados globais da página',
+            troop_overview: 'visualização de Tropas',
+            cache: 'cache do EAS TW Hub'
+        }[sourceInfo.source] || sourceInfo.source;
+        const updatedAt = sourceInfo.updatedAt
+            ? formatDateTime(sourceInfo.updatedAt)
+            : 'horário desconhecido';
+
+        return `Dados de tropas: ${sourceLabel}, atualizados em ${updatedAt}.`;
+    };
+
     const getPlaceUrl = (villageId) => {
         const url = new URL('game.php', location.origin);
         url.searchParams.set('village', villageId);
@@ -179,17 +200,41 @@
         const unit = getUnitById(unitId);
         const speedFactor = getWorldSpeed() * getUnitSpeed();
         const now = getServerTimestamp();
+        const summary = {
+            total: villages.length,
+            withUnit: 0,
+            withoutUnit: 0,
+            unavailable: 0
+        };
 
-        return villages
-            .map((village) => {
+        const rows = villages
+            .reduce((result, village) => {
+                const hasTroopData = EAS.Troops.hasVillageData(village.id);
+                const availableTroops = EAS.Troops.getVillageTroops(village.id);
+                const available = availableTroops[unitId] || 0;
+
+                if (!hasTroopData) {
+                    summary.unavailable += 1;
+                    return result;
+                }
+
+                if (available < 1) {
+                    summary.withoutUnit += 1;
+                    return result;
+                }
+
+                summary.withUnit += 1;
+
                 if (!parsedDestination) {
-                    return {
+                    result.push({
                         village,
+                        available,
                         distance: null,
                         durationMs: null,
                         sendTimestamp: null,
                         status: 'Coordenada inválida'
-                    };
+                    });
+                    return result;
                 }
 
                 const distance = EAS.Utils.distance(
@@ -198,13 +243,15 @@
                 );
 
                 if (distance === 0) {
-                    return {
+                    result.push({
                         village,
+                        available,
                         distance,
                         durationMs: 0,
                         sendTimestamp: arrivalTimestamp,
                         status: 'Destino igual à origem'
-                    };
+                    });
+                    return result;
                 }
 
                 const durationMs =
@@ -212,8 +259,9 @@
                     speedFactor;
                 const sendTimestamp = arrivalTimestamp - durationMs;
 
-                return {
+                result.push({
                     village,
+                    available,
                     distance,
                     durationMs,
                     sendTimestamp,
@@ -221,8 +269,10 @@
                         sendTimestamp < now
                             ? 'Horário já passou'
                             : 'Pronto'
-                };
-            })
+                });
+
+                return result;
+            }, [])
             .sort((a, b) => {
                 if (a.sendTimestamp === null) {
                     return 1;
@@ -234,6 +284,11 @@
 
                 return a.sendTimestamp - b.sendTimestamp;
             });
+
+        return {
+            rows,
+            summary
+        };
     };
 
     const renderRows = (tbody, rows) => {
@@ -251,6 +306,7 @@
             const values = [
                 EAS.Utils.escapeHtml(village.name),
                 EAS.Utils.escapeHtml(village.coordinate),
+                EAS.Utils.escapeHtml(row.available),
                 row.distance === null
                     ? '-'
                     : EAS.Utils.formatNumber(row.distance, 2, 2),
@@ -348,12 +404,17 @@
 
         const status = document.createElement('div');
         status.className = 'eas-status eas-status--info';
-        status.textContent = 'Informe os dados de chegada e calcule os envios.';
+        status.textContent = formatTroopSourceInfo(EAS.Troops.getSourceInfo());
+
+        const emptyState = document.createElement('div');
+        emptyState.className = 'eas-status eas-status--info';
+        emptyState.textContent = 'Informe os dados de chegada e calcule os envios.';
 
         const table = EAS.UI.createTable({
             columns: [
                 { key: 'village', label: 'Aldeia' },
                 { key: 'coordinate', label: 'Coordenada' },
+                { key: 'available', label: 'Disponível' },
                 { key: 'distance', label: 'Distância' },
                 { key: 'duration', label: 'Duração' },
                 { key: 'sendAt', label: 'Horário de envio' },
@@ -362,6 +423,7 @@
             ],
             rows: []
         });
+        table.element.hidden = true;
 
         const calculateButton = EAS.UI.createButton({
             text: 'Calcular',
@@ -380,6 +442,9 @@
                         type: 'error'
                     });
                     table.setRows([]);
+                    table.element.hidden = true;
+                    emptyState.hidden = false;
+                    emptyState.textContent = 'Corrija data e horário para calcular.';
                     return;
                 }
 
@@ -388,21 +453,42 @@
                     unit: unitSelect.value
                 });
 
-                const rows = calculateRows({
+                EAS.Troops.refresh();
+
+                const calculation = calculateRows({
                     destination,
                     arrivalTimestamp,
                     unitId: unitSelect.value
                 });
+                const { rows, summary } = calculation;
+                const unit = getUnitById(unitSelect.value);
+                const sourceInfo = EAS.Troops.getSourceInfo();
 
                 renderRows(table.tbody, rows);
+                table.element.hidden = rows.length === 0;
 
                 EAS.UI.showStatus({
                     target: status,
-                    message: `${rows.length} aldeias avaliadas com base no horário do servidor.`,
-                    type: EAS.Utils.isValidCoordinate(destination)
+                    message: `${[
+                        pluralize(summary.total, 'aldeia encontrada', 'aldeias encontradas'),
+                        `${summary.withUnit} com ${unit.name} disponível`,
+                        `${summary.withoutUnit} sem a unidade selecionada`,
+                        `${summary.unavailable} sem dados de tropas`
+                    ].join(', ')}. ${formatTroopSourceInfo(sourceInfo)}`,
+                    type: rows.length > 0 && EAS.Utils.isValidCoordinate(destination)
                         ? 'success'
                         : 'error'
                 });
+
+                if (rows.length === 0) {
+                    emptyState.hidden = false;
+                    emptyState.textContent = sourceInfo.available
+                        ? `Nenhuma aldeia possui ${unit.name} disponível.`
+                        : 'Os dados de tropas desta aldeia não estão disponíveis nesta tela. Abra a visualização de Tropas para atualizar a leitura.';
+                } else {
+                    emptyState.hidden = true;
+                    emptyState.textContent = '';
+                }
             }
         });
 
@@ -414,12 +500,15 @@
                 coordinateInput.value = '';
                 unitSelect.value = UNIT_SPEEDS[0].id;
                 table.setRows([]);
+                table.element.hidden = true;
+                emptyState.hidden = false;
                 EAS.Storage?.remove?.(STORAGE_KEY);
                 EAS.UI.showStatus({
                     target: status,
                     message: 'Campos limpos.',
                     type: 'info'
                 });
+                emptyState.textContent = 'Informe os dados de chegada e calcule os envios.';
             }
         });
 
@@ -440,6 +529,7 @@
         win.body.appendChild(form);
         win.body.appendChild(actions);
         win.body.appendChild(status);
+        win.body.appendChild(emptyState);
         win.body.appendChild(table.element);
     };
 })();
