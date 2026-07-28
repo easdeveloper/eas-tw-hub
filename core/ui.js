@@ -274,6 +274,11 @@
 
         const modules = [
             {
+                id: 'diagnostic',
+                icon: '🔍',
+                text: 'Diagnóstico do jogo'
+            },
+            {
                 id: 'attack',
                 icon: '⚔️',
                 text: 'Planejador de Ataques'
@@ -323,6 +328,11 @@
     };
 
     EAS.UI.openModuleTest = (module) => {
+        if (module.id === 'diagnostic') {
+            EAS.UI.openDiagnostic();
+            return;
+        }
+
         const win = EAS.UI.createWindow({
             id: `eas-module-${module.id}`,
             title: module.text,
@@ -417,6 +427,97 @@
         win.body.appendChild(form);
         win.body.appendChild(actions);
         win.body.appendChild(status);
+    };
+
+    EAS.UI.openDiagnostic = () => {
+        EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
+
+        const info = EAS.World.getInfo();
+        const villages = EAS.Villages.list();
+        const player = info.player || {};
+        const currentVillage = info.currentVillage || {};
+        const serverDateTime = info.serverDateTime || {};
+        const escape = EAS.Utils.escapeHtml;
+
+        const win = EAS.UI.createWindow({
+            id: 'eas-module-diagnostic',
+            title: 'Diagnóstico do jogo',
+            icon: '🔍',
+            width: 760
+        });
+
+        const summary = document.createElement('div');
+        summary.className = 'eas-diagnostic';
+        summary.innerHTML = `
+            <div class="eas-diagnostic__grid">
+                <div>
+                    <strong>Mundo</strong>
+                    <span>${escape(info.world)}</span>
+                </div>
+                <div>
+                    <strong>Jogador</strong>
+                    <span>${escape(player.name)}</span>
+                </div>
+                <div>
+                    <strong>Aldeia atual</strong>
+                    <span>${escape(currentVillage.name)}</span>
+                </div>
+                <div>
+                    <strong>Coordenada atual</strong>
+                    <span>${escape(currentVillage.coordinate)}</span>
+                </div>
+                <div>
+                    <strong>Horário do servidor</strong>
+                    <span>${escape(serverDateTime.formatted)}</span>
+                </div>
+                <div>
+                    <strong>Aldeias encontradas</strong>
+                    <span>${villages.length}</span>
+                </div>
+            </div>
+        `;
+
+        const table = EAS.UI.createTable({
+            columns: [
+                { key: 'name', label: 'Aldeia' },
+                { key: 'coordinate', label: 'Coordenada' },
+                { key: 'id', label: 'ID' }
+            ],
+            rows: villages.map((village) => ({
+                name: escape(village.name),
+                coordinate: escape(village.coordinate),
+                id: escape(village.id)
+            }))
+        });
+
+        const actions = document.createElement('div');
+        actions.className = 'eas-actions';
+
+        const refreshButton = EAS.UI.createButton({
+            text: 'Atualizar leitura',
+            icon: '🔄',
+            onClick: () => {
+                win.close();
+                EAS.UI.openDiagnostic();
+            }
+        });
+
+        const backButton = EAS.UI.createButton({
+            text: 'Voltar ao menu',
+            icon: '↩️',
+            className: 'eas-button--secondary',
+            onClick: () => {
+                win.close();
+                EAS.UI.openMainWindow();
+            }
+        });
+
+        actions.appendChild(refreshButton);
+        actions.appendChild(backButton);
+
+        win.body.appendChild(summary);
+        win.body.appendChild(table.element);
+        win.body.appendChild(actions);
     };
 
     EAS.UI.toggle = EAS.UI.openMainWindow;

@@ -199,3 +199,41 @@
 .eas-table th {
     background: #e6c67e;
 }
+
+.eas-diagnostic {
+    margin-bottom: 14px;
+}
+
+.eas-diagnostic__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.eas-diagnostic__grid > div {
+    display: grid;
+    gap: 4px;
+    padding: 9px;
+    border: 1px solid #c7a15e;
+    background: #fff3ce;
+}
+
+.eas-diagnostic__grid strong {
+    color: #76501d;
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.eas-diagnostic__grid span {
+    font-weight: 700;
+}
+
+@media (max-width: 600px) {
+    .eas-diagnostic__grid {
+        grid-template-columns: 1fr;
+    }
+
+    .eas-actions {
+        flex-direction: column;
+    }
+}
