@@ -124,6 +124,10 @@
 
     const formatTroopSourceInfo = (sourceInfo) => {
         if (!sourceInfo.available) {
+            if (sourceInfo.rows?.length) {
+                return 'Não foi possível identificar a linha de tropas disponíveis.';
+            }
+
             return 'Dados de tropas indisponíveis nesta tela.';
         }
 
@@ -380,6 +384,9 @@
         const difference = serverDateTime.available
             ? serverDateTime.timestamp - localNow
             : null;
+        const villageSources = villagesInfo.sources || {};
+        const troopRows = troopsInfo.rows || [];
+        const troopUnits = Object.keys(troopsInfo.unitColumns || {});
 
         container.innerHTML = '';
 
@@ -415,7 +422,21 @@
             </div>
             <div>
                 <strong>Fonte das aldeias</strong>
+                <span>${EAS.Utils.escapeHtml(villagesInfo.selectedSource || '-')}</span>
+            </div>
+            <div>
+                <strong>Completude aldeias</strong>
                 <span>${EAS.Utils.escapeHtml(villagesInfo.completeness || '-')}</span>
+            </div>
+            <div>
+                <strong>Contagem por fonte</strong>
+                <span>${EAS.Utils.escapeHtml([
+                    `gameData=${villageSources.gameData || 0}`,
+                    `switcher=${villageSources.villageSwitcher || 0}`,
+                    `overview=${villageSources.overview || 0}`,
+                    `cache=${villageSources.cache || 0}`,
+                    `current=${villageSources.currentVillage || 0}`
+                ].join(', '))}</span>
             </div>
             <div>
                 <strong>Fonte das tropas</strong>
@@ -433,9 +454,51 @@
                 <strong>Linha de tropas</strong>
                 <span>${EAS.Utils.escapeHtml(troopsInfo.label || troopsInfo.rowType || '-')}</span>
             </div>
+            <div>
+                <strong>Linhas de tropas</strong>
+                <span>${EAS.Utils.escapeHtml(troopRows.length)}</span>
+            </div>
+            <div>
+                <strong>Tipos das linhas</strong>
+                <span>${EAS.Utils.escapeHtml(troopRows.map((row) => row.type).join(', ') || '-')}</span>
+            </div>
+            <div>
+                <strong>Colunas de unidades</strong>
+                <span>${EAS.Utils.escapeHtml(troopUnits.length)}</span>
+            </div>
+            <div>
+                <strong>Chaves detectadas</strong>
+                <span>${EAS.Utils.escapeHtml(troopUnits.join(', ') || '-')}</span>
+            </div>
         `;
 
         details.appendChild(grid);
+
+        if (troopRows.length) {
+            const rowsDetails = document.createElement('details');
+            rowsDetails.className = 'eas-details';
+
+            const rowsSummary = document.createElement('summary');
+            rowsSummary.textContent = 'Linhas de tropas detectadas';
+            rowsDetails.appendChild(rowsSummary);
+
+            const rowsTable = EAS.UI.createTable({
+                columns: [
+                    { key: 'line', label: 'Linha' },
+                    { key: 'text', label: 'Texto resumido' },
+                    { key: 'type', label: 'Tipo detectado' }
+                ],
+                rows: troopRows.map((row) => ({
+                    line: row.index,
+                    text: row.text,
+                    type: row.type
+                }))
+            });
+
+            rowsDetails.appendChild(rowsTable.element);
+            details.appendChild(rowsDetails);
+        }
+
         container.appendChild(details);
     };
 

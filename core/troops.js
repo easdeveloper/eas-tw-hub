@@ -26,7 +26,9 @@
         rowType: null,
         label: null,
         updatedAtServer: null,
-        updatedAtLocal: null
+        updatedAtLocal: null,
+        rows: [],
+        unitColumns: {}
     };
     let hasAttemptedRefresh = false;
 
@@ -81,18 +83,31 @@
         }
     };
 
-    const classifyTroopRow = (row) => {
-        const text = row.textContent?.trim().toLowerCase() || '';
-        const technicalText = [
-            row.dataset?.type,
-            row.dataset?.row,
-            row.className,
-            row.id
+    const getTechnicalText = (element) => {
+        return [
+            element.dataset?.type,
+            element.dataset?.row,
+            element.dataset?.group,
+            element.dataset?.mode,
+            element.getAttribute?.('data-row-type'),
+            element.getAttribute?.('data-troop-type'),
+            element.className,
+            element.id,
+            element.getAttribute?.('href')
         ].join(' ').toLowerCase();
+    };
+
+    EAS.Troops.detectRowType = (row, context = {}) => {
+        const text = row.textContent?.trim().toLowerCase() || '';
+        const technicalText = getTechnicalText(row);
+        const firstCellText = row.children[0]?.textContent?.trim().toLowerCase() || '';
+        const rowIndex = Number(context.rowIndex || 0);
 
         if (
-            technicalText.includes('home') ||
-            technicalText.includes('own') ||
+            /(^|[^a-z])(home|available|own|in_village)([^a-z]|$)/.test(technicalText) ||
+            firstCellText.includes('na aldeia') ||
+            firstCellText.includes('em casa') ||
+            firstCellText.includes('dispon') ||
             text.includes('na aldeia') ||
             text.includes('in village') ||
             text.includes('available')
@@ -104,16 +119,58 @@
         }
 
         if (
+            /(^|[^a-z])(total|all)([^a-z]|$)/.test(technicalText) ||
+            firstCellText.includes('total') ||
             text.includes('total') ||
-            text.includes('em movimento') ||
-            text.includes('fora') ||
-            text.includes('apoio') ||
-            text.includes('próprias') ||
-            text.includes('proprias')
+            text.includes('todos')
         ) {
             return {
-                rowType: 'ignored',
+                rowType: 'total',
                 label: row.textContent?.trim() || ''
+            };
+        }
+
+        if (
+            /(^|[^a-z])(moving|command|commands)([^a-z]|$)/.test(technicalText) ||
+            firstCellText.includes('em movimento') ||
+            text.includes('em movimento') ||
+            text.includes('comandos')
+        ) {
+            return {
+                rowType: 'moving',
+                label: row.textContent?.trim() || ''
+            };
+        }
+
+        if (
+            /(^|[^a-z])(away|out|outside)([^a-z]|$)/.test(technicalText) ||
+            firstCellText.includes('fora') ||
+            text.includes('fora') ||
+            text.includes('próprias fora') ||
+            text.includes('proprias fora')
+        ) {
+            return {
+                rowType: 'away',
+                label: row.textContent?.trim() || ''
+            };
+        }
+
+        if (
+            /(^|[^a-z])(support|supporting)([^a-z]|$)/.test(technicalText) ||
+            firstCellText.includes('apoio') ||
+            text.includes('apoio') ||
+            text.includes('apoiando')
+        ) {
+            return {
+                rowType: 'support',
+                label: row.textContent?.trim() || ''
+            };
+        }
+
+        if (context.hasUnitColumns && rowIndex === 1) {
+            return {
+                rowType: 'home',
+                label: 'Na aldeia'
             };
         }
 
@@ -200,24 +257,44 @@
         const result = {
             villages: {},
             rowType: null,
-            label: null
+            label: null,
+            rows: [],
+            unitColumns: {}
         };
         const tables = Array.from(document.querySelectorAll('table'));
 
         tables.forEach((table) => {
             const unitColumns = detectUnitColumns(table);
             const units = Object.keys(unitColumns);
+            result.unitColumns = {
+                ...result.unitColumns,
+                ...unitColumns
+            };
 
             if (!units.length) {
                 return;
             }
 
             const rows = Array.from(table.querySelectorAll('tbody tr, tr'));
-            const hasHomeRows = rows.some((row) => {
-                return classifyTroopRow(row).rowType === 'home';
+            const rowDiagnostics = rows.map((row, index) => {
+                const info = EAS.Troops.detectRowType(row, {
+                    rowIndex: index,
+                    hasUnitColumns: units.length > 0
+                });
+
+                return {
+                    index: result.rows.length + index + 1,
+                    text: row.textContent?.trim().replace(/\s+/g, ' ').slice(0, 80) || '',
+                    type: info.rowType
+                };
             });
 
-            rows.forEach((row) => {
+            result.rows.push(...rowDiagnostics);
+            result.rowType = result.rowType ||
+                rowDiagnostics.find((row) => row.type === 'unknown')?.type ||
+                null;
+
+            rows.forEach((row, index) => {
                 const villageId = extractVillageId(row);
 
                 if (!villageId) {
@@ -225,13 +302,12 @@
                 }
 
                 const cells = Array.from(row.children);
-                const rowInfo = classifyTroopRow(row);
+                const rowInfo = EAS.Troops.detectRowType(row, {
+                    rowIndex: index,
+                    hasUnitColumns: units.length > 0
+                });
 
-                if (rowInfo.rowType === 'ignored') {
-                    return;
-                }
-
-                if (hasHomeRows && rowInfo.rowType !== 'home') {
+                if (rowInfo.rowType !== 'home') {
                     return;
                 }
 
@@ -246,12 +322,8 @@
                 });
 
                 result.villages[villageId] = troops;
-                result.rowType = rowInfo.rowType === 'home'
-                    ? 'home'
-                    : result.rowType || 'unknown';
-                result.label = rowInfo.rowType === 'home'
-                    ? rowInfo.label
-                    : result.label;
+                result.rowType = 'home';
+                result.label = rowInfo.label || 'Na aldeia';
             });
         });
 
@@ -339,7 +411,9 @@
                 rowType: 'home',
                 label: 'Dados globais',
                 updatedAtServer: EAS.World.getServerNowTimestamp(),
-                updatedAtLocal: Date.now()
+                updatedAtLocal: Date.now(),
+                rows: [],
+                unitColumns: {}
             });
             saveCache('game_data', troopsByVillage);
             return troopsByVillage;
@@ -347,15 +421,17 @@
 
         const tableTroops = readFromTables();
 
-        if (hasTroopData(tableTroops.villages)) {
+        if (hasTroopData(tableTroops.villages) && tableTroops.rowType === 'home') {
             const mergedTroops = mergeWithCache(tableTroops.villages);
 
             setData(mergedTroops, {
                 source: 'troop_overview',
-                rowType: tableTroops.rowType || 'unknown',
-                label: tableTroops.label || null,
+                rowType: 'home',
+                label: tableTroops.label || 'Na aldeia',
                 updatedAtServer: EAS.World.getServerNowTimestamp(),
-                updatedAtLocal: Date.now()
+                updatedAtLocal: Date.now(),
+                rows: tableTroops.rows,
+                unitColumns: tableTroops.unitColumns
             });
             saveCache('troop_overview', troopsByVillage);
             return troopsByVillage;
@@ -369,17 +445,23 @@
                 rowType: cache.rowType || null,
                 label: cache.label || null,
                 updatedAtServer: cache.updatedAtServer || cache.updatedAt || null,
-                updatedAtLocal: cache.updatedAtLocal || null
+                updatedAtLocal: cache.updatedAtLocal || null,
+                rows: tableTroops.rows,
+                unitColumns: tableTroops.unitColumns
             });
             return troopsByVillage;
         }
 
         setData({}, {
-            source: 'none',
-            rowType: null,
-            label: null,
+            source: tableTroops.rows.length || Object.keys(tableTroops.unitColumns).length
+                ? 'troop_overview'
+                : 'none',
+            rowType: tableTroops.rowType || null,
+            label: tableTroops.label || null,
             updatedAtServer: null,
-            updatedAtLocal: null
+            updatedAtLocal: null,
+            rows: tableTroops.rows,
+            unitColumns: tableTroops.unitColumns
         });
         return troopsByVillage;
     };

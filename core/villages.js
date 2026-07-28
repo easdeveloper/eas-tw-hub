@@ -12,8 +12,9 @@
             villageSwitcher: 0,
             overview: 0,
             cache: 0,
-            current: 0
+            currentVillage: 0
         },
+        selectedSource: 'none',
         updatedAt: null
     };
 
@@ -42,7 +43,8 @@
         id = 0,
         name = '',
         coordinate = '',
-        href = ''
+        href = '',
+        source = ''
     }) => {
         const parsedCoordinate =
             EAS.Utils.parseCoordinate(coordinate);
@@ -62,7 +64,8 @@
             x: parsedCoordinate.x,
             y: parsedCoordinate.y,
             coordinate: parsedCoordinate.coordinate,
-            href: href || ''
+            href: href || '',
+            source
         };
     };
 
@@ -86,7 +89,8 @@
                     name: village.name,
                     coordinate:
                         village.coord ||
-                        `${village.x}|${village.y}`
+                        `${village.x}|${village.y}`,
+                    source: 'gameData'
                 });
 
                 if (item) {
@@ -107,7 +111,8 @@
                 name: village.name,
                 coordinate:
                     village.coord ||
-                    `${village.x}|${village.y}`
+                    `${village.x}|${village.y}`,
+                source: 'gameData'
             });
 
             if (item) {
@@ -120,13 +125,31 @@
 
     const readFromVillageSwitcher = () => {
         const selectors = [
+            '#village_switch_select option[value]',
+            '#village_switch_select option[data-id]',
             '#village_switch_select option',
             '#village_switch_select a[href*="village="]',
+            '#village_switch_list a[href*="village="]',
+            '#village_switch_list option[value]',
             '#village_switcher a[href*="village="]',
+            '#village_switcher option[value]',
             '.village_switcher a[href*="village="]',
+            '.village_switcher option[value]',
+            '.village_switch a[href*="village="]',
+            '.village_switch option[value]',
             '.village_switch_link',
+            '.group-menu-item a[href*="village="]',
+            '.group-menu-item option[value]',
             '#village_switch_right a',
-            '#village_switch_left a'
+            '#village_switch_left a',
+            '#village_switcher [data-village-id][data-coord]',
+            '#village_switcher [data-village-id][data-coordinate]',
+            '#village_switch_list [data-village-id][data-coord]',
+            '#village_switch_list [data-village-id][data-coordinate]',
+            '.village_switcher [data-village-id][data-coord]',
+            '.village_switcher [data-village-id][data-coordinate]',
+            '.group-menu-item [data-id][data-name][data-coord]',
+            '.group-menu-item [data-id][data-name][data-coordinate]'
         ];
         const elements = document.querySelectorAll(selectors.join(','));
         const villages = [];
@@ -135,8 +158,11 @@
             const text = element.textContent?.trim() || '';
             const title = element.getAttribute('title') || '';
             const value = element.value || '';
+            const dataset = element.dataset || {};
             const href = element.href || value || '';
             const coordinate =
+                EAS.Utils.parseCoordinate(dataset.coord)?.coordinate ||
+                EAS.Utils.parseCoordinate(dataset.coordinate)?.coordinate ||
                 EAS.Utils.parseCoordinate(text)?.coordinate ||
                 EAS.Utils.parseCoordinate(title)?.coordinate ||
                 EAS.Utils.parseCoordinate(value)?.coordinate;
@@ -146,10 +172,14 @@
             }
 
             const village = createVillage({
-                id: Number(element.value || 0) || extractVillageId(href),
-                name: text || title,
+                id:
+                    Number(dataset.villageId || dataset.id || 0) ||
+                    Number(element.value || 0) ||
+                    extractVillageId(href),
+                name: dataset.name || text || title,
                 coordinate,
-                href
+                href,
+                source: 'villageSwitcher'
             });
 
             if (village) {
@@ -190,7 +220,8 @@
                 id: extractVillageId(link.href),
                 name: text || title,
                 coordinate,
-                href: link.href
+                href: link.href,
+                source: 'overview'
             });
 
             if (village) {
@@ -272,29 +303,29 @@
                 name: village.name,
                 x: village.x,
                 y: village.y,
-                coordinate: village.coordinate
+                coordinate: village.coordinate,
+                source: village.source || 'cache'
             }))
         });
     };
 
-    const includeCurrentVillage = (villages) => {
+    const readCurrentVillage = () => {
         const current = EAS.World.getCurrentVillage();
 
         if (!current.coordinate) {
-            return villages;
+            return [];
         }
 
-        villages.push({
+        return [{
             id: current.id,
             name: current.name,
             x: current.x,
             y: current.y,
             coordinate: current.coordinate,
             href: location.href,
-            current: true
-        });
-
-        return villages;
+            current: true,
+            source: 'currentVillage'
+        }];
     };
 
     EAS.Villages.list = () => {
@@ -305,16 +336,25 @@
         let villages = [
             ...gameData,
             ...villageSwitcher,
-            ...overview
+            ...overview,
+            ...readCurrentVillage()
         ];
 
-        villages = includeCurrentVillage(villages);
         const liveVillages = dedupeVillages(villages);
         const isPartial = cache.length > liveVillages.length;
 
         villages = isPartial
             ? dedupeVillages([...cache, ...liveVillages])
             : liveVillages;
+        const selectedSource = isPartial
+            ? 'cache'
+            : gameData.length
+                ? 'gameData'
+                : villageSwitcher.length
+                    ? 'villageSwitcher'
+                    : overview.length
+                        ? 'overview'
+                        : 'currentVillage';
 
         villages.sort((a, b) => {
             if (a.id === EAS.World.getCurrentVillage().id) {
@@ -332,18 +372,15 @@
 
         sourceInfo = {
             total: villages.length,
-            completeness: isPartial
-                ? 'cache_with_partial'
-                : villages.length > 1
-                    ? 'complete_or_overview'
-                    : 'current_only',
+            completeness: villages.length > 1 ? 'complete' : 'partial',
             sources: {
                 gameData: gameData.length,
                 villageSwitcher: villageSwitcher.length,
                 overview: overview.length,
                 cache: cache.length,
-                current: EAS.World.getCurrentVillage().coordinate ? 1 : 0
+                currentVillage: readCurrentVillage().length
             },
+            selectedSource,
             updatedAt: Date.now()
         };
 
