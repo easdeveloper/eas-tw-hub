@@ -6,6 +6,8 @@
 
     const STORAGE_KEY = 'modules.attack';
     const MS_PER_MINUTE = 60 * 1000;
+    const SERVER_TIME_ZONE = 'America/Sao_Paulo';
+    const JAPAN_TIME_ZONE = 'Asia/Tokyo';
 
     const UNIT_SPEEDS = [
         { id: 'spear', name: 'Lanceiro', minutesPerField: 18 },
@@ -112,6 +114,129 @@
             .join('/')} ${time
             .map((value) => String(value).padStart(2, '0'))
             .join(':')}`;
+    };
+
+    const getDateTimePartsInTimeZone = (timestamp, timeZone) => {
+        const formatter = new Intl.DateTimeFormat('en-CA', {
+            timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23'
+        });
+        const parts = Object.fromEntries(
+            formatter
+                .formatToParts(new Date(timestamp))
+                .filter((part) => part.type !== 'literal')
+                .map((part) => [part.type, Number(part.value)])
+        );
+
+        return {
+            year: parts.year,
+            month: parts.month,
+            day: parts.day,
+            hours: parts.hour,
+            minutes: parts.minute,
+            seconds: parts.second
+        };
+    };
+
+    const parseDateTimeInTimeZone = (value, timeZone) => {
+        const match = String(value ?? '').trim().match(
+            /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/
+        );
+
+        if (!match) {
+            return null;
+        }
+
+        const expected = {
+            day: Number(match[1]),
+            month: Number(match[2]),
+            year: Number(match[3]),
+            hours: Number(match[4]),
+            minutes: Number(match[5]),
+            seconds: Number(match[6])
+        };
+
+        if (
+            expected.month < 1 || expected.month > 12 ||
+            expected.day < 1 || expected.day > 31 ||
+            expected.hours > 23 || expected.minutes > 59 ||
+            expected.seconds > 59
+        ) {
+            return null;
+        }
+
+        const wallTimeAsUtc = Date.UTC(
+            expected.year,
+            expected.month - 1,
+            expected.day,
+            expected.hours,
+            expected.minutes,
+            expected.seconds
+        );
+        let timestamp = wallTimeAsUtc;
+
+        // Resolve the zone offset through Intl so daylight-saving and historical
+        // timezone rules are applied instead of using a fixed hour difference.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const zoned = getDateTimePartsInTimeZone(timestamp, timeZone);
+            const zonedAsUtc = Date.UTC(
+                zoned.year,
+                zoned.month - 1,
+                zoned.day,
+                zoned.hours,
+                zoned.minutes,
+                zoned.seconds
+            );
+            const nextTimestamp = wallTimeAsUtc - (zonedAsUtc - timestamp);
+
+            if (nextTimestamp === timestamp) {
+                break;
+            }
+
+            timestamp = nextTimestamp;
+        }
+
+        const resolved = getDateTimePartsInTimeZone(timestamp, timeZone);
+        const isExactMatch = Object.keys(expected).every(
+            (key) => expected[key] === resolved[key]
+        );
+
+        return isExactMatch ? timestamp : null;
+    };
+
+    const formatDateTimeInTimeZone = (timestamp, timeZone) => {
+        if (!Number.isFinite(timestamp)) {
+            return '-';
+        }
+
+        const parts = getDateTimePartsInTimeZone(timestamp, timeZone);
+        const pad = (value) => String(value).padStart(2, '0');
+
+        return `${pad(parts.day)}/${pad(parts.month)}/${parts.year} ${[
+            parts.hours,
+            parts.minutes,
+            parts.seconds
+        ].map(pad).join(':')}`;
+    };
+
+    const formatSendDateTime = (timestamp) => {
+        const serverDateTime = formatDateTime(timestamp);
+        const instant = parseDateTimeInTimeZone(
+            serverDateTime,
+            SERVER_TIME_ZONE
+        );
+        const japanDateTime = formatDateTimeInTimeZone(
+            instant,
+            JAPAN_TIME_ZONE
+        );
+
+        return `<strong>${EAS.Utils.escapeHtml(serverDateTime)}</strong>\n+            <div class="attack-send-time-japan">(${EAS.Utils.escapeHtml(japanDateTime)} Japão)</div>`;
     };
 
     const getUnitById = (unitId) => {
@@ -309,7 +434,7 @@
                     ? '-'
                     : EAS.Utils.formatNumber(row.distance, 2, 2),
                 formatDuration(row.durationMs),
-                formatDateTime(row.sendTimestamp),
+                formatSendDateTime(row.sendTimestamp),
                 row.status
             ];
 

@@ -218,6 +218,13 @@
     background: #f7ffe9;
 }
 
+.attack-send-time-japan {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #666;
+    white-space: nowrap;
+}
+
 .eas-attack-row--horario-ja-passou td {
     background: #f8deda;
 }
