@@ -43,6 +43,7 @@
         const villageId = String(window.game_data?.village?.id || url.searchParams.get('village') || '');
         return villageId === String(pending.item.villageId);
     };
+    const shouldInitializeMarketBalanceExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_balance_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send' && String(window.game_data?.village?.id || url.searchParams.get('village') || '') === String(item.sourceVillageId)); } catch { return false; } };
 
     const initializeMarketOfferExecutionIfNeeded = () => {
         if (!shouldInitializeMarketOfferExecution()) return false;
@@ -72,7 +73,7 @@
         try {
             if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
-                const executionOnly = shouldInitializeMarketOfferExecution();
+                const executionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution();
                 if (!window.EAS.Place?.fillTargetFromUrl) {
                     await loadScript('services/place.js');
                 }
@@ -98,11 +99,13 @@
                 if (!window.EAS.MarketOffersExecution?.initialize) {
                     await loadScript('services/market-offers-execution.js');
                 }
+                if (!window.EAS.MarketBalanceExecution?.initialize) await loadScript('services/market-balance-execution.js');
 
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
                 window.EAS.SupportExecution.initialize();
                 window.EAS.MarketOffersExecution.initialize();
+                window.EAS.MarketBalanceExecution.initialize();
                 if (!executionOnly) window.EAS.UI.toggle();
                 return;
             }
@@ -124,13 +127,15 @@
             await loadScript('services/support-execution.js');
             await loadScript('services/market-engine.js');
             await loadScript('services/market-offers-execution.js');
+            await loadScript('services/market-balance-execution.js');
 
-            const executionOnly = shouldInitializeMarketOfferExecution();
+            const executionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution();
             if (!executionOnly) window.EAS.start();
             window.EAS.Place.fillTargetFromUrl();
             window.EAS.FakesExecution.initialize();
             window.EAS.SupportExecution.initialize();
             window.EAS.MarketOffersExecution.initialize();
+            window.EAS.MarketBalanceExecution.initialize();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
             alert(`EAS TW Hub: ${error.message}`);
