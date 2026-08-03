@@ -16,7 +16,8 @@
         fakeNtConfig: 'eas_tw_fake_nt_config',
         fakeNtPlayer: 'eas_tw_fake_nt_target_player',
         fakeNtVillages: 'eas_tw_fake_nt_selected_target_villages',
-        fakeNtCommands: 'eas_tw_fake_nt_commands_per_target'
+        fakeNtCommands: 'eas_tw_fake_nt_commands_per_target',
+        antiSnipeConfig: 'eas_tw_fake_anti_snipe_config'
     };
 
     const UNIT_DEFINITIONS = [
@@ -50,11 +51,14 @@
             requiresArrivalTime: true, usesTravelPlanning: true,
             respectsMinimumPopulation: true, troops: { ram: 1 }
         },
-        antiSnipe: {
-            id: 'antiSnipe',
+        anti_snipe: {
+            id: 'anti_snipe',
             name: 'Fake Anti-Snipe',
-            commandType: 'support',
-            troops: {}
+            commandType: 'attack', defaultCommandType: 'attack',
+            allowedCommandTypes: ['attack'], requiresCentralArrivalTime: true,
+            usesArrivalWindow: true, supportsMilliseconds: true,
+            respectsMinimumPopulation: true, usesWorldRules: true,
+            defaultCommandsPerTarget: 6, troops: { spear: 1 }
         },
         custom: {
             id: 'custom',
@@ -85,6 +89,58 @@
     const normalizeQuantity = (value) => {
         const quantity = Math.floor(Number(value));
         return Number.isFinite(quantity) ? Math.max(0, quantity) : 0;
+    };
+
+    const generateAntiSnipeOffsets = ({ mode, commandCount, intervalMs, customOffsets = [] }) => {
+        const count = Math.max(1, normalizeQuantity(commandCount));
+        const interval = Math.max(1, normalizeQuantity(intervalMs));
+        if (mode === 'custom') {
+            return [...new Set((Array.isArray(customOffsets) ? customOffsets : String(customOffsets || '').split(/[\s,;]+/))
+                .map((value) => Math.trunc(Number(value))).filter(Number.isFinite))].sort((a, b) => a - b);
+        }
+        if (mode === 'before') return Array.from({ length: count }, (_, index) => -(count - index) * interval);
+        if (mode === 'after') return Array.from({ length: count }, (_, index) => (index + 1) * interval);
+        const beforeCount = Math.floor(count / 2);
+        const afterCount = count - beforeCount;
+        return [
+            ...Array.from({ length: beforeCount }, (_, index) => -(beforeCount - index) * interval),
+            ...Array.from({ length: afterCount }, (_, index) => (index + 1) * interval)
+        ];
+    };
+
+    const buildAntiSnipeArrivalSchedule = ({ centralArrival, offsets }) =>
+        [...offsets].sort((a, b) => a - b).map((offsetMs, index) => ({
+            sequence: index + 1, offsetMs, arrivalTime: Number(centralArrival) + offsetMs
+        }));
+
+    const applyAntiSnipeLatencyCorrection = (sendTime, correctionMs = 0) =>
+        Number(sendTime) + Math.trunc(Number(correctionMs) || 0);
+
+    const distributeAntiSnipeRoundRobin = (villageAnalyses, targets, schedule, preferDiversity = true) => {
+        const eligible = villageAnalyses.filter((analysis) => analysis.selected && analysis.sufficient && analysis.capacity > 0);
+        const remaining = new Map(eligible.map((analysis) => [Number(analysis.village.id), analysis.capacity]));
+        let cursor = 0;
+        const assignments = targets.map((target) => {
+            const sources = []; const used = new Set();
+            schedule.forEach((slot) => {
+                let chosen = null;
+                for (let attempt = 0; attempt < eligible.length * 2; attempt += 1) {
+                    const candidate = eligible[cursor % Math.max(eligible.length, 1)]; cursor += 1;
+                    if (!candidate || (remaining.get(Number(candidate.village.id)) || 0) < 1) continue;
+                    const unusedAvailable = eligible.some((item) =>
+                        !used.has(Number(item.village.id)) && (remaining.get(Number(item.village.id)) || 0) > 0
+                    );
+                    if (preferDiversity && unusedAvailable && used.has(Number(candidate.village.id))) continue;
+                    chosen = candidate; break;
+                }
+                if (!chosen) return;
+                const villageId = Number(chosen.village.id); used.add(villageId);
+                remaining.set(villageId, remaining.get(villageId) - 1);
+                sources.push({ villageId, villageName: chosen.village.name, villageCoord: chosen.village.coordinate, commandIndex: slot.sequence, ...slot });
+            });
+            return { target, sources };
+        });
+        return { assignments, executionQueue: [], remainingCapacity: remaining };
     };
 
     const extractCoordinates = (value, removeDuplicates = true) => {
@@ -271,11 +327,15 @@
     EAS.Modules.Fakes.calculateFakeCapacity = calculateFakeCapacity;
     EAS.Modules.Fakes.distributeTargets = distributeTargets;
     EAS.Modules.Fakes.distributeTargetsRoundRobin = distributeTargetsRoundRobin;
+    EAS.Modules.Fakes.generateAntiSnipeOffsets = generateAntiSnipeOffsets;
+    EAS.Modules.Fakes.buildAntiSnipeArrivalSchedule = buildAntiSnipeArrivalSchedule;
+    EAS.Modules.Fakes.applyAntiSnipeLatencyCorrection = applyAntiSnipeLatencyCorrection;
+    EAS.Modules.Fakes.distributeAntiSnipeRoundRobin = distributeAntiSnipeRoundRobin;
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
     EAS.Modules.Fakes.open = ({ autoAnalyze = false } = {}) => {
         const rawSavedPresetId = readStorage(STORAGE_KEYS.preset, 'simple');
-        const savedPresetId = rawSavedPresetId === 'nt' ? 'fake_nt' : rawSavedPresetId;
+        const savedPresetId = rawSavedPresetId === 'nt' ? 'fake_nt' : rawSavedPresetId === 'antiSnipe' ? 'anti_snipe' : rawSavedPresetId;
         const selectedPreset = FAKE_PRESETS[savedPresetId] || FAKE_PRESETS.simple;
         const savedCommandType = readStorage(
             STORAGE_KEYS.commandType,
@@ -299,6 +359,7 @@
         const savedFakeNtCommands = Math.max(1, normalizeQuantity(readStorage(
             STORAGE_KEYS.fakeNtCommands, 4
         )) || 4);
+        const savedAntiSnipeConfig = readStorage(STORAGE_KEYS.antiSnipeConfig, {});
         const availableUnits = getAvailableUnits();
         let worldRule = EAS.WorldRules.get();
 
@@ -467,6 +528,41 @@
             fakeNtSection.insertAdjacentHTML('beforeend', '<div class="fake-analysis-warning">Este mundo não possui uma unidade compatível com Fake NT.</div>');
         }
 
+        const antiSnipeSection = document.createElement('section');
+        antiSnipeSection.className = 'fake-anti-snipe-settings';
+        const antiDateInput = EAS.UI.createInput({ type: 'text', value: savedAntiSnipeConfig.centralDate || EAS.World.getServerDateTime().date || '', placeholder: 'DD/MM/AAAA' });
+        const antiTimeInput = EAS.UI.createInput({ type: 'text', value: savedAntiSnipeConfig.centralTime || '08:00:00', placeholder: 'HH:MM:SS' });
+        const antiMillisecondsInput = EAS.UI.createInput({ type: 'number', value: savedAntiSnipeConfig.milliseconds ?? 0, min: 0, max: 999 });
+        const antiModeSelect = createSelect('anti-snipe-mode', [
+            { value: 'before', label: 'Antes do horário central' }, { value: 'after', label: 'Depois do horário central' },
+            { value: 'around', label: 'Cercar o horário central' }, { value: 'custom', label: 'Personalizado' }
+        ], savedAntiSnipeConfig.mode || 'around');
+        const antiIntervalInput = EAS.UI.createInput({ type: 'number', value: savedAntiSnipeConfig.intervalMs || 200, min: 1 });
+        const antiLatencyInput = EAS.UI.createInput({ type: 'number', value: savedAntiSnipeConfig.latencyCorrectionMs ?? 0 });
+        const antiCustomOffsetsInput = document.createElement('textarea');
+        antiCustomOffsetsInput.className = 'eas-input'; antiCustomOffsetsInput.placeholder = '-700\n-350\n150\n400';
+        antiCustomOffsetsInput.value = savedAntiSnipeConfig.customOffsets || '';
+        const speedUnitOptions = [{ value: 'composition', label: 'Pela composição real' }, ...availableUnits
+            .filter((unit) => EAS.Units.getTravelSpeed(unit.id) > 0)
+            .map((unit) => ({ value: unit.id, label: unit.name }))];
+        const antiSpeedUnitSelect = createSelect('anti-snipe-speed-unit', speedUnitOptions, savedAntiSnipeConfig.speedUnit || 'composition');
+        const antiDiversityOption = document.createElement('label'); antiDiversityOption.className = 'fake-command-switch';
+        const antiDiversityInput = document.createElement('input'); antiDiversityInput.type = 'checkbox'; antiDiversityInput.checked = savedAntiSnipeConfig.preferDiversity !== false;
+        antiDiversityOption.append(antiDiversityInput, document.createTextNode('Preferir aldeias diferentes no mesmo alvo'));
+        antiSnipeSection.innerHTML = '<h3>Configuração Anti-Snipe</h3><div class="fake-analysis-warning">Fake Anti-Snipe é exclusivo para ataques. Os milissegundos representam planejamento; latência, navegador e servidor podem alterar o horário real.</div>';
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Data central de chegada', input: antiDateInput }));
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Hora central de chegada', input: antiTimeInput }));
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Milissegundos (000–999)', input: antiMillisecondsInput }));
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Distribuição dos comandos', input: antiModeSelect }));
+        const customOffsetsField = EAS.UI.createField({ label: 'Offsets personalizados em milissegundos', input: antiCustomOffsetsInput });
+        antiSnipeSection.appendChild(customOffsetsField);
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Intervalo entre comandos (ms)', input: antiIntervalInput }));
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Correção de latência (ms)', input: antiLatencyInput }));
+        antiSnipeSection.appendChild(EAS.UI.createField({ label: 'Unidade de velocidade preferida', input: antiSpeedUnitSelect }));
+        antiSnipeSection.appendChild(antiDiversityOption);
+        const toggleCustomOffsets = () => { customOffsetsField.hidden = antiModeSelect.value !== 'custom'; };
+        toggleCustomOffsets();
+
         const summarySection = document.createElement('section');
         summarySection.className = 'fake-manager-summary';
         const summaryTitle = document.createElement('h3');
@@ -503,6 +599,7 @@
         let currentAnalysis = null;
 
         const isFakeNt = () => presetSelect.value === 'fake_nt';
+        const isAntiSnipe = () => presetSelect.value === 'anti_snipe';
         const getTargetCoordinates = () => [...new Set([
             ...targetVillages.filter((village) => selectedTargetVillageIds.has(village.id)).map((village) => village.coordinate),
             ...extractCoordinates(coordinatesInput.value)
@@ -663,13 +760,26 @@
             renderPopulationRule();
 
             const arrival = EAS.Utils.createServerDateTime(arrivalDateInput.value, arrivalTimeInput.value);
+            const antiCentral = EAS.Utils.createServerDateTime(antiDateInput.value, antiTimeInput.value);
+            const antiMilliseconds = Math.min(999, Math.max(0, normalizeQuantity(antiMillisecondsInput.value)));
+            const antiCentralTimestamp = antiCentral ? antiCentral.timestamp + antiMilliseconds : null;
+            const antiOffsets = generateAntiSnipeOffsets({
+                mode: antiModeSelect.value,
+                commandCount: fakesPerTargetInput.value,
+                intervalMs: antiIntervalInput.value,
+                customOffsets: antiCustomOffsetsInput.value
+            });
             return {
                 coordinates, troops, ...population,
                 arrivalTimestamp: arrival?.timestamp ?? null,
                 arrivalFormatted: arrival?.formatted || null,
                 intervalMs: Math.max(0, Number(intervalSelect.value) || 0),
                 slowUnit: slowUnitSelect.value,
-                valid: population.valid && (!isFakeNt() || Boolean(arrival && compatibleSlowUnits.length))
+                antiCentralTimestamp, antiOffsets,
+                antiSchedule: antiCentralTimestamp === null ? [] : buildAntiSnipeArrivalSchedule({ centralArrival: antiCentralTimestamp, offsets: antiOffsets }),
+                latencyCorrectionMs: Math.trunc(Number(antiLatencyInput.value) || 0),
+                valid: population.valid && (!isFakeNt() || Boolean(arrival && compatibleSlowUnits.length)) &&
+                    (!isAntiSnipe() || Boolean(antiCentral && antiOffsets.length))
             };
         };
 
@@ -928,7 +1038,7 @@
             } = state;
             const fakesPerTarget = Math.max(
                 1,
-                normalizeQuantity(fakesPerTargetInput.value)
+                isAntiSnipe() ? operation.antiSchedule.length : normalizeQuantity(fakesPerTargetInput.value)
             );
             const eligible = villageAnalyses.filter((analysis) =>
                 analysis.sufficient && analysis.capacity > 0 && !troopsInfo.stale
@@ -938,11 +1048,9 @@
             );
 
             if (!state.distribution) {
-                state.distribution = distributeTargetsRoundRobin(
-                    villageAnalyses,
-                    operation.coordinates,
-                    fakesPerTarget
-                );
+                state.distribution = isAntiSnipe()
+                    ? distributeAntiSnipeRoundRobin(villageAnalyses, operation.coordinates, operation.antiSchedule, antiDiversityInput.checked)
+                    : distributeTargetsRoundRobin(villageAnalyses, operation.coordinates, fakesPerTarget);
             }
 
             const rebuildQueue = () => {
@@ -955,20 +1063,22 @@
                             sourceVillageId: source.villageId,
                             villageName: source.villageName,
                             villageCoord: source.villageCoord,
+                            disabled: Boolean(source.disabled),
                             ...(() => {
-                                if (!isFakeNt()) return {};
+                                if (!isFakeNt() && !isAntiSnipe()) return {};
                                 const distance = EAS.Utils.distance(source.villageCoord, assignment.target);
                                 const slowest = EAS.Units.getSlowestUnit(operation.troops);
                                 const durationMs = distance * slowest.minutesPerField * 60 * 1000 /
                                     (EAS.World.getSpeed() * EAS.World.getUnitSpeed());
-                                const arrivalTime = operation.arrivalTimestamp +
-                                    (source.commandIndex - 1) * operation.intervalMs;
+                                const arrivalTime = isAntiSnipe() ? source.arrivalTime : operation.arrivalTimestamp + (source.commandIndex - 1) * operation.intervalMs;
                                 const sendTime = arrivalTime - durationMs;
+                                const recommendedActionTime = applyAntiSnipeLatencyCorrection(sendTime, isAntiSnipe() ? operation.latencyCorrectionMs : 0);
                                 const now = EAS.World.getServerNowTimestamp() ?? Date.now();
                                 return {
-                                    distance, durationMs, arrivalTime, sendTime,
+                                    distance, durationMs, arrivalTime, sendTime, recommendedActionTime,
+                                    offsetMs: source.offsetMs ?? null, sequence: source.sequence ?? source.commandIndex,
                                     slowUnit: slowest.unit, commandType: 'attack',
-                                    timingStatus: sendTime < now ? 'Atrasado' : sendTime - now < 60000 ? 'Pronto para enviar' : sendTime - now < 300000 ? 'Próximo' : 'Futuro'
+                                    timingStatus: recommendedActionTime < now ? 'Atrasado' : recommendedActionTime - now < 1000 ? 'Pronto para ação' : recommendedActionTime - now < 300000 ? 'Próximo do horário' : 'Futuro'
                                 };
                             })(),
                             status: 'pending'
@@ -1008,6 +1118,14 @@
                 `Alvos parciais: ${partialTargets}`,
                 `Sem atribuição: ${emptyTargets}`
             ];
+            if (isAntiSnipe()) {
+                const times = state.distribution.executionQueue.map((entry) => entry.sendTime).filter(Number.isFinite);
+                summaryItems.push(
+                    `Menor envio: ${times.length ? EAS.Utils.formatDateTime(Math.min(...times), true) : '-'}`,
+                    `Maior envio: ${times.length ? EAS.Utils.formatDateTime(Math.max(...times), true) : '-'}`,
+                    `Comandos atrasados: ${state.distribution.executionQueue.filter((entry) => entry.timingStatus === 'Atrasado').length}`
+                );
+            }
             analysisSummary.innerHTML = `
                 <div class="fake-analysis-summary__grid">
                     ${summaryItems.map((item) => `<span>${EAS.Utils.escapeHtml(item)}</span>`).join('')}
@@ -1085,6 +1203,33 @@
                         )
                     );
                     renderMultiVillageAnalysis();
+                }
+            }));
+            villageSelection.appendChild(EAS.UI.createButton({
+                text: 'Selecionar mais próximas', className: 'eas-button--secondary',
+                onClick: () => {
+                    const limit = Math.max(1, normalizeQuantity(firstNInput.value));
+                    const ordered = [...eligible].sort((a, b) =>
+                        Math.min(...operation.coordinates.map((target) => EAS.Utils.distance(a.village.coordinate, target))) -
+                        Math.min(...operation.coordinates.map((target) => EAS.Utils.distance(b.village.coordinate, target)))
+                    );
+                    villageAnalyses.forEach((analysis) => { analysis.selected = false; });
+                    ordered.slice(0, limit).forEach((analysis) => { analysis.selected = true; });
+                    state.distribution = null; renderMultiVillageAnalysis();
+                }
+            }));
+            const continentInput = EAS.UI.createInput({ type: 'text', placeholder: 'K55', name: 'source-continent' });
+            villageSelection.appendChild(continentInput);
+            villageSelection.appendChild(EAS.UI.createButton({
+                text: 'Selecionar por continente', className: 'eas-button--secondary',
+                onClick: () => {
+                    const continent = continentInput.value.trim().toUpperCase();
+                    villageAnalyses.forEach((analysis) => {
+                        const parsed = EAS.Utils.parseCoordinate(analysis.village.coordinate);
+                        const ownContinent = parsed ? `K${Math.floor(parsed.y / 100)}${Math.floor(parsed.x / 100)}` : '';
+                        analysis.selected = eligible.includes(analysis) && ownContinent === continent;
+                    });
+                    state.distribution = null; renderMultiVillageAnalysis();
                 }
             }));
 
@@ -1178,7 +1323,7 @@
                     ? 'fake-assignment-complete'
                     : 'fake-assignment-partial'}`;
                 const summary = document.createElement('summary');
-                summary.textContent = `${assignment.target} — ${assignment.sources.length} de ${fakesPerTarget} fakes`;
+                summary.textContent = `${assignment.target} — ${assignment.sources.length} de ${fakesPerTarget} ${isAntiSnipe() ? 'comandos' : 'fakes'}`;
                 details.appendChild(summary);
 
                 assignment.sources.forEach((source, sourceIndex) => {
@@ -1205,7 +1350,7 @@
                         const hasCapacity = (usage.get(candidateId) || 0) <
                             candidate.capacity;
 
-                        if (!isCurrent && (duplicatedIds.has(candidateId) || !hasCapacity)) {
+                        if (!isCurrent && ((!isAntiSnipe() && duplicatedIds.has(candidateId)) || !hasCapacity)) {
                             return;
                         }
 
@@ -1220,18 +1365,19 @@
                             Number(candidate.village.id) === Number(select.value)
                         );
 
-                        if (!replacement || assignment.sources.some(
+                        if (!replacement || (!isAntiSnipe() && assignment.sources.some(
                             (item, index) => index !== sourceIndex &&
                                 Number(item.villageId) === Number(select.value)
-                        )) {
+                        ))) {
                             return;
                         }
 
                         assignment.sources[sourceIndex] = {
+                            ...source,
                             villageId: replacement.village.id,
                             villageName: replacement.village.name,
                             villageCoord: replacement.village.coordinate,
-                            commandIndex: sourceIndex + 1
+                            commandIndex: source.commandIndex || sourceIndex + 1
                         };
                         renderMultiVillageAnalysis();
                     });
@@ -1263,24 +1409,44 @@
                 const japanLine = (timestamp) => {
                     if (!showJapan) return '';
                     const japan = EAS.Utils.serverTimeToJapan(EAS.Utils.formatDateTime(timestamp));
-                    return japan ? `<div class="attack-send-time-japan">(${EAS.Utils.escapeHtml(japan)} Japão)</div>` : '';
+                    const milliseconds = String(new Date(timestamp).getMilliseconds()).padStart(3, '0');
+                    return japan ? `<div class="attack-send-time-japan">(${EAS.Utils.escapeHtml(japan)}.${milliseconds} Japão)</div>` : '';
                 };
                 const planning = document.createElement('div');
                 planning.className = 'fake-nt-planning eas-table-wrapper';
                 planning.innerHTML = `<h3>Planejamento do Fake NT</h3><table class="eas-table"><thead><tr><th>Alvo</th><th>Origem</th><th>Distância</th><th>Unidade lenta</th><th>Duração</th><th>Horário de envio</th><th>Horário de chegada</th><th>Capacidade</th><th>Status</th></tr></thead><tbody>${state.distribution.executionQueue.map((entry) => `<tr><td>${entry.target}</td><td>${EAS.Utils.escapeHtml(entry.villageName)}<br>${entry.villageCoord}</td><td>${EAS.Utils.formatNumber(entry.distance, 2, 2)}</td><td>${entry.slowUnit === 'ram' ? 'Aríete' : 'Catapulta'}</td><td>${EAS.Utils.formatDuration(entry.durationMs)}</td><td><strong>${EAS.Utils.formatDateTime(entry.sendTime, operation.intervalMs % 1000 !== 0)}</strong>${japanLine(entry.sendTime)}</td><td><strong>${EAS.Utils.formatDateTime(entry.arrivalTime, operation.intervalMs % 1000 !== 0)}</strong>${japanLine(entry.arrivalTime)}</td><td>${villageAnalyses.find((item) => Number(item.village.id) === Number(entry.villageId))?.capacity || 0}</td><td>${entry.timingStatus}</td></tr>`).join('')}</tbody></table>`;
                 targetDistribution.appendChild(planning);
             }
+            if (isAntiSnipe()) {
+                const showJapan = localStorage.getItem('eas_tw_attack_timezone_japan') === 'true';
+                const japanLine = (timestamp) => {
+                    if (!showJapan) return '';
+                    const japan = EAS.Utils.serverTimeToJapan(EAS.Utils.formatDateTime(timestamp));
+                    const milliseconds = String(new Date(timestamp).getMilliseconds()).padStart(3, '0');
+                    return japan ? `<div class="attack-send-time-japan">(${EAS.Utils.escapeHtml(japan)}.${milliseconds} Japão)</div>` : '';
+                };
+                const planning = document.createElement('div'); planning.className = 'fake-anti-snipe-planning eas-table-wrapper';
+                planning.innerHTML = `<h3>Planejamento Anti-Snipe</h3><div class="fake-analysis-warning">Horários em milissegundos são estimativas. A latência, o navegador e o servidor podem alterar o resultado real.</div><table class="eas-table"><thead><tr><th>Selecionar</th><th>Sequência</th><th>Alvo</th><th>Origem</th><th>Offset</th><th>Chegada</th><th>Unidade lenta</th><th>Duração</th><th>Envio calculado</th><th>Horário recomendado</th><th>Status</th><th>Ação</th></tr></thead><tbody>${state.distribution.executionQueue.map((entry) => `<tr><td><input type="checkbox" checked data-anti-active="${entry.target}:${entry.sequence}"></td><td>${entry.sequence}</td><td>${entry.target}</td><td>${EAS.Utils.escapeHtml(entry.villageName)}<br>${entry.villageCoord}</td><td><input class="eas-input" type="number" value="${entry.offsetMs}" data-anti-offset="${entry.target}:${entry.sequence}"> ms</td><td><strong>${EAS.Utils.formatDateTime(entry.arrivalTime, true)}</strong>${japanLine(entry.arrivalTime)}</td><td>${EAS.Utils.escapeHtml(entry.slowUnit)}</td><td>${EAS.Utils.formatDuration(entry.durationMs)}</td><td><strong>${EAS.Utils.formatDateTime(entry.sendTime, true)}</strong>${japanLine(entry.sendTime)}</td><td><strong>${EAS.Utils.formatDateTime(entry.recommendedActionTime, true)}</strong>${japanLine(entry.recommendedActionTime)}</td><td>${entry.timingStatus}</td><td><button type="button" data-anti-remove="${entry.target}:${entry.sequence}">Remover</button></td></tr>`).join('')}</tbody></table>`;
+                const findSource = (key) => { const [target, sequence] = key.split(':'); const assignment = state.distribution.assignments.find((item) => item.target === target); return { assignment, source: assignment?.sources.find((item) => Number(item.sequence) === Number(sequence)) }; };
+                planning.querySelectorAll('[data-anti-active]').forEach((input) => input.addEventListener('change', () => { const found = findSource(input.dataset.antiActive); if (found.source) found.source.disabled = !input.checked; rebuildQueue(); }));
+                planning.querySelectorAll('[data-anti-offset]').forEach((input) => input.addEventListener('change', () => { const found = findSource(input.dataset.antiOffset); if (found.source) { found.source.offsetMs = Math.trunc(Number(input.value) || 0); found.source.arrivalTime = operation.antiCentralTimestamp + found.source.offsetMs; renderMultiVillageAnalysis(); } }));
+                planning.querySelectorAll('[data-anti-remove]').forEach((button) => button.addEventListener('click', () => { const found = findSource(button.dataset.antiRemove); if (found.assignment && found.source) { found.assignment.sources.splice(found.assignment.sources.indexOf(found.source), 1); renderMultiVillageAnalysis(); } }));
+                targetDistribution.appendChild(planning);
+            }
 
             prepareOperationContainer.innerHTML = '';
             const prepareButton = EAS.UI.createButton({
-                text: isFakeNt() ? 'Preparar operação Fake NT' : 'Preparar operação',
-                disabled: !operation.valid || !distributedCommands || (isFakeNt() && state.distribution.executionQueue.some((entry) => entry.timingStatus === 'Atrasado')),
+                text: isFakeNt() ? 'Preparar operação Fake NT' : isAntiSnipe() ? 'Preparar operação Anti-Snipe' : 'Preparar operação',
+                disabled: !operation.valid || !distributedCommands || ((isFakeNt() || isAntiSnipe()) && state.distribution.executionQueue.some((entry) => entry.timingStatus === 'Atrasado')),
                 onClick: () => {
                     rebuildQueue();
                     const execution = {
                         preset: presetSelect.value,
-                        commandType: isFakeNt() ? 'attack' : commandTypeSelect.value,
-                        allowCommandSwitch: isFakeNt() ? false : commandSwitchInput.checked,
+                        commandType: isFakeNt() || isAntiSnipe() ? 'attack' : commandTypeSelect.value,
+                        allowCommandSwitch: isFakeNt() || isAntiSnipe() ? false : commandSwitchInput.checked,
+                        centralArrival: isAntiSnipe() ? operation.antiCentralTimestamp : null,
+                        intervalMs: isAntiSnipe() ? Number(antiIntervalInput.value) : operation.intervalMs,
+                        latencyCorrectionMs: isAntiSnipe() ? operation.latencyCorrectionMs : 0,
                         troopsPerTarget: { ...operation.troops },
                         fakesPerTarget,
                         selectedVillageIds: selected.map((analysis) =>
@@ -1288,6 +1454,7 @@
                         ),
                         queue: state.distribution.executionQueue.map(
                             (entry) => ({ ...entry })
+                        ).filter((entry) => !entry.disabled
                         ),
                         currentIndex: 0,
                         completed: [],
@@ -1321,6 +1488,10 @@
 
             if (!operation.coordinates.length) {
                 validationMessage = 'Informe ao menos uma coordenada válida.';
+            } else if (isAntiSnipe() && !operation.antiCentralTimestamp) {
+                validationMessage = 'Informe data, hora e milissegundos centrais válidos.';
+            } else if (isAntiSnipe() && !operation.antiOffsets.length) {
+                validationMessage = 'Informe ao menos um offset Anti-Snipe válido.';
             } else if (isFakeNt() && !compatibleSlowUnits.length) {
                 validationMessage = 'Este mundo não possui uma unidade compatível com Fake NT.';
             } else if (isFakeNt() && !operation.arrivalTimestamp) {
@@ -1466,6 +1637,8 @@
                 const slowUnit = compatibleSlowUnits.includes(slowUnitSelect.value) ? slowUnitSelect.value : compatibleSlowUnits[0];
                 if (slowUnit && troopInputs[slowUnit]) troopInputs[slowUnit].value = Math.max(1, normalizeQuantity(troopInputs[slowUnit].value));
                 fakesPerTargetInput.value = savedFakeNtCommands;
+            } else if (isAntiSnipe()) {
+                fakesPerTargetInput.value = Math.max(1, normalizeQuantity(savedAntiSnipeConfig.commandCount) || 6);
             }
             configurePresetUi();
             invalidateAndMaybeReanalyze();
@@ -1473,13 +1646,17 @@
 
         const configurePresetUi = () => {
             const fakeNt = isFakeNt();
+            const antiSnipe = isAntiSnipe();
             fakeNtSection.hidden = !fakeNt;
-            commandTypeSelect.closest('.eas-field').hidden = fakeNt;
-            commandSwitchOption.hidden = fakeNt;
-            fakesPerTargetInput.closest('.eas-field').querySelector('label')?.replaceChildren(document.createTextNode(fakeNt ? 'Comandos Fake NT por alvo' : 'Fakes por alvo'));
-            if (fakeNt) {
+            antiSnipeSection.hidden = !antiSnipe;
+            commandTypeSelect.closest('.eas-field').hidden = fakeNt || antiSnipe;
+            commandSwitchOption.hidden = fakeNt || antiSnipe;
+            fakesPerTargetInput.closest('.eas-field').querySelector('label')?.replaceChildren(document.createTextNode(fakeNt ? 'Comandos Fake NT por alvo' : antiSnipe ? 'Comandos Anti-Snipe por alvo' : 'Fakes por alvo'));
+            if (fakeNt || antiSnipe) {
                 commandTypeSelect.value = 'attack';
                 commandSwitchInput.checked = false;
+            }
+            if (fakeNt) {
                 if (troopInputs.snob) { troopInputs.snob.value = 0; troopInputs.snob.disabled = true; }
                 if (compatibleSlowUnits.length && !compatibleSlowUnits.some((id) => normalizeQuantity(troopInputs[id]?.value) > 0)) {
                     troopInputs[slowUnitSelect.value || compatibleSlowUnits[0]].value = 1;
@@ -1543,6 +1720,15 @@
             invalidateAndMaybeReanalyze();
         });
         [arrivalDateInput, arrivalTimeInput, intervalSelect].forEach((input) => input.addEventListener('input', invalidateAndMaybeReanalyze));
+        [antiDateInput, antiTimeInput, antiMillisecondsInput, antiIntervalInput, antiLatencyInput, antiCustomOffsetsInput, antiSpeedUnitSelect, antiDiversityInput].forEach((input) => input.addEventListener('input', invalidateAndMaybeReanalyze));
+        antiModeSelect.addEventListener('change', () => { toggleCustomOffsets(); invalidateAndMaybeReanalyze(); });
+        antiSpeedUnitSelect.addEventListener('change', () => {
+            if (antiSpeedUnitSelect.value !== 'composition' && troopInputs[antiSpeedUnitSelect.value]) {
+                troopInputs[antiSpeedUnitSelect.value].value = Math.max(1, normalizeQuantity(troopInputs[antiSpeedUnitSelect.value].value));
+                completionUnitSelect.value = antiSpeedUnitSelect.value;
+            }
+            invalidateAndMaybeReanalyze();
+        });
 
         const actions = document.createElement('div');
         actions.className = 'eas-actions';
@@ -1699,7 +1885,17 @@
                         arrivalTime: arrivalTimeInput.value,
                         intervalMs: Number(intervalSelect.value)
                     }),
-                    !isFakeNt() || writeStorage(STORAGE_KEYS.fakeNtCommands, Math.max(1, normalizeQuantity(fakesPerTargetInput.value)))
+                    !isFakeNt() || writeStorage(STORAGE_KEYS.fakeNtCommands, Math.max(1, normalizeQuantity(fakesPerTargetInput.value))),
+                    !isAntiSnipe() || writeStorage(STORAGE_KEYS.antiSnipeConfig, {
+                        centralDate: antiDateInput.value, centralTime: antiTimeInput.value,
+                        milliseconds: Number(antiMillisecondsInput.value), mode: antiModeSelect.value,
+                        commandCount: Math.max(1, normalizeQuantity(fakesPerTargetInput.value)),
+                        intervalMs: Math.max(1, normalizeQuantity(antiIntervalInput.value)),
+                        latencyCorrectionMs: Math.trunc(Number(antiLatencyInput.value) || 0),
+                        customOffsets: antiCustomOffsetsInput.value,
+                        speedUnit: antiSpeedUnitSelect.value,
+                        preferDiversity: antiDiversityInput.checked
+                    })
                 ].every(Boolean);
 
                 EAS.UI.showStatus({
@@ -1733,6 +1929,7 @@
         manager.appendChild(troopsSection);
         manager.appendChild(populationSection);
         manager.appendChild(fakeNtSection);
+        manager.appendChild(antiSnipeSection);
         manager.appendChild(targetsSection);
         manager.appendChild(summarySection);
         manager.appendChild(analysisSection);
@@ -1740,6 +1937,7 @@
         manager.appendChild(status);
         win.body.appendChild(manager);
         if (isFakeNt()) fakesPerTargetInput.value = savedFakeNtCommands;
+        if (isAntiSnipe()) fakesPerTargetInput.value = Math.max(1, normalizeQuantity(savedAntiSnipeConfig.commandCount) || 6);
         configurePresetUi();
         updateSummary();
 

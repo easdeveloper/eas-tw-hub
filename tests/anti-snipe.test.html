@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>Anti-Snipe tests</title><pre id="result">running</pre>
+<script>
+window.EAS={Modules:{},Utils:{},World:{},Units:{},WorldRules:{},CommandRules:{},FakesExecution:{}};
+window.game_data={world:'test',village:{id:1,x:500,y:500},units:['spear','ram','catapult']};
+</script>
+<script src="../core/utils.js"></script><script src="../core/world.js"></script><script src="../core/units.js"></script><script src="../modules/fakes.js"></script>
+<script>
+(() => {
+ const failures=[]; const equal=(a,b,label)=>{if(JSON.stringify(a)!==JSON.stringify(b))failures.push(`${label}: ${JSON.stringify(a)}`)};
+ const generate=EAS.Modules.Fakes.generateAntiSnipeOffsets;
+ equal(generate({mode:'before',commandCount:4,intervalMs:200}),[-800,-600,-400,-200],'before');
+ equal(generate({mode:'after',commandCount:4,intervalMs:200}),[200,400,600,800],'after');
+ equal(generate({mode:'around',commandCount:6,intervalMs:200}),[-600,-400,-200,200,400,600],'around par');
+ equal(generate({mode:'around',commandCount:5,intervalMs:200}),[-400,-200,200,400,600],'around ímpar');
+ equal(generate({mode:'custom',customOffsets:'400 -700;150,-350 400'}),[-700,-350,150,400],'custom normalizado');
+ const schedule=EAS.Modules.Fakes.buildAntiSnipeArrivalSchedule({centralArrival:10000,offsets:[400,-200,200]});
+ equal(schedule.map(item=>item.arrivalTime),[9800,10200,10400],'ordenação');
+ equal(EAS.Modules.Fakes.applyAntiSnipeLatencyCorrection(36000000,-120),35999880,'correção de latência');
+ const preset=EAS.Modules.Fakes.presets.anti_snipe;
+ equal([preset.defaultCommandType,preset.allowedCommandTypes],['attack',['attack']],'somente ataque');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 8 assertions'; document.title=failures.length?'FAIL':'PASS';
+})();
+</script>

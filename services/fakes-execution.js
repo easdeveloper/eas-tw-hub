@@ -41,6 +41,7 @@
         nt: 'Fake NT',
         fake_nt: 'Fake NT',
         antiSnipe: 'Fake Anti-Snipe',
+        anti_snipe: 'Fake Anti-Snipe',
         custom: 'Fake personalizado'
     };
 
@@ -58,6 +59,9 @@
             localStorage.setItem(EXECUTION_STORAGE_KEY, JSON.stringify(context));
             if (context?.preset === 'fake_nt') {
                 localStorage.setItem('eas_tw_fake_nt_execution', JSON.stringify(context));
+            }
+            if (context?.preset === 'anti_snipe') {
+                localStorage.setItem('eas_tw_fake_anti_snipe_execution', JSON.stringify(context));
             }
             return true;
         } catch {
@@ -111,8 +115,9 @@
     };
 
     const normalizeContext = (context) => {
-        const preset = context?.preset === 'nt' ? 'fake_nt' : context?.preset;
+        const preset = context?.preset === 'nt' ? 'fake_nt' : context?.preset === 'antiSnipe' ? 'anti_snipe' : context?.preset;
         const isFakeNt = preset === 'fake_nt';
+        const isAttackOnlyPreset = isFakeNt || preset === 'anti_snipe';
         const legacyTargets = Array.isArray(context?.targets)
             ? context.targets
             : [];
@@ -138,11 +143,11 @@
             : COMMAND_TYPES.includes(analysisCommandType)
                 ? analysisCommandType
                 : 'attack';
-        const commandType = isFakeNt ? 'attack' : resolvedCommandType;
+        const commandType = isAttackOnlyPreset ? 'attack' : resolvedCommandType;
         const commandTypeFallbackUsed = !COMMAND_TYPES.includes(
             context?.commandType
         );
-        const allowCommandSwitch = isFakeNt ? false : typeof context?.allowCommandSwitch === 'boolean'
+        const allowCommandSwitch = isAttackOnlyPreset ? false : typeof context?.allowCommandSwitch === 'boolean'
             ? context.allowCommandSwitch
             : Boolean(readLocalValue(
                 'eas_tw_fakes_allow_command_switch',
@@ -162,7 +167,7 @@
             queue,
             targets: legacyTargets,
             commandType,
-            commandTypeFallbackUsed: commandTypeFallbackUsed || (isFakeNt && context?.commandType === 'support'),
+            commandTypeFallbackUsed: commandTypeFallbackUsed || (isAttackOnlyPreset && context?.commandType === 'support'),
             allowCommandSwitch,
             forwardingCommandType,
             troopsPerTarget: {
@@ -333,6 +338,9 @@
                 return { valid: false, message: 'Fake NT exige Aríete ou Catapulta.' };
             }
             if (Number(context.troopsPerTarget.snob) > 0) return { valid: false, message: 'Fake NT não pode utilizar Nobre.' };
+        }
+        if (context.preset === 'anti_snipe' && commandType === 'support') {
+            return { valid: false, message: 'Fake Anti-Snipe é exclusivo para ataques.' };
         }
 
         const composition = EAS.CommandRules.validateCommandComposition({
@@ -776,6 +784,7 @@
         copyStyles(targetWindow);
         doc.getElementById(PANEL_ID)?.remove();
         let stopResultWatcher = null;
+        let countdownTimer = null;
 
         const panel = doc.createElement('aside');
         panel.id = PANEL_ID;
@@ -783,7 +792,7 @@
         const header = doc.createElement('div');
         header.className = 'fake-execution-header';
         const title = doc.createElement('strong');
-        title.textContent = '🎭 Execução de Fake';
+        title.textContent = context.preset === 'anti_snipe' ? '🎯 Execução Anti-Snipe' : '🎭 Execução de Fake';
         const closeButton = doc.createElement('button');
         closeButton.type = 'button';
         closeButton.className = 'fake-execution-close';
@@ -791,6 +800,7 @@
         closeButton.title = 'Fechar painel';
         closeButton.addEventListener('click', () => {
             stopResultWatcher?.();
+            clearInterval(countdownTimer);
             panel.remove();
         });
         header.appendChild(title);
@@ -865,6 +875,7 @@
                 <div><strong>Progresso</strong><span>${Math.min(context.currentIndex + 1, context.queue.length)} de ${context.queue.length}</span></div>
                 <div><strong>Restantes</strong><span>${remaining}</span></div>
                 ${context.preset === 'fake_nt' && currentEntry ? `<div><strong>Envio planejado</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.sendTime))}</span></div><div><strong>Chegada planejada</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.arrivalTime))}</span></div><div><strong>Unidade lenta</strong><span>${currentEntry.slowUnit === 'ram' ? 'Aríete' : 'Catapulta'}</span></div>` : ''}
+                ${context.preset === 'anti_snipe' && currentEntry ? `<div><strong>Offset</strong><span>${Number(currentEntry.offsetMs) >= 0 ? '+' : ''}${currentEntry.offsetMs} ms</span></div><div><strong>Chegada planejada</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.arrivalTime, true))}</span></div><div><strong>Envio calculado</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.sendTime, true))}</span></div><div><strong>Horário recomendado</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.recommendedActionTime, true))}</span></div><div><strong>Faltam</strong><span data-anti-countdown>--:--:--.---</span></div>` : ''}
             `;
 
             const troops = doc.createElement('div');
@@ -1005,7 +1016,7 @@
                     commandButton.click();
                 }
             });
-            if (context.preset !== 'fake_nt') addButton({
+            if (!['fake_nt', 'anti_snipe'].includes(context.preset)) addButton({
                 text: 'Apoiar',
                 disabled: !supportAllowed,
                 title: supportAllowed
@@ -1139,6 +1150,7 @@
                 className: 'eas-button--secondary',
                 onClick: () => {
                     stopResultWatcher?.();
+                    clearInterval(countdownTimer);
                     removeContext();
                     panel.remove();
                 }
@@ -1160,7 +1172,7 @@
                     : `Bloqueado — ${supportValidation.message}`;
             actionAvailability.innerHTML = `
                 <div class="${attackAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Ataque:</strong> ${EAS.Utils.escapeHtml(attackReason)}</div>
-                ${context.preset === 'fake_nt' ? '' : `<div class="${supportAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Apoio:</strong> ${EAS.Utils.escapeHtml(supportReason)}</div>`}
+                ${['fake_nt', 'anti_snipe'].includes(context.preset) ? '' : `<div class="${supportAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Apoio:</strong> ${EAS.Utils.escapeHtml(supportReason)}</div>`}
                 ${context.commandTypeFallbackUsed
                     ? '<div class="fake-action-disabled-reason">Tipo de comando ausente ou inválido no contexto antigo; Ataque foi usado como fallback.</div>'
                     : ''}
@@ -1173,6 +1185,23 @@
             content.appendChild(notice);
             content.appendChild(actions);
             content.appendChild(actionAvailability);
+            clearInterval(countdownTimer);
+            if (context.preset === 'anti_snipe' && currentEntry?.recommendedActionTime) {
+                const updateCountdown = () => {
+                    const output = content.querySelector('[data-anti-countdown]');
+                    if (!output) return;
+                    const difference = currentEntry.recommendedActionTime - Date.now();
+                    const absolute = Math.abs(difference);
+                    const hours = Math.floor(absolute / 3600000);
+                    const minutes = Math.floor(absolute % 3600000 / 60000);
+                    const seconds = Math.floor(absolute % 60000 / 1000);
+                    const milliseconds = Math.floor(absolute % 1000);
+                    const pad = (value, size = 2) => String(value).padStart(size, '0');
+                    output.textContent = `${difference < 0 ? 'Atrasado ' : ''}${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${pad(milliseconds, 3)}`;
+                };
+                updateCountdown();
+                countdownTimer = setInterval(updateCountdown, 100);
+            }
         };
 
         render();
