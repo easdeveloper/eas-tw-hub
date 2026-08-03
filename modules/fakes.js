@@ -578,22 +578,21 @@
 
         const getPopulationState = (troops = getTroops()) => {
             const commandPopulation = EAS.Units.calculateCommandPopulation(troops);
-            const minimumPopulation = Number(
-                worldRule?.minimumAttackPopulation || 0
-            );
+            const compositionRule = EAS.CommandRules.validateCommandComposition({
+                world: EAS.CommandRules.getWorld(), villageId: '__composition__',
+                commandType: commandTypeSelect.value, troops
+            });
+            const minimumPopulation = 0;
             const applies = commandTypeSelect.value === 'attack' &&
                 minimumPopulation > 0;
-            const attackPopulationValid = !applies ||
-                commandPopulation >= minimumPopulation;
+            const attackPopulationValid = compositionRule.valid;
 
             return {
                 commandPopulation,
                 minimumPopulation,
-                deficit: applies
-                    ? Math.max(0, minimumPopulation - commandPopulation)
-                    : 0,
+                deficit: 0,
                 attackPopulationValid,
-                valid: (attackPopulationValid || commandSwitchInput.checked) &&
+                valid: attackPopulationValid &&
                     (!isFakeNt() || (normalizeQuantity(troops.ram) + normalizeQuantity(troops.catapult) > 0 && normalizeQuantity(troops.snob) === 0))
             };
         };
@@ -610,8 +609,8 @@
 
             if (!worldRule?.minimumAttackPopulation) {
                 populationInfo.innerHTML = `
-                    <p>Nenhuma regra de população mínima foi detectada para <strong>${EAS.Utils.escapeHtml(EAS.WorldRules.getWorld())}</strong>.</p>
-                    <small>A detecção real acontece quando o jogo rejeita um ataque.</small>
+                    <p>A população mínima é validada individualmente por aldeia.</p>
+                    <small>Aldeias sem regra conhecida permanecem com “Regra ainda não detectada”.</small>
                 `;
                 completionUnitSelect.closest('.eas-field').hidden = true;
                 return;
@@ -1138,13 +1137,17 @@
                         ? 'Dados desatualizados'
                         : !analysis.hasTroopData
                             ? 'Sem dados'
+                            : !analysis.commandValidation.valid
+                                ? analysis.commandValidation.reasons[0]?.type === 'minimum-attack-population'
+                                    ? `População ${analysis.commandValidation.commandPopulation}/${analysis.commandValidation.minimumAttackPopulation}`
+                                    : `Mínimo de ${analysis.commandValidation.unitViolations[0]?.unit}: ${analysis.commandValidation.unitViolations[0]?.required}`
                             : !analysis.sufficient
                                 ? 'Tropas insuficientes'
                                 : analysis.selected
                                     ? (usage.get(Number(analysis.village.id)) || 0) >= analysis.capacity
                                         ? 'Capacidade esgotada'
                                         : 'Selecionada'
-                                    : 'Não selecionada';
+                                    : analysis.commandValidation.ruleKnown ? 'Não selecionada' : 'Regra ainda não detectada';
                 const values = [
                     analysis.village.name,
                     analysis.village.coordinate,
@@ -1378,13 +1381,19 @@
                         missingUnits: [],
                         sufficient: false
                     };
+                const commandValidation = EAS.CommandRules.validateCommandComposition({
+                    world: EAS.CommandRules.getWorld(), villageId: village.id,
+                    villageCoord: village.coordinate,
+                    commandType: commandTypeSelect.value, troops: operation.troops
+                });
 
                 return {
                     village: { ...village },
                     availableTroops,
                     hasTroopData,
+                    commandValidation,
                     ...capacity,
-                    sufficient: capacity.sufficient && operation.valid
+                    sufficient: capacity.sufficient && operation.valid && commandValidation.valid
                 };
             });
             const storedSelection = readStorage(
@@ -1548,6 +1557,37 @@
             className: 'eas-button--secondary',
             onClick: () => analyzeOperation({ forceRefresh: true })
         });
+        const rulesButton = EAS.UI.createButton({
+            text: 'Regras detectadas',
+            className: 'eas-button--secondary',
+            onClick: () => {
+                const rulesWin = EAS.UI.createWindow({ id: 'eas-command-rules', title: 'Regras detectadas', width: 680 });
+                const render = () => {
+                    const world = EAS.CommandRules.getWorld();
+                    const rules = EAS.CommandRules.getWorldRules(world);
+                    const villages = Object.values(rules.villageRules || {});
+                    const units = Object.values(rules.unitRules || {});
+                    rulesWin.body.innerHTML = `<p><strong>Mundo:</strong> ${EAS.Utils.escapeHtml(world)}</p><h3>Aldeias</h3>${villages.length ? `<div class="eas-table-wrapper"><table class="eas-table"><thead><tr><th>Aldeia</th><th>Coordenada</th><th>População mínima</th><th>Detectada</th><th>Ação</th></tr></thead><tbody>${villages.map((rule) => `<tr><td>${EAS.Utils.escapeHtml(rule.villageName || rule.villageId)}</td><td>${EAS.Utils.escapeHtml(rule.villageCoord || '-')}</td><td>${rule.minimumAttackPopulation}</td><td>${new Date(rule.lastConfirmedAt || rule.detectedAt).toLocaleString('pt-BR')}</td><td><button type="button" data-clear-village="${EAS.Utils.escapeHtml(rule.villageId)}">Limpar</button></td></tr>`).join('')}</tbody></table></div>` : '<p>Nenhuma regra de aldeia detectada.</p>'}<h3>Unidades</h3>${units.length ? `<ul>${units.map((rule) => `<li>${EAS.Utils.escapeHtml(rule.unit)} — mínimo ${rule.minimumQuantity}</li>`).join('')}</ul>` : '<p>Nenhuma regra de unidade detectada.</p>'}<div class="eas-actions"><button type="button" data-rule-action="scan">Reescanear ao próximo erro</button><button type="button" data-rule-action="clear">Limpar regras do mundo</button><button type="button" data-rule-action="export">Exportar diagnóstico</button></div><div class="eas-status eas-status--info" data-rule-status>Revise as regras aprendidas com erros reais do jogo.</div>`;
+                    rulesWin.body.querySelectorAll('[data-clear-village]').forEach((button) => button.addEventListener('click', () => {
+                        if (confirm('Deseja limpar a regra desta aldeia?')) { EAS.CommandRules.clearVillageRule(world, button.dataset.clearVillage); render(); }
+                    }));
+                    rulesWin.body.querySelector('[data-rule-action="clear"]').addEventListener('click', () => {
+                        if (confirm('Deseja limpar todas as regras deste mundo?')) { EAS.CommandRules.clearWorldRules(world); render(); }
+                    });
+                    rulesWin.body.querySelector('[data-rule-action="export"]').addEventListener('click', async () => {
+                        const diagnostic = JSON.stringify({ version: 1, world, rules }, null, 2);
+                        try { await navigator.clipboard.writeText(diagnostic); rulesWin.body.querySelector('[data-rule-status]').textContent = 'Diagnóstico copiado.'; }
+                        catch { prompt('Copie o diagnóstico:', diagnostic); }
+                    });
+                    rulesWin.body.querySelector('[data-rule-action="scan"]').addEventListener('click', () => {
+                        const output = rulesWin.body.querySelector('[data-rule-status]');
+                        output.textContent = 'Observando a área principal por 5 segundos...';
+                        EAS.CommandRules.observeCommandRuleErrors({ timeout: 5000, onRule: (rule) => { output.textContent = `Regra detectada: ${rule.type}.`; setTimeout(render, 400); } });
+                    });
+                };
+                render();
+            }
+        });
         const verifyWorldRuleButton = EAS.UI.createButton({
             text: 'Verificar regra do mundo',
             className: 'eas-button--secondary',
@@ -1585,17 +1625,24 @@
         const adjustPopulationButton = EAS.UI.createButton({
             text: 'Ajustar composição',
             onClick: () => {
-                const population = getPopulationState();
                 const unit = completionUnitSelect.value;
-                const unitPopulation = EAS.Units.getPopulation(unit);
+                const troops = getTroops();
+                const candidates = (currentAnalysis?.villageAnalyses || EAS.Villages.list().map((village) => ({ village })))
+                    .map(({ village }) => EAS.CommandRules.suggestCompositionAdjustment({
+                        world: EAS.CommandRules.getWorld(), villageId: village.id,
+                        villageCoord: village.coordinate, commandType: commandTypeSelect.value,
+                        troops, preferredUnits: [unit]
+                    })).sort((a, b) => b.additionalQuantity - a.additionalQuantity);
+                const suggestion = candidates[0];
 
-                if (!population.deficit || !troopInputs[unit] || !unitPopulation) {
+                if (!suggestion?.additionalQuantity || !troopInputs[unit]) {
+                    EAS.UI.showStatus({ target: status, message: 'Nenhum ajuste conhecido é necessário. Aldeias sem regra detectada não recebem mínimo presumido.', type: 'info' });
                     return;
                 }
 
                 const hadAnalysis = !analysisSection.hidden;
                 troopInputs[unit].value = normalizeQuantity(troopInputs[unit].value) +
-                    Math.ceil(population.deficit / unitPopulation);
+                    suggestion.additionalQuantity;
                 invalidateAnalysis();
                 updateSummary();
 
@@ -1676,6 +1723,7 @@
 
         actions.appendChild(analyzeButton);
         actions.appendChild(refreshTroopsButton);
+        actions.appendChild(rulesButton);
         actions.appendChild(clearButton);
         actions.appendChild(saveButton);
         actions.appendChild(backButton);

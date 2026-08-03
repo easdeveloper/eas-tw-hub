@@ -335,21 +335,25 @@
             if (Number(context.troopsPerTarget.snob) > 0) return { valid: false, message: 'Fake NT não pode utilizar Nobre.' };
         }
 
-        const worldRule = EAS.WorldRules.get();
-        const commandPopulation = EAS.Units.calculateCommandPopulation(
-            context.troopsPerTarget
-        );
+        const composition = EAS.CommandRules.validateCommandComposition({
+            world: EAS.CommandRules.getWorld(), villageId: entry.villageId,
+            villageCoord: entry.villageCoord,
+            commandType: commandType || context.commandType,
+            troops: context.troopsPerTarget
+        });
 
-        if (
-            commandType === 'attack' &&
-            worldRule?.minimumAttackPopulation > commandPopulation
-        ) {
+        if (!composition.valid) {
+            const populationReason = composition.reasons.find((reason) => reason.type === 'minimum-attack-population');
+            const unitReason = composition.reasons.find((reason) => reason.type === 'minimum-unit-quantity');
             return {
                 valid: false,
-                populationInvalid: true,
-                commandPopulation,
-                minimumPopulation: worldRule.minimumAttackPopulation,
-                message: `Composição inválida para ataques neste mundo. População atual: ${commandPopulation}. Mínima: ${worldRule.minimumAttackPopulation}. Faltam: ${worldRule.minimumAttackPopulation - commandPopulation}.`
+                populationInvalid: Boolean(populationReason),
+                commandPopulation: composition.commandPopulation,
+                minimumPopulation: composition.minimumAttackPopulation,
+                unitViolations: composition.unitViolations,
+                message: populationReason
+                    ? `Composição inválida para esta aldeia. População atual: ${composition.commandPopulation}. Mínima: ${composition.minimumAttackPopulation}. Faltam: ${composition.missingPopulation}.`
+                    : `Quantidade mínima de ${unitReason.unit}: ${unitReason.required}; atual: ${unitReason.current}.`
             };
         }
 
@@ -486,50 +490,13 @@
     };
 
     const parseMinimumPopulationError = (value) => {
-        const text = normalizeMessageText(value);
-        const match = text.match(
-            /cada ataque.*?pelo menos\s+(\d+)\s+de populacao.*?tentando enviar\s+(\d+)/i
-        );
-
-        return match
-            ? {
-                minimumPopulation: Number(match[1]),
-                attemptedPopulation: Number(match[2])
-            }
-            : null;
+        const parsed = EAS.CommandRules.parseCommandRuleError(value);
+        return parsed?.type === 'minimum-attack-population' ? parsed : null;
     };
 
     const detectMinimumPopulationError = (targetDocument) => {
-        const selectors = [
-            '.error',
-            '.error_box',
-            '.error-message',
-            '#error',
-            '.warn',
-            '.warning'
-        ];
-        const candidates = Array.from(
-            targetDocument.querySelectorAll(selectors.join(','))
-        ).filter((element) =>
-            !element.hidden &&
-            element.getAttribute('aria-hidden') !== 'true' &&
-            element.style.display !== 'none' &&
-            element.style.visibility !== 'hidden'
-        );
-
-        for (const element of candidates) {
-            const detected = parseMinimumPopulationError(element.textContent);
-
-            if (detected) {
-                return detected;
-            }
-        }
-
-        const main = targetDocument.querySelector(
-            '#content_value, #contentContainer, main'
-        ) || targetDocument.body;
-
-        return parseMinimumPopulationError(main?.textContent);
+        return EAS.CommandRules.scanCommandRuleErrors(targetDocument)
+            .find((rule) => rule.type === 'minimum-attack-population') || null;
     };
 
     const detectConfirmationCommandType = (targetDocument) => {
@@ -583,7 +550,7 @@
             detectedCommandType === expectedCommandType;
     };
 
-    const rejectForMinimumPopulation = (context, entryIndex, detected) => {
+    const rejectForCommandRule = (context, entryIndex, detected) => {
         const entry = context.queue[entryIndex];
         const commandKey = getCommandKey(entry, entryIndex);
         clearOtherTargetStatuses(context, commandKey, 'error');
@@ -591,12 +558,11 @@
             commandKey,
             target: entry?.target,
             villageId: entry?.villageId,
-            reason: 'minimum-attack-population',
-            minimumPopulation: detected.minimumPopulation,
-            attemptedPopulation: detected.attemptedPopulation
+            reason: detected.type,
+            ...detected
         });
         if (entry) {
-            entry.status = 'rejected-minimum-population';
+            entry.status = 'rejected-command-rule';
         }
         context.forwardingIndex = null;
         context.forwardingCommandType = null;
@@ -605,13 +571,10 @@
             ...detected,
             detectedAt: Date.now()
         };
-        EAS.WorldRules.setMinimumAttackPopulation(
-            detected.minimumPopulation,
-            {
-                attemptedPopulation: detected.attemptedPopulation,
-                source: 'game-error'
-            }
-        );
+        EAS.CommandRules.saveDetectedRule(detected, {
+            villageId: entry?.villageId, villageName: entry?.villageName,
+            villageCoord: entry?.villageCoord
+        });
         saveContext(context);
     };
 
@@ -672,11 +635,11 @@
                 observeMain();
             }
 
-            const detected = detectMinimumPopulationError(currentDocument);
+            const detected = EAS.CommandRules.scanCommandRuleErrors(currentDocument)[0] || null;
 
-            if (detected && context.forwardingCommandType === 'attack') {
+            if (detected) {
                 stop();
-                rejectForMinimumPopulation(context, entryIndex, detected);
+                rejectForCommandRule(context, entryIndex, detected);
                 onRejected(detected);
                 return;
             }
@@ -783,18 +746,17 @@
 
         const context = normalizeContext(stored);
         const doc = targetWindow.document;
-        const initialPopulationError = detectMinimumPopulationError(doc);
+        const initialCommandRule = EAS.CommandRules.scanCommandRuleErrors(doc)[0] || null;
         const hasForwardingEntry = Number.isInteger(context.forwardingIndex);
 
         if (
             hasForwardingEntry &&
-            context.forwardingCommandType === 'attack' &&
-            initialPopulationError
+            initialCommandRule
         ) {
-            rejectForMinimumPopulation(
+            rejectForCommandRule(
                 context,
                 context.forwardingIndex,
-                initialPopulationError
+                initialCommandRule
             );
         } else if (hasForwardingEntry && isConfirmationScreen(
             doc,
@@ -878,7 +840,7 @@
                 ...context.skipped,
                 ...context.errors
                     .filter((item) =>
-                        item.reason !== 'minimum-attack-population'
+                        !['minimum-attack-population', 'minimum-unit-quantity'].includes(item.reason)
                     )
                     .map((item) => item.commandKey)
             ]);
@@ -1026,7 +988,9 @@
                         entryIndex: context.currentIndex,
                         targetWindow,
                         onRejected: (detected) => render(
-                            `Regra do mundo detectada. Este mundo exige no mínimo ${detected.minimumPopulation} de população por ataque. A composição atual possui ${detected.attemptedPopulation}. Reanalise a operação ou ajuste as tropas.`,
+                            detected.type === 'minimum-attack-population'
+                                ? `Regra desta aldeia detectada: mínimo ${detected.minimumPopulation} de população; tentativa ${detected.attemptedPopulation}. Reanalise ou ajuste as tropas.`
+                                : `Regra de unidade detectada: mínimo ${detected.minimumQuantity} de ${detected.unit}. Reanalise ou ajuste as tropas.`,
                             'error'
                         ),
                         onConfirmed: () => render(

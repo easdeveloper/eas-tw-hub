@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Command Rules tests</title>
+<pre id="result">running</pre>
+<script>
+window.EAS = { Units: {}, World: {}, CommandRules: {}, WorldRules: {} };
+window.game_data = { world: 'test-world', village: { id: 123, name: 'Origem', x: 500, y: 500 } };
+</script>
+<script src="../core/units.js"></script>
+<script src="../core/world-rules.js"></script>
+<script>
+(() => {
+    const failures = [];
+    const equal = (actual, expected, label) => {
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: esperado ${JSON.stringify(expected)}, recebido ${JSON.stringify(actual)}`);
+    };
+    localStorage.removeItem('eas_tw_world_rules');
+    const rules = EAS.CommandRules;
+
+    equal(rules.calculateCommandPopulation({ catapult: 5 }), 40, '5 catapultas');
+    equal(rules.calculateCommandPopulation({ catapult: 7 }), 56, '7 catapultas');
+    equal(rules.calculateCommandPopulation({ light: 1 }), 4, '1 light');
+    equal(rules.calculateCommandPopulation({ ram: 1 }), 5, '1 ram');
+    equal(rules.calculateCommandPopulation({ spy: 1 }), 2, '1 spy');
+
+    const population = rules.parseCommandRuleError('Cada ataque desta aldeia precisa de pelo menos 49 de população. Você está tentando enviar 1.');
+    equal([population.type, population.minimumPopulation, population.attemptedPopulation], ['minimum-attack-population', 49, 1], 'parser população');
+    const spy = rules.parseCommandRuleError('É necessário enviar o mínimo de 5 Exploradores');
+    equal([spy.type, spy.unit, spy.minimumQuantity], ['minimum-unit-quantity', 'spy', 5], 'parser unidade');
+
+    rules.saveVillageRule('test-world', 123, { minimumAttackPopulation: 50, villageName: 'Origem', villageCoord: '500|500' });
+    equal(rules.validateCommandComposition({ world: 'test-world', villageId: 123, commandType: 'attack', troops: { catapult: 5 } }).valid, false, 'attack abaixo do mínimo');
+    equal(rules.validateCommandComposition({ world: 'test-world', villageId: 123, commandType: 'support', troops: { catapult: 5 } }).valid, true, 'support ignora população');
+    rules.saveUnitRule('test-world', 'spy', { minimumQuantity: 5 });
+    equal(rules.validateCommandComposition({ world: 'test-world', villageId: 123, commandType: 'support', troops: { spy: 1 } }).valid, false, 'spy em uso abaixo do mínimo');
+    equal(rules.validateCommandComposition({ world: 'test-world', villageId: 123, commandType: 'support', troops: { spy: 0 } }).valid, true, 'spy ausente não viola');
+
+    equal(rules.suggestCompositionAdjustment({ world: 'test-world', villageId: 123, commandType: 'attack', troops: { catapult: 5 }, preferredUnits: ['catapult'] }).additionalQuantity, 2, 'sugestão catapulta');
+    rules.saveVillageRule('test-world', 123, { minimumAttackPopulation: 44 });
+    equal(rules.suggestCompositionAdjustment({ world: 'test-world', villageId: 123, commandType: 'attack', troops: { light: 1 }, preferredUnits: ['light'] }).additionalQuantity, 10, 'sugestão light');
+    equal(rules.applyMinimumAdjustment({ troops: { catapult: 5 }, missingPopulation: 10, unit: 'catapult' }), { catapult: 7 }, 'ajuste puro');
+
+    document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : 'PASS — 14 assertions';
+    document.title = failures.length ? 'FAIL' : 'PASS';
+})();
+</script>

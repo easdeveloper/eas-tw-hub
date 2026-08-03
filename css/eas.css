@@ -629,6 +629,11 @@
     font-weight: 700;
 }
 
+.fake-execution-rejected-command-rule {
+    color: #9b2c2c;
+    font-weight: 600;
+}
+
 .fake-execution-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

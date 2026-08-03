@@ -13,6 +13,7 @@
         Troops: {},
         Units: {},
         WorldRules: {},
+        CommandRules: {},
         FakesExecution: {},
         PublicMap: {},
         Modules: {},
