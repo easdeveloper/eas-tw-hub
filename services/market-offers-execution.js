@@ -32,11 +32,17 @@
     };
     const setValue = (input, value, targetWindow) => { const setter = Object.getOwnPropertyDescriptor(targetWindow.HTMLInputElement.prototype, 'value')?.set; setter ? setter.call(input, String(value)) : input.value = String(value); input.dispatchEvent(new targetWindow.Event('input', { bubbles: true })); input.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); };
     const findField = (doc, names) => names.map((name) => doc.querySelector(`[name="${name}"], #${name}, [data-field="${name}"]`)).find(Boolean) || null;
-    const findRepeatField = (doc) => {
-        const direct = findField(doc, ['multi', 'count', 'offer_count', 'repeat_count', 'times', 'quantity']); if (direct) return direct;
-        const label = [...doc.querySelectorAll('label')].find((entry) => /quantas\s+vezes\s+oferecer/i.test(entry.textContent || ''));
-        if (!label) return null; if (label.htmlFor) return doc.getElementById(label.htmlFor);
-        return label.querySelector('input') || label.parentElement?.querySelector('input');
+    const findRepeatField = (doc) => doc.querySelector('input[name="multi"]');
+    const fillRepeatCount = (doc, item, targetWindow = window) => {
+        const multiInput = findRepeatField(doc); if (!multiInput) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
+        const repeatCount = Number(item.repeatCount); if (!Number.isInteger(repeatCount) || repeatCount <= 0) return { valid: false, message: 'repeatCount inválido.' };
+        const debug = localStorage.getItem('eas_tw_market_offers_debug') === 'true';
+        if (debug) console.debug('[EAS Market Offer]', { repeatCountFromQueue: item.repeatCount, merchantsAvailable: item.merchantsAvailable, fieldBefore: multiInput.value });
+        const apply = () => { multiInput.focus(); const setter = Object.getOwnPropertyDescriptor(targetWindow.HTMLInputElement.prototype, 'value')?.set; setter ? setter.call(multiInput, String(repeatCount)) : multiInput.value = String(repeatCount); multiInput.dispatchEvent(new targetWindow.Event('input', { bubbles: true })); multiInput.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); multiInput.blur(); };
+        apply(); if (Number(multiInput.value) !== repeatCount) apply();
+        targetWindow.setTimeout?.(() => { if (doc.contains(multiInput) && Number(multiInput.value) !== repeatCount) apply(); }, 0);
+        if (debug) console.debug('[EAS Market Offer]', { fieldAfter: multiInput.value });
+        return { valid: Number(multiInput.value) === repeatCount, input: multiInput, repeatCount, message: Number(multiInput.value) === repeatCount ? null : 'Não foi possível preencher Quantas vezes oferecer.' };
     };
     const findSubmit = (doc, form) => form?.querySelector('[name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]') || doc.querySelector('[name="create_offer"], [data-action="create-offer"]');
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
@@ -88,8 +94,8 @@
         const validation = validateQueueItem(item); if (!validation.valid) { item.status = 'error'; item.error = validation.reasons.join(', '); save(context); return { valid: false, message: item.error }; }
         const doc = targetWindow.document; const offerAmount = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestAmount = findField(doc, ['buy', 'request_amount', 'amount_buy']); const repeatCount = findRepeatField(doc);
         if (!offerAmount || !requestAmount || !chooseResource(doc, 'offer', item.offerResource, targetWindow) || !chooseResource(doc, 'request', item.requestResource, targetWindow)) return { valid: false, message: 'Campos de criação de oferta não encontrados.' };
-        if (!repeatCount) return { valid: false, message: 'Campo “Quantas vezes oferecer” não encontrado com segurança.' };
-        setValue(offerAmount, item.amountPerOffer, targetWindow); setValue(requestAmount, item.requestAmountPerOffer, targetWindow); setValue(repeatCount, item.repeatCount, targetWindow);
+        if (!repeatCount) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
+        setValue(offerAmount, item.amountPerOffer, targetWindow); setValue(requestAmount, item.requestAmountPerOffer, targetWindow); const repeatResult = fillRepeatCount(doc, item, targetWindow); if (!repeatResult.valid) return repeatResult;
         item.status = 'prepared'; item.error = null; item.previousSnapshot = snapshotOffers(doc, item); save(context);
         const form = offerAmount.closest('form') || requestAmount.closest('form'); return { valid: true, item, form, submit: findSubmit(doc, form), message: `Oferta preparada: ${item.repeatCount} × ${item.offerAmount} por ${item.requestAmount}. Clique em Criar no jogo.` };
     };
@@ -143,5 +149,5 @@
     };
     EAS.MarketOffersExecution.start = (context) => { const normalized = { version: 2, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, ...context, queue: (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })) }; syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
     EAS.MarketOffersExecution.initialize = () => mount(window);
-    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, read, save, remove, current, syncIndex, nextPendingIndex, normalizeItem, openCurrent, mount, validateQueueItem, prepareItem, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishError });
+    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, read, save, remove, current, syncIndex, nextPendingIndex, normalizeItem, openCurrent, mount, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishError });
 })();

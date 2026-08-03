@@ -67,6 +67,9 @@
  const quantityD=engine.calculateOfferQuantity({totalOfferAmount:1000,amountPerOffer:1000,merchantsAvailable:0});
  equal([quantityD.valid,quantityD.repeatCount],[false,0],'repeat D: zero comerciantes é inválido');
  equal(engine.calculateOfferRepeatCount({totalOfferAmount:50000,amountPerOffer:1000,merchantsAvailable:8})<=8,true,'repeat E: nunca ultrapassa comerciantes livres');
- document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 36 assertions';document.title=failures.length?'FAIL':'PASS';
+ const multiDoc=new DOMParser().parseFromString('<input name="count" value="99"><input name="multi" type="text" value="8">','text/html'); const filledMulti=EAS.MarketOffersExecution.fillRepeatCount(multiDoc,{repeatCount:5,merchantsAvailable:8},window);
+ equal([filledMulti.valid,multiDoc.querySelector('input[name="multi"]').value,multiDoc.querySelector('input[name="count"]').value],[true,'5','99'],'multi: seletor exato troca 8 por repeatCount 5');
+ equal([limited.suggestions.reduce((sum,item)=>sum+item.repeatCount,0),limited.suggestions[0].merchantsAvailable],[6,6],'fila: salva repeatCount e comerciantes disponíveis separadamente');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 38 assertions';document.title=failures.length?'FAIL':'PASS';
 })();
 </script>
