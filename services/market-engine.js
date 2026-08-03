@@ -67,9 +67,12 @@
     };
 
     const aggregateActiveOffers = (offers = []) => offers.reduce((aggregate, offer) => {
-        aggregate[offer.offerResource] = amount(aggregate[offer.offerResource]) + amount(offer.offerAmount);
-        aggregate.requested[offer.requestResource] = amount(aggregate.requested[offer.requestResource]) + amount(offer.requestAmount);
-        aggregate.merchantsUsed += amount(offer.merchantsUsed);
+        const repeatCount = Math.max(1, amount(offer.repeatCount || offer.quantity || 1));
+        const totalOffered = amount(offer.totalOfferAmount || (amount(offer.offerAmount) * repeatCount));
+        const totalRequested = amount(offer.totalRequestAmount || (amount(offer.requestAmount) * repeatCount));
+        aggregate[offer.offerResource] = amount(aggregate[offer.offerResource]) + totalOffered;
+        aggregate.requested[offer.requestResource] = amount(aggregate.requested[offer.requestResource]) + totalRequested;
+        aggregate.merchantsUsed += amount(offer.merchantsUsed || offer.merchantsRequired);
         return aggregate;
     }, { wood: 0, stone: 0, iron: 0, requested: resourceMap(), merchantsUsed: 0 });
 
@@ -84,20 +87,24 @@
         const merchantMatch = String(merchantArea?.textContent || '').match(/(\d[\d.]*)\s*\/\s*(\d[\d.]*)/);
         const merchantsAvailable = textNumber('#market_merchant_available_count, .market_merchant_available') || amount(merchantMatch?.[1]?.replace(/\D/g, ''));
         const merchantsTotal = textNumber('#market_merchant_total_count, .market_merchant_total') || amount(merchantMatch?.[2]?.replace(/\D/g, ''));
-        const offerRows = [...doc.querySelectorAll('#own_offers_table tr[data-offer-id], [data-own-offer], .own_offer')];
+        const offerRows = [...doc.querySelectorAll('#own_offers_table tr, [data-own-offer], .own_offer')];
         const activeOfferList = offerRows.map((row, index) => {
             const findResource = (kind) => row.querySelector(`[data-${kind}-resource]`)?.dataset?.[`${kind}Resource`] || row.querySelector(`[name*="${kind}_resource"]`)?.value || row.querySelector(`.${kind} img[src*="wood"], .${kind} img[src*="stone"], .${kind} img[src*="iron"]`)?.src?.match(/(wood|stone|iron)/)?.[1];
-            const offerResource = findResource('offer') || row.dataset.offerResource;
-            const requestResource = findResource('request') || row.dataset.requestResource;
+            const iconResources = [...row.querySelectorAll('img[src*="wood"], img[src*="stone"], img[src*="iron"]')].map((image) => image.src.match(/(wood|stone|iron)/)?.[1]).filter(Boolean);
+            const offerResource = findResource('offer') || row.dataset.offerResource || iconResources[0];
+            const requestResource = findResource('request') || row.dataset.requestResource || iconResources[1];
             const numbers = [...row.textContent.matchAll(/\d[\d.]*/g)].map((match) => amount(match[0].replace(/\D/g, ''))).filter(Boolean);
             if (!RESOURCES.includes(offerResource) || !RESOURCES.includes(requestResource)) return null;
             const offerAmount = amount(row.dataset.offerAmount || numbers[0]); const requestAmount = amount(row.dataset.requestAmount || numbers[1]);
-            return { offerId: row.dataset.offerId || `${village.id || village.villageId}-${index}`, villageId: String(village.id || village.villageId), offerResource, offerAmount, requestResource, requestAmount, merchantsUsed: calculateMerchantsRequired({ [offerResource]: offerAmount }), status: 'active' };
+            const quantityElement = row.querySelector('[data-quantity], .offer-count, .quantity, [title*="vez"]');
+            const repeatCount = Math.max(1, amount(row.dataset.quantity || row.dataset.repeatCount || quantityElement?.dataset?.quantity || quantityElement?.textContent || numbers[2] || 1));
+            const totalOfferAmount = offerAmount * repeatCount; const totalRequestAmount = requestAmount * repeatCount;
+            return { offerId: row.dataset.offerId || `${village.id || village.villageId}-${index}`, villageId: String(village.id || village.villageId), offerResource, offerAmount, requestResource, requestAmount, repeatCount, totalOfferAmount, totalRequestAmount, merchantsUsed: calculateMerchantsRequired({ [offerResource]: totalOfferAmount }), status: 'active' };
         }).filter(Boolean);
         const sessionExpired = Boolean(doc.querySelector('form#login, input[name="password"]'));
         const marketAvailable = Boolean(doc.querySelector('#market_merchant_available_count, form[action*="screen=market"], #own_offers_table, #content_value')) && !sessionExpired;
         const complete = RESOURCES.some((resource) => resources[resource] > 0) && storage > 0;
-        return { resources, storage, merchants: { available: merchantsAvailable, total: merchantsTotal, occupied: Math.max(0, merchantsTotal - merchantsAvailable) }, activeOfferList, activeOffers: aggregateActiveOffers(activeOfferList), sessionExpired, marketAvailable, status: sessionExpired ? 'session-expired' : !marketAvailable ? 'market-unavailable' : complete ? (merchantsAvailable ? 'ready' : 'no-free-merchants') : 'incomplete', updatedAt: Date.now(), available: complete };
+        return { resources, storage, merchants: { available: merchantsAvailable, total: merchantsTotal, occupied: Math.max(0, merchantsTotal - merchantsAvailable) }, activeOfferList, activeOffers: { ...aggregateActiveOffers(activeOfferList), alreadyDebited: true }, sessionExpired, marketAvailable, status: sessionExpired ? 'session-expired' : !marketAvailable ? 'market-unavailable' : complete ? (merchantsAvailable ? 'ready' : 'no-free-merchants') : 'incomplete', updatedAt: Date.now(), available: complete };
     };
 
     const refreshAllVillages = async ({ onProgress = () => {}, shouldCancel = () => false, delayMs = 250 } = {}) => {
@@ -123,6 +130,28 @@
         }
         listed.forEach((village) => { if (!result[String(village.id)]) result[String(village.id)] = previousMap[String(village.id)] || normalizeVillage({ ...village, available: false }); });
         const cache = { version: 1, world: EAS.World?.getWorldName?.() || location.hostname, playerId: String(EAS.World?.getPlayer?.().id || ''), updatedAt: Date.now(), merchantCapacity: getMerchantCapacity(), villages: result }; saveCache(cache); return cache;
+    };
+    const refreshMarketVillage = async (villageId) => {
+        const cache = getCache(); const key = String(villageId); const listed = EAS.Villages?.list?.() || [];
+        const village = listed.find((item) => String(item.id) === key) || cacheVillages(cache).find((item) => String(item.villageId) === key) || { id: key };
+        const url = new URL('/game.php', location.origin); url.searchParams.set('village', key); url.searchParams.set('screen', 'market'); url.searchParams.set('mode', 'own_offer');
+        const response = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const doc = new DOMParser().parseFromString(await response.text(), 'text/html'); const parsed = parseMarketVillageDocument(doc, village);
+        if (parsed.sessionExpired || !parsed.marketAvailable) throw new Error(parsed.sessionExpired ? 'Sessão expirada' : 'Mercado indisponível');
+        const normalized = normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-page' }); normalized.status = parsed.status;
+        cache.villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((item) => [String(item.villageId), item])) : (cache.villages || {});
+        cache.villages[key] = normalized; cache.updatedAt = Date.now(); saveCache(cache); return normalized;
+    };
+    const applyCreatedOfferToCache = (item) => {
+        const cache = getCache(); const key = String(item.villageId); const villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((village) => [String(village.villageId), village])) : { ...(cache.villages || {}) };
+        const village = normalizeVillage(villages[key] || { id: key }); const repeatCount = Math.max(1, amount(item.repeatCount || 1));
+        const totalOfferAmount = amount(item.totalOfferAmount || amount(item.offerAmount) * repeatCount); const totalRequestAmount = amount(item.totalRequestAmount || amount(item.requestAmount) * repeatCount);
+        const activeOffer = { offerId: item.offerId || `optimistic-${item.id}`, villageId: key, offerResource: item.offerResource, offerAmount: amount(item.offerAmount), requestResource: item.requestResource, requestAmount: amount(item.requestAmount), repeatCount, totalOfferAmount, totalRequestAmount, merchantsUsed: amount(item.merchantsRequired || calculateMerchantsRequired({ [item.offerResource]: totalOfferAmount })), status: 'active', optimistic: true };
+        village.resources[item.offerResource] = Math.max(0, village.resources[item.offerResource] - totalOfferAmount);
+        village.activeOfferList = [...village.activeOfferList.filter((offer) => offer.offerId !== activeOffer.offerId), activeOffer]; village.activeOffers = { ...aggregateActiveOffers(village.activeOfferList), alreadyDebited: true };
+        village.merchants.available = Math.max(0, village.merchants.available - activeOffer.merchantsUsed); village.updatedAt = Date.now(); village.source = 'optimistic-offer-created';
+        villages[key] = village; cache.villages = villages; cache.updatedAt = Date.now(); saveCache(cache); return village;
     };
     const validateTransport = ({ source, target, resources, merchantCapacity = getMerchantCapacity() }) => {
         const origin = normalizeVillage(source); const destination = normalizeVillage(target); const sent = resourceMap(resources); const available = getAvailableResources(origin); const space = getProjectedStorageSpace(destination); const merchantsRequired = calculateMerchantsRequired(sent, merchantCapacity); const reasons = [];
@@ -229,5 +258,5 @@
         }; win.body.append(body, status); render();
     };
 
-    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, splitOfferAmount, parseMarketVillageDocument, refreshAllVillages, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
+    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
 })();

@@ -42,6 +42,22 @@
  equal(EAS.MarketOffersExecution.classifyOfferResult(blankDoc,{offerResource:'wood',offerAmount:1000,requestResource:'iron'},0),null,'clique sem evidência não conclui');
  const successDoc=new DOMParser().parseFromString('<div class="success">Oferta criada</div>','text/html');
  equal(EAS.MarketOffersExecution.classifyOfferResult(successDoc,{offerResource:'wood',offerAmount:1000,requestResource:'iron'},0).status,'created','sucesso com evidência');
- document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 24 assertions';document.title=failures.length?'FAIL':'PASS';
+ const repeated=EAS.MarketOffersExecution.normalizeItem({offerResource:'wood',offerAmount:1000,requestResource:'stone',requestAmount:1000,repeatCount:10});
+ equal([repeated.totalOfferAmount,repeated.totalRequestAmount,repeated.merchantsRequired],[10000,10000,10],'A: totais e comerciantes por repetição');
+ const beforeOffers=new DOMParser().parseFromString('<table id="own_offers_table"></table><form action="game.php?screen=market"></form>','text/html');
+ const afterOffers=new DOMParser().parseFromString('<table id="own_offers_table"><tr data-offer-id="new" data-offer-resource="wood" data-offer-amount="1000" data-request-resource="stone" data-request-amount="1000" data-quantity="10"></tr></table><form action="game.php?screen=market"></form>','text/html');
+ const expected={villageId:'1',offerResource:'wood',offerAmount:1000,requestResource:'stone',requestAmount:1000,repeatCount:10}; const previous=EAS.MarketOffersExecution.snapshotOffers(beforeOffers,expected);
+ equal(EAS.MarketOffersExecution.detectOfferCreationSuccess({document:afterOffers,expectedOffer:expected,previousSnapshot:previous}).success,true,'B: nova oferta confirma criação');
+ const groupedBefore=new DOMParser().parseFromString('<table id="own_offers_table"><tr data-offer-id="same" data-offer-resource="wood" data-offer-amount="1000" data-request-resource="stone" data-request-amount="1000" data-quantity="9"></tr></table><form action="game.php?screen=market"></form>','text/html');
+ equal(EAS.MarketOffersExecution.detectOfferCreationSuccess({document:afterOffers,expectedOffer:expected,previousSnapshot:EAS.MarketOffersExecution.snapshotOffers(groupedBefore,expected)}).evidence,'grouped-quantity-increased','C: quantidade agrupada confirma criação');
+ const errorDoc=new DOMParser().parseFromString('<div class="error">Comerciantes insuficientes</div>','text/html'); const errorContext={executionId:'test',currentIndex:0,queue:[{...expected,id:'error-item',status:'submitting'}]}; EAS.MarketOffersExecution.finishError(errorContext,errorContext.queue[0],EAS.MarketOffersExecution.errorMessage(errorDoc),()=>{});
+ equal([errorContext.queue[0].status,errorContext.currentIndex],['error',0],'D: erro não avança fila');
+ localStorage.setItem(engine.CACHE_KEY,JSON.stringify({version:1,updatedAt:Date.now(),merchantCapacity:1000,villages:{'1':{id:1,name:'A',resources:{wood:20000,stone:5000,iron:5000},storage:50000,merchants:{available:20,total:20},activeOfferList:[],available:true,updatedAt:Date.now()}}})); engine.applyCreatedOfferToCache({...expected,id:'created-item',merchantsRequired:10,totalOfferAmount:10000,totalRequestAmount:10000});
+ const optimistic=engine.cacheVillages(engine.getCache())[0];
+ equal([optimistic.resources.wood,optimistic.merchants.available,optimistic.activeOfferList[0].totalOfferAmount],[10000,10,10000],'F: cache otimista compromete total real');
+ equal(engine.buildGlobalOfferSuggestions([optimistic],{maximumPerOffer:10000,minimumPerOffer:100,avoidDuplicates:true}).suggestions.some(item=>item.offerResource==='wood'&&item.requestResource==='stone'),false,'E: oferta criada não reaparece');
+ const queueContext={currentIndex:0,queue:[{status:'created'},{status:'skipped'},{status:'pending'}]}; EAS.MarketOffersExecution.syncIndex(queueContext);
+ equal(queueContext.currentIndex,2,'G: índice aponta para próximo pendente');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 31 assertions';document.title=failures.length?'FAIL':'PASS';
 })();
 </script>
