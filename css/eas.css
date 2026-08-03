@@ -278,11 +278,27 @@
 .fake-manager-troops,
 .fake-manager-population,
 .fake-manager-targets,
-.fake-manager-summary {
+.fake-manager-summary,
+.fake-nt-settings {
     padding: 12px;
     border: 1px solid #b98b43;
     border-radius: 3px;
     background: #fff8df;
+}
+
+.fake-nt-settings .eas-field {
+    margin-bottom: 8px;
+}
+
+.fake-nt-target-tools {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 6px;
+    margin: 10px 0;
+}
+
+.fake-nt-planning {
+    margin-top: 14px;
 }
 
 .fake-manager h3 {

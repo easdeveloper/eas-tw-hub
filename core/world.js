@@ -113,6 +113,9 @@
             : null;
     };
 
+    EAS.World.getSpeed = () => Number(getGameData().speed ?? getGameData().config?.speed ?? 1) || 1;
+    EAS.World.getUnitSpeed = () => Number(getGameData().unit_speed ?? getGameData().unitSpeed ?? getGameData().config?.unit_speed ?? 1) || 1;
+
     EAS.World.getScreen = () => {
         const url = new URL(location.href);
 

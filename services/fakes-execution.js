@@ -39,6 +39,7 @@
     const PRESET_NAMES = {
         simple: 'Fake simples',
         nt: 'Fake NT',
+        fake_nt: 'Fake NT',
         antiSnipe: 'Fake Anti-Snipe',
         custom: 'Fake personalizado'
     };
@@ -55,6 +56,9 @@
     const saveContext = (context) => {
         try {
             localStorage.setItem(EXECUTION_STORAGE_KEY, JSON.stringify(context));
+            if (context?.preset === 'fake_nt') {
+                localStorage.setItem('eas_tw_fake_nt_execution', JSON.stringify(context));
+            }
             return true;
         } catch {
             return false;
@@ -107,6 +111,8 @@
     };
 
     const normalizeContext = (context) => {
+        const preset = context?.preset === 'nt' ? 'fake_nt' : context?.preset;
+        const isFakeNt = preset === 'fake_nt';
         const legacyTargets = Array.isArray(context?.targets)
             ? context.targets
             : [];
@@ -127,15 +133,16 @@
             'eas_tw_fakes_analysis',
             {}
         )?.commandType;
-        const commandType = COMMAND_TYPES.includes(context?.commandType)
+        const resolvedCommandType = COMMAND_TYPES.includes(context?.commandType)
             ? context.commandType
             : COMMAND_TYPES.includes(analysisCommandType)
                 ? analysisCommandType
                 : 'attack';
+        const commandType = isFakeNt ? 'attack' : resolvedCommandType;
         const commandTypeFallbackUsed = !COMMAND_TYPES.includes(
             context?.commandType
         );
-        const allowCommandSwitch = typeof context?.allowCommandSwitch === 'boolean'
+        const allowCommandSwitch = isFakeNt ? false : typeof context?.allowCommandSwitch === 'boolean'
             ? context.allowCommandSwitch
             : Boolean(readLocalValue(
                 'eas_tw_fakes_allow_command_switch',
@@ -151,13 +158,17 @@
 
         return {
             ...context,
+            preset,
             queue,
             targets: legacyTargets,
             commandType,
-            commandTypeFallbackUsed,
+            commandTypeFallbackUsed: commandTypeFallbackUsed || (isFakeNt && context?.commandType === 'support'),
             allowCommandSwitch,
             forwardingCommandType,
-            troopsPerTarget: { ...(context?.troopsPerTarget || {}) },
+            troopsPerTarget: {
+                ...(context?.troopsPerTarget || {}),
+                ...(isFakeNt ? { snob: 0 } : {})
+            },
             currentIndex: Math.max(0, Number(context?.currentIndex || 0)),
             prepared: Array.isArray(context?.prepared)
                 ? [...context.prepared]
@@ -314,6 +325,14 @@
                 valid: false,
                 message: 'Nenhuma tropa configurada para este alvo.'
             };
+        }
+
+        if (context.preset === 'fake_nt') {
+            if (commandType === 'support') return { valid: false, message: 'Fake NT é exclusivo para ataques.' };
+            if (!(Number(context.troopsPerTarget.ram) > 0 || Number(context.troopsPerTarget.catapult) > 0)) {
+                return { valid: false, message: 'Fake NT exige Aríete ou Catapulta.' };
+            }
+            if (Number(context.troopsPerTarget.snob) > 0) return { valid: false, message: 'Fake NT não pode utilizar Nobre.' };
         }
 
         const worldRule = EAS.WorldRules.get();
@@ -883,6 +902,7 @@
                 <div><strong>Alvo</strong><span>${EAS.Utils.escapeHtml(currentTarget || 'Concluído')}</span></div>
                 <div><strong>Progresso</strong><span>${Math.min(context.currentIndex + 1, context.queue.length)} de ${context.queue.length}</span></div>
                 <div><strong>Restantes</strong><span>${remaining}</span></div>
+                ${context.preset === 'fake_nt' && currentEntry ? `<div><strong>Envio planejado</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.sendTime))}</span></div><div><strong>Chegada planejada</strong><span>${EAS.Utils.escapeHtml(EAS.Utils.formatDateTime(currentEntry.arrivalTime))}</span></div><div><strong>Unidade lenta</strong><span>${currentEntry.slowUnit === 'ram' ? 'Aríete' : 'Catapulta'}</span></div>` : ''}
             `;
 
             const troops = doc.createElement('div');
@@ -1021,7 +1041,7 @@
                     commandButton.click();
                 }
             });
-            addButton({
+            if (context.preset !== 'fake_nt') addButton({
                 text: 'Apoiar',
                 disabled: !supportAllowed,
                 title: supportAllowed
@@ -1176,7 +1196,7 @@
                     : `Bloqueado — ${supportValidation.message}`;
             actionAvailability.innerHTML = `
                 <div class="${attackAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Ataque:</strong> ${EAS.Utils.escapeHtml(attackReason)}</div>
-                <div class="${supportAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Apoio:</strong> ${EAS.Utils.escapeHtml(supportReason)}</div>
+                ${context.preset === 'fake_nt' ? '' : `<div class="${supportAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Apoio:</strong> ${EAS.Utils.escapeHtml(supportReason)}</div>`}
                 ${context.commandTypeFallbackUsed
                     ? '<div class="fake-action-disabled-reason">Tipo de comando ausente ou inválido no contexto antigo; Ataque foi usado como fallback.</div>'
                     : ''}

@@ -14,6 +14,7 @@
         Units: {},
         WorldRules: {},
         FakesExecution: {},
+        PublicMap: {},
         Modules: {},
 
         start() {

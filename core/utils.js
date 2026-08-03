@@ -151,6 +151,52 @@
         };
     };
 
+    EAS.Utils.formatDateTime = (timestamp, includeMilliseconds = false) => {
+        if (!Number.isFinite(timestamp)) return '-';
+        const date = new Date(timestamp);
+        const pad = (value, size = 2) => String(value).padStart(size, '0');
+        const value = `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        return includeMilliseconds ? `${value}.${pad(date.getMilliseconds(), 3)}` : value;
+    };
+
+    EAS.Utils.formatDuration = (durationMs) => {
+        if (!Number.isFinite(durationMs)) return '-';
+        const total = Math.max(0, Math.round(durationMs / 1000));
+        const pad = (value) => String(value).padStart(2, '0');
+        return `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total % 3600 / 60))}:${pad(total % 60)}`;
+    };
+
+    const getZonedParts = (timestamp, timeZone) => Object.fromEntries(
+        new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+            .formatToParts(new Date(timestamp)).filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)])
+    );
+
+    EAS.Utils.parseDateTimeInTimeZone = (value, timeZone) => {
+        const match = String(value || '').match(/^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
+        if (!match) return null;
+        const wanted = { day: +match[1], month: +match[2], year: +match[3], hour: +match[4], minute: +match[5], second: +match[6] };
+        const wallUtc = Date.UTC(wanted.year, wanted.month - 1, wanted.day, wanted.hour, wanted.minute, wanted.second);
+        let timestamp = wallUtc;
+        for (let i = 0; i < 3; i += 1) {
+            const parts = getZonedParts(timestamp, timeZone);
+            timestamp -= Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - wallUtc;
+        }
+        const result = getZonedParts(timestamp, timeZone);
+        return Object.keys(wanted).every((key) => wanted[key] === result[key]) ? timestamp : null;
+    };
+
+    EAS.Utils.formatDateTimeInTimeZone = (timestamp, timeZone) => {
+        if (!Number.isFinite(timestamp)) return '-';
+        const parts = getZonedParts(timestamp, timeZone);
+        const pad = (value) => String(value).padStart(2, '0');
+        return `${pad(parts.day)}/${pad(parts.month)}/${parts.year} ${pad(parts.hour)}:${pad(parts.minute)}:${pad(parts.second)}`;
+    };
+
+    EAS.Utils.serverTimeToJapan = (formattedServerTime) => {
+        const timestamp = EAS.Utils.parseDateTimeInTimeZone(formattedServerTime, 'America/Sao_Paulo');
+        return timestamp === null ? null : EAS.Utils.formatDateTimeInTimeZone(timestamp, 'Asia/Tokyo');
+    };
+
     EAS.Utils.escapeHtml = (value) => {
         const element = document.createElement('div');
         element.textContent = String(value ?? '');

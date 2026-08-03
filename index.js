@@ -61,6 +61,7 @@
                 }
 
                 if (!window.EAS.FakesExecution?.initialize) {
+                    await loadScript('services/public-map.js');
                     await loadScript('services/fakes-execution.js');
                 }
 
@@ -82,6 +83,7 @@
             await loadScript('core/villages.js');
             await loadScript('core/troops.js');
             await loadScript('services/place.js');
+            await loadScript('services/public-map.js');
             await loadScript('services/fakes-execution.js');
 
             window.EAS.start();

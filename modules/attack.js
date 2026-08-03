@@ -266,7 +266,11 @@
     };
 
     const getUnitById = (unitId) => {
-        return UNIT_SPEEDS.find((unit) => unit.id === unitId) || UNIT_SPEEDS[0];
+        const unit = UNIT_SPEEDS.find((item) => item.id === unitId) || UNIT_SPEEDS[0];
+        return {
+            ...unit,
+            minutesPerField: EAS.Units.getTravelSpeed(unit.id) || unit.minutesPerField
+        };
     };
 
     const pluralize = (count, singular, plural) => {

@@ -12,7 +12,11 @@
         fakesPerTarget: 'eas_tw_fakes_per_target',
         selectedVillages: 'eas_tw_fakes_selected_villages',
         allowCommandSwitch: 'eas_tw_fakes_allow_command_switch',
-        analysis: 'eas_tw_fakes_analysis'
+        analysis: 'eas_tw_fakes_analysis',
+        fakeNtConfig: 'eas_tw_fake_nt_config',
+        fakeNtPlayer: 'eas_tw_fake_nt_target_player',
+        fakeNtVillages: 'eas_tw_fake_nt_selected_target_villages',
+        fakeNtCommands: 'eas_tw_fake_nt_commands_per_target'
     };
 
     const UNIT_DEFINITIONS = [
@@ -37,11 +41,14 @@
             commandType: 'attack',
             troops: { spear: 1, sword: 1 }
         },
-        nt: {
-            id: 'nt',
+        fake_nt: {
+            id: 'fake_nt',
             name: 'Fake NT',
-            commandType: 'attack',
-            troops: {}
+            commandType: 'attack', defaultCommandType: 'attack',
+            allowedCommandTypes: ['attack'], requiredUnitGroups: [['ram', 'catapult']],
+            forbiddenUnits: ['snob'], defaultCommandsPerTarget: 4,
+            requiresArrivalTime: true, usesTravelPlanning: true,
+            respectsMinimumPopulation: true, troops: { ram: 1 }
         },
         antiSnipe: {
             id: 'antiSnipe',
@@ -267,7 +274,8 @@
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
     EAS.Modules.Fakes.open = ({ autoAnalyze = false } = {}) => {
-        const savedPresetId = readStorage(STORAGE_KEYS.preset, 'simple');
+        const rawSavedPresetId = readStorage(STORAGE_KEYS.preset, 'simple');
+        const savedPresetId = rawSavedPresetId === 'nt' ? 'fake_nt' : rawSavedPresetId;
         const selectedPreset = FAKE_PRESETS[savedPresetId] || FAKE_PRESETS.simple;
         const savedCommandType = readStorage(
             STORAGE_KEYS.commandType,
@@ -286,6 +294,11 @@
             STORAGE_KEYS.allowCommandSwitch,
             false
         ));
+        const savedFakeNtConfig = readStorage(STORAGE_KEYS.fakeNtConfig, {});
+        const savedFakeNtVillages = readStorage(STORAGE_KEYS.fakeNtVillages, []);
+        const savedFakeNtCommands = Math.max(1, normalizeQuantity(readStorage(
+            STORAGE_KEYS.fakeNtCommands, 4
+        )) || 4);
         const availableUnits = getAvailableUnits();
         let worldRule = EAS.WorldRules.get();
 
@@ -417,6 +430,43 @@
         targetsSection.appendChild(coordinatesInput);
         targetsSection.appendChild(targetCount);
 
+        const fakeNtSection = document.createElement('section');
+        fakeNtSection.className = 'fake-nt-settings';
+        const compatibleSlowUnits = ['ram', 'catapult'].filter((id) => troopInputs[id]);
+        const slowUnitSelect = createSelect('fake-nt-slow-unit', compatibleSlowUnits.map((id) => ({
+            value: id, label: id === 'ram' ? 'Aríete' : 'Catapulta'
+        })), savedFakeNtConfig.slowUnit || compatibleSlowUnits[0] || '');
+        const arrivalDateInput = EAS.UI.createInput({
+            type: 'text', name: 'fake-nt-arrival-date',
+            value: savedFakeNtConfig.arrivalDate || EAS.World.getServerDateTime().date || '',
+            placeholder: 'DD/MM/AAAA'
+        });
+        const arrivalTimeInput = EAS.UI.createInput({
+            type: 'text', name: 'fake-nt-arrival-time',
+            value: savedFakeNtConfig.arrivalTime || '08:00:00', placeholder: 'HH:MM:SS'
+        });
+        const intervalSelect = createSelect('fake-nt-interval', [100, 200, 500, 1000].map((value) => ({ value: String(value), label: value === 1000 ? '1 segundo' : `${value} ms` })), String(savedFakeNtConfig.intervalMs || 200));
+        const playerInput = EAS.UI.createInput({ type: 'text', name: 'fake-nt-player', value: readStorage(STORAGE_KEYS.fakeNtPlayer, '') || '', placeholder: 'Nome exato do jogador' });
+        const playerActions = document.createElement('div');
+        playerActions.className = 'eas-actions';
+        const playerResult = document.createElement('div');
+        playerResult.className = 'fake-nt-player-result';
+        let targetVillages = [];
+        let selectedTargetVillageIds = new Set((Array.isArray(savedFakeNtVillages) ? savedFakeNtVillages : []).map(Number));
+
+        fakeNtSection.innerHTML = '<h3>Configuração do Fake NT</h3><div class="fake-analysis-warning">Fake NT é exclusivo para ataques e nunca utiliza Nobre.</div>';
+        fakeNtSection.appendChild(EAS.UI.createField({ label: 'Unidade lenta do Fake NT', input: slowUnitSelect }));
+        fakeNtSection.appendChild(EAS.UI.createField({ label: 'Data de chegada', input: arrivalDateInput }));
+        fakeNtSection.appendChild(EAS.UI.createField({ label: 'Hora de chegada (com segundos)', input: arrivalTimeInput }));
+        fakeNtSection.appendChild(EAS.UI.createField({ label: 'Intervalo entre comandos (planejamento)', input: intervalSelect }));
+        fakeNtSection.appendChild(EAS.UI.createField({ label: 'Jogador-alvo', input: playerInput }));
+        fakeNtSection.appendChild(playerActions);
+        fakeNtSection.appendChild(playerResult);
+        if (!compatibleSlowUnits.length) {
+            slowUnitSelect.disabled = true;
+            fakeNtSection.insertAdjacentHTML('beforeend', '<div class="fake-analysis-warning">Este mundo não possui uma unidade compatível com Fake NT.</div>');
+        }
+
         const summarySection = document.createElement('section');
         summarySection.className = 'fake-manager-summary';
         const summaryTitle = document.createElement('h3');
@@ -452,8 +502,77 @@
         status.textContent = 'Revise os dados da operação.';
         let currentAnalysis = null;
 
+        const isFakeNt = () => presetSelect.value === 'fake_nt';
+        const getTargetCoordinates = () => [...new Set([
+            ...targetVillages.filter((village) => selectedTargetVillageIds.has(village.id)).map((village) => village.coordinate),
+            ...extractCoordinates(coordinatesInput.value)
+        ])];
+        const renderTargetVillages = (meta = '') => {
+            if (!targetVillages.length) {
+                playerResult.innerHTML = meta ? `<div class="fake-analysis-warning">${EAS.Utils.escapeHtml(meta)}</div>` : '';
+                return;
+            }
+            playerResult.innerHTML = `
+                <p><strong>${EAS.Utils.escapeHtml(meta)}</strong><br>${targetVillages.length} aldeias encontradas.</p>
+                <div class="fake-nt-target-tools">
+                    <button type="button" data-select="all">Selecionar todas</button>
+                    <button type="button" data-select="none">Desmarcar todas</button>
+                    <input class="eas-input" data-filter="continent" placeholder="Continente (K55)">
+                    <input class="eas-input" type="number" data-filter="min" placeholder="Pontos mínimos">
+                    <input class="eas-input" type="number" data-filter="max" placeholder="Pontos máximos">
+                    <input class="eas-input" data-filter="name" placeholder="Filtrar nome">
+                </div>
+                <div class="eas-table-wrapper"><table class="eas-table"><thead><tr><th>Selecionar</th><th>Aldeia</th><th>Coordenada</th><th>Pontos</th><th>Continente</th></tr></thead><tbody>
+                    ${targetVillages.map((village) => `<tr data-target-row data-continent="${village.continent}" data-points="${village.points}" data-name="${EAS.Utils.escapeHtml(village.name.toLocaleLowerCase())}"><td><input type="checkbox" data-target-id="${village.id}" ${selectedTargetVillageIds.has(village.id) ? 'checked' : ''}></td><td>${EAS.Utils.escapeHtml(village.name)}</td><td>${village.coordinate}</td><td>${EAS.Utils.formatNumber(village.points)}</td><td>${village.continent}</td></tr>`).join('')}
+                </tbody></table></div>`;
+            playerResult.querySelectorAll('[data-target-id]').forEach((input) => input.addEventListener('change', () => {
+                const id = Number(input.dataset.targetId);
+                input.checked ? selectedTargetVillageIds.add(id) : selectedTargetVillageIds.delete(id);
+                writeStorage(STORAGE_KEYS.fakeNtVillages, [...selectedTargetVillageIds]);
+                invalidateAnalysis(); updateSummary();
+            }));
+            const applyFilters = () => {
+                const continent = playerResult.querySelector('[data-filter="continent"]').value.trim().toUpperCase();
+                const min = Number(playerResult.querySelector('[data-filter="min"]').value) || 0;
+                const max = Number(playerResult.querySelector('[data-filter="max"]').value) || Infinity;
+                const name = playerResult.querySelector('[data-filter="name"]').value.trim().toLocaleLowerCase();
+                playerResult.querySelectorAll('[data-target-row]').forEach((row) => {
+                    row.hidden = Boolean((continent && row.dataset.continent !== continent) || Number(row.dataset.points) < min || Number(row.dataset.points) > max || (name && !row.dataset.name.includes(name)));
+                });
+            };
+            playerResult.querySelectorAll('[data-filter]').forEach((input) => input.addEventListener('input', applyFilters));
+            playerResult.querySelectorAll('[data-select]').forEach((button) => button.addEventListener('click', () => {
+                playerResult.querySelectorAll('[data-target-row]:not([hidden]) [data-target-id]').forEach((input) => {
+                    input.checked = button.dataset.select === 'all'; input.dispatchEvent(new Event('change'));
+                });
+            }));
+        };
+
+        const searchPlayer = async (forceRefresh = false) => {
+            EAS.UI.showStatus({ target: status, message: 'Buscando dados públicos do jogador...', type: 'info' });
+            try {
+                const previousIds = new Set(targetVillages.map((village) => village.id));
+                const result = await EAS.PublicMap.findPlayerVillages(playerInput.value, { forceRefresh });
+                const currentIds = new Set(result.villages.map((village) => village.id));
+                const added = result.villages.filter((village) => !previousIds.has(village.id)).length;
+                const removed = [...previousIds].filter((id) => !currentIds.has(id)).length;
+                selectedTargetVillageIds = new Set([...selectedTargetVillageIds].filter((id) => currentIds.has(id)));
+                targetVillages = result.villages;
+                writeStorage(STORAGE_KEYS.fakeNtPlayer, result.player.name);
+                writeStorage(STORAGE_KEYS.fakeNtVillages, [...selectedTargetVillageIds]);
+                renderTargetVillages(`${result.player.name} · última busca ${new Date(result.updatedAt).toLocaleString('pt-BR')}${forceRefresh ? ` · +${added}/-${removed}` : ''}`);
+                invalidateAnalysis(); updateSummary();
+                EAS.UI.showStatus({ target: status, message: `${targetVillages.length} aldeias de ${result.player.name} carregadas.`, type: 'success' });
+            } catch (error) {
+                EAS.UI.showStatus({ target: status, message: error.message || 'Erro de rede ao buscar o jogador.', type: 'error' });
+            }
+        };
+        playerActions.appendChild(EAS.UI.createButton({ text: 'Buscar aldeias', onClick: () => searchPlayer(false) }));
+        playerActions.appendChild(EAS.UI.createButton({ text: 'Atualizar aldeias do jogador', className: 'eas-button--secondary', onClick: () => searchPlayer(true) }));
+
         const getTroops = () => availableUnits.reduce((troops, unit) => {
             troops[unit.id] = normalizeQuantity(troopInputs[unit.id].value);
+            if (isFakeNt() && unit.id === 'snob') troops[unit.id] = 0;
             return troops;
         }, {});
 
@@ -474,7 +593,8 @@
                     ? Math.max(0, minimumPopulation - commandPopulation)
                     : 0,
                 attackPopulationValid,
-                valid: attackPopulationValid || commandSwitchInput.checked
+                valid: (attackPopulationValid || commandSwitchInput.checked) &&
+                    (!isFakeNt() || (normalizeQuantity(troops.ram) + normalizeQuantity(troops.catapult) > 0 && normalizeQuantity(troops.snob) === 0))
             };
         };
 
@@ -512,7 +632,7 @@
 
         const updateSummary = () => {
             const preset = FAKE_PRESETS[presetSelect.value] || FAKE_PRESETS.custom;
-            const coordinates = extractCoordinates(coordinatesInput.value);
+            const coordinates = getTargetCoordinates();
             const troops = getTroops();
             const population = getPopulationState(troops);
             const troopLines = formatTroopLines(troops, coordinates.length, availableUnits);
@@ -526,7 +646,8 @@
                 <p><strong>${escape(preset.name)}</strong><br>
                 Comando: ${commandTypeSelect.value === 'support' ? 'Apoio' : 'Ataque'}<br>
                 Alvos: ${coordinates.length}<br>
-                Fakes por alvo: ${Math.max(1, normalizeQuantity(fakesPerTargetInput.value))}<br>
+                ${isFakeNt() ? 'Fake NT' : 'Fakes'} por alvo: ${Math.max(1, normalizeQuantity(fakesPerTargetInput.value))}<br>
+                Comandos desejados: ${coordinates.length * Math.max(1, normalizeQuantity(fakesPerTargetInput.value))}<br>
                 População por comando: ${population.commandPopulation}</p>
                 <div class="fake-manager-summary__grid">
                     <div class="fake-manager-summary__block">
@@ -542,7 +663,15 @@
 
             renderPopulationRule();
 
-            return { coordinates, troops, ...population };
+            const arrival = EAS.Utils.createServerDateTime(arrivalDateInput.value, arrivalTimeInput.value);
+            return {
+                coordinates, troops, ...population,
+                arrivalTimestamp: arrival?.timestamp ?? null,
+                arrivalFormatted: arrival?.formatted || null,
+                intervalMs: Math.max(0, Number(intervalSelect.value) || 0),
+                slowUnit: slowUnitSelect.value,
+                valid: population.valid && (!isFakeNt() || Boolean(arrival && compatibleSlowUnits.length))
+            };
         };
 
         const invalidateAnalysis = () => {
@@ -822,9 +951,27 @@
                     state.distribution.assignments.flatMap((assignment) =>
                         assignment.sources.map((source) => ({
                             target: assignment.target,
+                            targetVillageId: targetVillages.find((village) => village.coordinate === assignment.target)?.id || null,
                             villageId: source.villageId,
+                            sourceVillageId: source.villageId,
                             villageName: source.villageName,
                             villageCoord: source.villageCoord,
+                            ...(() => {
+                                if (!isFakeNt()) return {};
+                                const distance = EAS.Utils.distance(source.villageCoord, assignment.target);
+                                const slowest = EAS.Units.getSlowestUnit(operation.troops);
+                                const durationMs = distance * slowest.minutesPerField * 60 * 1000 /
+                                    (EAS.World.getSpeed() * EAS.World.getUnitSpeed());
+                                const arrivalTime = operation.arrivalTimestamp +
+                                    (source.commandIndex - 1) * operation.intervalMs;
+                                const sendTime = arrivalTime - durationMs;
+                                const now = EAS.World.getServerNowTimestamp() ?? Date.now();
+                                return {
+                                    distance, durationMs, arrivalTime, sendTime,
+                                    slowUnit: slowest.unit, commandType: 'attack',
+                                    timingStatus: sendTime < now ? 'Atrasado' : sendTime - now < 60000 ? 'Pronto para enviar' : sendTime - now < 300000 ? 'Próximo' : 'Futuro'
+                                };
+                            })(),
                             status: 'pending'
                         }))
                     );
@@ -1108,16 +1255,29 @@
                 targetDistribution.appendChild(details);
             });
 
+            if (isFakeNt()) {
+                const showJapan = localStorage.getItem('eas_tw_attack_timezone_japan') === 'true';
+                const japanLine = (timestamp) => {
+                    if (!showJapan) return '';
+                    const japan = EAS.Utils.serverTimeToJapan(EAS.Utils.formatDateTime(timestamp));
+                    return japan ? `<div class="attack-send-time-japan">(${EAS.Utils.escapeHtml(japan)} Japão)</div>` : '';
+                };
+                const planning = document.createElement('div');
+                planning.className = 'fake-nt-planning eas-table-wrapper';
+                planning.innerHTML = `<h3>Planejamento do Fake NT</h3><table class="eas-table"><thead><tr><th>Alvo</th><th>Origem</th><th>Distância</th><th>Unidade lenta</th><th>Duração</th><th>Horário de envio</th><th>Horário de chegada</th><th>Capacidade</th><th>Status</th></tr></thead><tbody>${state.distribution.executionQueue.map((entry) => `<tr><td>${entry.target}</td><td>${EAS.Utils.escapeHtml(entry.villageName)}<br>${entry.villageCoord}</td><td>${EAS.Utils.formatNumber(entry.distance, 2, 2)}</td><td>${entry.slowUnit === 'ram' ? 'Aríete' : 'Catapulta'}</td><td>${EAS.Utils.formatDuration(entry.durationMs)}</td><td><strong>${EAS.Utils.formatDateTime(entry.sendTime, operation.intervalMs % 1000 !== 0)}</strong>${japanLine(entry.sendTime)}</td><td><strong>${EAS.Utils.formatDateTime(entry.arrivalTime, operation.intervalMs % 1000 !== 0)}</strong>${japanLine(entry.arrivalTime)}</td><td>${villageAnalyses.find((item) => Number(item.village.id) === Number(entry.villageId))?.capacity || 0}</td><td>${entry.timingStatus}</td></tr>`).join('')}</tbody></table>`;
+                targetDistribution.appendChild(planning);
+            }
+
             prepareOperationContainer.innerHTML = '';
             const prepareButton = EAS.UI.createButton({
-                text: 'Preparar operação',
-                disabled: !operation.valid || !distributedCommands,
+                text: isFakeNt() ? 'Preparar operação Fake NT' : 'Preparar operação',
+                disabled: !operation.valid || !distributedCommands || (isFakeNt() && state.distribution.executionQueue.some((entry) => entry.timingStatus === 'Atrasado')),
                 onClick: () => {
                     rebuildQueue();
                     const execution = {
                         preset: presetSelect.value,
-                        commandType: commandTypeSelect.value,
-                        allowCommandSwitch: commandSwitchInput.checked,
+                        commandType: isFakeNt() ? 'attack' : commandTypeSelect.value,
+                        allowCommandSwitch: isFakeNt() ? false : commandSwitchInput.checked,
                         troopsPerTarget: { ...operation.troops },
                         fakesPerTarget,
                         selectedVillageIds: selected.map((analysis) =>
@@ -1158,6 +1318,14 @@
 
             if (!operation.coordinates.length) {
                 validationMessage = 'Informe ao menos uma coordenada válida.';
+            } else if (isFakeNt() && !compatibleSlowUnits.length) {
+                validationMessage = 'Este mundo não possui uma unidade compatível com Fake NT.';
+            } else if (isFakeNt() && !operation.arrivalTimestamp) {
+                validationMessage = 'Informe data e hora de chegada válidas, incluindo segundos.';
+            } else if (isFakeNt() && !(operation.troops.ram > 0 || operation.troops.catapult > 0)) {
+                validationMessage = 'Fake NT exige ao menos um Aríete ou uma Catapulta.';
+            } else if (isFakeNt() && operation.troops.snob > 0) {
+                validationMessage = 'Fake NT não pode utilizar Nobre.';
             } else if (!hasTroops) {
                 validationMessage = 'Informe ao menos uma unidade por alvo.';
             } else if (!commandTypeSelect.value) {
@@ -1281,11 +1449,37 @@
 
         const applyPreset = () => {
             const preset = FAKE_PRESETS[presetSelect.value] || FAKE_PRESETS.custom;
-            commandTypeSelect.value = preset.commandType;
+            commandTypeSelect.value = preset.defaultCommandType || preset.commandType;
             availableUnits.forEach((unit) => {
                 troopInputs[unit.id].value = normalizeQuantity(preset.troops[unit.id]);
             });
+            if (isFakeNt()) {
+                const slowUnit = compatibleSlowUnits.includes(slowUnitSelect.value) ? slowUnitSelect.value : compatibleSlowUnits[0];
+                if (slowUnit && troopInputs[slowUnit]) troopInputs[slowUnit].value = Math.max(1, normalizeQuantity(troopInputs[slowUnit].value));
+                fakesPerTargetInput.value = savedFakeNtCommands;
+            }
+            configurePresetUi();
             invalidateAndMaybeReanalyze();
+        };
+
+        const configurePresetUi = () => {
+            const fakeNt = isFakeNt();
+            fakeNtSection.hidden = !fakeNt;
+            commandTypeSelect.closest('.eas-field').hidden = fakeNt;
+            commandSwitchOption.hidden = fakeNt;
+            fakesPerTargetInput.closest('.eas-field').querySelector('label')?.replaceChildren(document.createTextNode(fakeNt ? 'Comandos Fake NT por alvo' : 'Fakes por alvo'));
+            if (fakeNt) {
+                commandTypeSelect.value = 'attack';
+                commandSwitchInput.checked = false;
+                if (troopInputs.snob) { troopInputs.snob.value = 0; troopInputs.snob.disabled = true; }
+                if (compatibleSlowUnits.length && !compatibleSlowUnits.some((id) => normalizeQuantity(troopInputs[id]?.value) > 0)) {
+                    troopInputs[slowUnitSelect.value || compatibleSlowUnits[0]].value = 1;
+                }
+                targetsTitle.textContent = 'Inserir coordenadas manualmente (opcional)';
+            } else {
+                targetsTitle.textContent = 'Coordenadas dos alvos';
+                if (troopInputs.snob) troopInputs.snob.disabled = false;
+            }
         };
 
         let reanalysisTimer = null;
@@ -1317,6 +1511,7 @@
                 normalizeQuantity(fakesPerTargetInput.value)
             );
             invalidateAndMaybeReanalyze();
+            if (isFakeNt()) writeStorage(STORAGE_KEYS.fakeNtCommands, Number(fakesPerTargetInput.value));
         });
         completionUnitSelect.addEventListener('change', renderPopulationRule);
         coordinatesInput.addEventListener('input', () => {
@@ -1325,9 +1520,20 @@
         });
         Object.values(troopInputs).forEach((input) => {
             input.addEventListener('input', () => {
+                if (isFakeNt() && input === troopInputs.snob) input.value = 0;
+                if (isFakeNt() && compatibleSlowUnits.length && !compatibleSlowUnits.some((id) => normalizeQuantity(troopInputs[id]?.value) > 0)) {
+                    troopInputs[slowUnitSelect.value || compatibleSlowUnits[0]].value = 1;
+                }
                 invalidateAndMaybeReanalyze();
             });
         });
+        slowUnitSelect.addEventListener('change', () => {
+            const other = slowUnitSelect.value === 'ram' ? 'catapult' : 'ram';
+            if (troopInputs[slowUnitSelect.value]) troopInputs[slowUnitSelect.value].value = Math.max(1, normalizeQuantity(troopInputs[slowUnitSelect.value].value));
+            if (troopInputs[other]) troopInputs[other].value = 0;
+            invalidateAndMaybeReanalyze();
+        });
+        [arrivalDateInput, arrivalTimeInput, intervalSelect].forEach((input) => input.addEventListener('input', invalidateAndMaybeReanalyze));
 
         const actions = document.createElement('div');
         actions.className = 'eas-actions';
@@ -1410,6 +1616,9 @@
                 Object.values(troopInputs).forEach((input) => {
                     input.value = 0;
                 });
+                if (isFakeNt() && troopInputs[slowUnitSelect.value]) {
+                    troopInputs[slowUnitSelect.value].value = 1;
+                }
                 invalidateAnalysis();
                 updateSummary();
                 EAS.UI.showStatus({
@@ -1436,7 +1645,14 @@
                     writeStorage(
                         STORAGE_KEYS.allowCommandSwitch,
                         commandSwitchInput.checked
-                    )
+                    ),
+                    !isFakeNt() || writeStorage(STORAGE_KEYS.fakeNtConfig, {
+                        slowUnit: slowUnitSelect.value,
+                        arrivalDate: arrivalDateInput.value,
+                        arrivalTime: arrivalTimeInput.value,
+                        intervalMs: Number(intervalSelect.value)
+                    }),
+                    !isFakeNt() || writeStorage(STORAGE_KEYS.fakeNtCommands, Math.max(1, normalizeQuantity(fakesPerTargetInput.value)))
                 ].every(Boolean);
 
                 EAS.UI.showStatus({
@@ -1468,12 +1684,15 @@
         manager.appendChild(presetsForm);
         manager.appendChild(troopsSection);
         manager.appendChild(populationSection);
+        manager.appendChild(fakeNtSection);
         manager.appendChild(targetsSection);
         manager.appendChild(summarySection);
         manager.appendChild(analysisSection);
         manager.appendChild(actions);
         manager.appendChild(status);
         win.body.appendChild(manager);
+        if (isFakeNt()) fakesPerTargetInput.value = savedFakeNtCommands;
+        configurePresetUi();
         updateSummary();
 
         if (autoAnalyze) {
