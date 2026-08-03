@@ -47,11 +47,21 @@
     const setOfferRepeatCount = async (doc, item, targetWindow = window) => {
         const input = findRepeatField(doc); const expected = Number(item.repeatCount); if (!input) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
         if (!Number.isInteger(expected) || expected <= 0) return { valid: false, message: 'repeatCount inválido.' };
-        const debug = localStorage.getItem('eas_tw_market_offers_debug') === 'true'; const initialValue = input.value;
-        if (debug) console.debug('[EAS Offer Multi]', { expected, initial: initialValue });
-        const result = fillRepeatCount(doc, item, targetWindow); const actual = Number(input.value); const valid = actual === expected;
-        if (debug) console.debug('[EAS Offer Multi]', { final: input.value });
-        return { ...result, valid, initialValue, finalValue: input.value, message: valid ? null : `Falha ao preparar repetições. Esperado: ${expected}. Atual: ${actual}.` };
+        const sleep = (milliseconds) => new Promise((resolve) => targetWindow.setTimeout(resolve, milliseconds)); const startedAt = Date.now(); const initialValue = input.value; const timeline = [{ elapsedMs: 0, phase: 'start', readyState: doc.readyState, value: input.value }];
+        if (doc.readyState !== 'complete') await new Promise((resolve) => targetWindow.addEventListener('load', resolve, { once: true }));
+        const navigation = targetWindow.performance?.getEntriesByType?.('navigation')?.[0]; timeline.push({ elapsedMs: Date.now() - startedAt, phase: 'window.load', readyState: doc.readyState, value: input.value, domContentLoadedMs: Math.round(navigation?.domContentLoadedEventEnd || 0), loadMs: Math.round(navigation?.loadEventEnd || 0) });
+        let observedValue = input.value;
+        for (let sample = 1; sample <= 10; sample += 1) { await sleep(50); if (input.value !== observedValue) { observedValue = input.value; timeline.push({ elapsedMs: Date.now() - startedAt, phase: 'tribal-initialization', value: input.value }); } }
+        let result = null; let stableAttempt = null; let overwriteDetectedAtMs = null;
+        for (let attempt = 1; attempt <= 5; attempt += 1) {
+            const before = input.value; result = fillRepeatCount(doc, item, targetWindow); timeline.push({ elapsedMs: Date.now() - startedAt, phase: `fill-${attempt}`, before, after: input.value });
+            await sleep(200); const actual = Number(input.value); timeline.push({ elapsedMs: Date.now() - startedAt, phase: `verify-${attempt}`, value: input.value });
+            if (actual === expected) { stableAttempt = attempt; break; }
+            overwriteDetectedAtMs = Date.now() - startedAt; timeline.push({ elapsedMs: overwriteDetectedAtMs, phase: `overwrite-after-fill-${attempt}`, expected, actual });
+        }
+        const actual = Number(input.value); const valid = actual === expected; const stabilizedAtMs = valid ? Date.now() - startedAt : null; const diagnostics = { expected, initialValue, finalValue: input.value, stableAttempt, overwriteDetectedAtMs, stabilizedAtMs, timeline };
+        console.debug('[EAS Offer Multi Timing]', diagnostics);
+        return { ...result, valid, initialValue, finalValue: input.value, stableAttempt, stabilizedAtMs, diagnostics, message: valid ? null : `Falha ao preparar repetições após 5 tentativas. Esperado: ${expected}. Atual: ${actual}.` };
     };
     const findSubmit = (doc, form) => form?.querySelector('[name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]') || doc.querySelector('[name="create_offer"], [data-action="create-offer"]');
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
@@ -109,7 +119,7 @@
         const duration = doc.querySelector('select[name="duration"], select[name="time"]'); if (duration?.options?.length) { duration.selectedIndex = duration.options.length - 1; duration.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); }
         const repeatResult = await setOfferRepeatCount(doc, item, targetWindow); if (!repeatResult.valid) return repeatResult;
         if (Number(repeatCount.value) !== Number(item.repeatCount)) return { valid: false, message: `Não foi possível configurar a quantidade de repetições. Esperado: ${item.repeatCount}. Atual: ${repeatCount.value}.` };
-        if (submit) submit.disabled = false; item.status = 'prepared'; item.error = null; item.previousSnapshot = snapshotOffers(doc, item); save(context);
+        if (submit) submit.disabled = false; item.status = 'prepared'; item.error = null; item.repeatFillDiagnostics = repeatResult.diagnostics; item.previousSnapshot = snapshotOffers(doc, item); save(context);
         return { valid: true, item, form, submit, message: `Oferta preparada: ${item.repeatCount} × ${item.offerAmount} por ${item.requestAmount}. Clique em Criar no jogo.` };
     };
     const finishSuccess = (context, item, result, targetWindow, render) => {
