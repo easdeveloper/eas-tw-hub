@@ -60,11 +60,14 @@
         if (!total || !unit || !available) return 0;
         return Math.min(Math.floor(total / unit), available);
     };
-    const calculateOfferQuantity = ({ totalOfferAmount, amountPerOffer, requestAmountPerOffer = amountPerOffer, merchantsAvailable }) => {
-        const plannedTotal = amount(totalOfferAmount); const unit = amount(amountPerOffer); const requestUnit = amount(requestAmountPerOffer);
-        const repeatCount = calculateOfferRepeatCount({ totalOfferAmount: plannedTotal, amountPerOffer: unit, merchantsAvailable });
-        const totalOfferAmountPrepared = unit * repeatCount; const totalRequestAmountPrepared = requestUnit * repeatCount; const pendingAmount = Math.max(0, plannedTotal - totalOfferAmountPrepared);
-        return { valid: repeatCount > 0 && totalOfferAmountPrepared > 0 && totalRequestAmountPrepared > 0, amountPerOffer: unit, requestAmountPerOffer: requestUnit, repeatCount, totalOfferAmount: totalOfferAmountPrepared, totalRequestAmount: totalRequestAmountPrepared, plannedTotalOfferAmount: plannedTotal, pendingAmount, merchantsRequired: repeatCount, status: pendingAmount > 0 ? 'Parcial' : 'Pronta' };
+    const calculateOfferExecutionValues = ({ totalOfferAmount, totalRequestAmount = totalOfferAmount, amountPerOffer, requestAmountPerOffer = amountPerOffer, merchantsAvailable }) => {
+        const plannedOffer = amount(totalOfferAmount); const plannedRequest = amount(totalRequestAmount); const unit = amount(amountPerOffer); const requestUnit = amount(requestAmountPerOffer);
+        const repeatCount = calculateOfferRepeatCount({ totalOfferAmount: plannedOffer, amountPerOffer: unit, merchantsAvailable }); const totalOfferAmountPrepared = unit * repeatCount; const totalRequestAmountPrepared = requestUnit * repeatCount;
+        return { amountPerOffer: unit, requestAmountPerOffer: requestUnit, repeatCount, totalOfferAmountPrepared, totalRequestAmountPrepared, merchantsRequired: repeatCount, remainingOfferAmount: Math.max(0, plannedOffer - totalOfferAmountPrepared), remainingRequestAmount: Math.max(0, plannedRequest - totalRequestAmountPrepared) };
+    };
+    const calculateOfferQuantity = (options) => {
+        const values = calculateOfferExecutionValues(options); const pendingAmount = values.remainingOfferAmount;
+        return { valid: values.repeatCount > 0 && values.totalOfferAmountPrepared > 0 && values.totalRequestAmountPrepared > 0, amountPerOffer: values.amountPerOffer, requestAmountPerOffer: values.requestAmountPerOffer, repeatCount: values.repeatCount, totalOfferAmount: values.totalOfferAmountPrepared, totalRequestAmount: values.totalRequestAmountPrepared, plannedTotalOfferAmount: amount(options.totalOfferAmount), pendingAmount, merchantsRequired: values.merchantsRequired, status: pendingAmount > 0 ? 'Parcial' : 'Pronta' };
     };
     const splitOfferAmount = (total, { maximum = 10000, minimum = 100, roundToHundreds = false } = {}) => {
         let remaining = amount(total); const blocks = []; const max = Math.max(1, amount(maximum)); const min = Math.max(1, amount(minimum));
@@ -269,5 +272,5 @@
         }; win.body.append(body, status); render();
     };
 
-    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
+    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
 })();

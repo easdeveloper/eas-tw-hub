@@ -5,9 +5,10 @@
     const HISTORY_KEY = 'eas_tw_market_offers_history';
     const CHANNEL_NAME = 'eas_tw_market_offers_channel';
     const PANEL_ID = 'eas-market-offers-panel';
+    const EXECUTION_VERSION = 3;
     const TERMINAL = new Set(['created', 'skipped']);
     const amount = (value) => Math.max(0, Math.floor(Number(value) || 0));
-    const read = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch { return null; } };
+    const read = () => { try { const context = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (context && (!Number.isFinite(Number(context.version)) || Number(context.version) < EXECUTION_VERSION)) { localStorage.removeItem(STORAGE_KEY); return null; } return context; } catch { return null; } };
     const save = (context) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(context)); return true; } catch { return false; } };
     const remove = () => { try { localStorage.removeItem(STORAGE_KEY); } catch {} };
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
@@ -46,14 +47,11 @@
     const setOfferRepeatCount = async (doc, item, targetWindow = window) => {
         const input = findRepeatField(doc); const expected = Number(item.repeatCount); if (!input) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
         if (!Number.isInteger(expected) || expected <= 0) return { valid: false, message: 'repeatCount inválido.' };
-        const debug = localStorage.getItem('eas_tw_market_offers_debug') === 'true'; const sleep = (milliseconds) => new Promise((resolve) => targetWindow.setTimeout(resolve, milliseconds)); const initialValue = input.value;
-        const log = (stage) => { if (debug) console.debug('[EAS Offer Multi]', { stage, expected, current: input.value }); };
-        log('initial'); await sleep(50); log('50ms'); await sleep(100); log('150ms');
-        let result = fillRepeatCount(doc, item, targetWindow); await sleep(100); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow);
-        await sleep(50); log('300ms'); await sleep(250); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow);
-        await sleep(50); log('600ms'); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow);
-        for (let check = 1; check <= 4; check += 1) { await sleep(100); log(`${600 + check * 100}ms`); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow); }
-        const valid = Number(input.value) === expected; return { ...result, valid, initialValue, finalValue: input.value, message: valid ? null : `Não foi possível configurar a quantidade de repetições. Esperado: ${expected}. Atual: ${input.value}.` };
+        const debug = localStorage.getItem('eas_tw_market_offers_debug') === 'true'; const initialValue = input.value;
+        if (debug) console.debug('[EAS Offer Multi]', { expected, initial: initialValue });
+        const result = fillRepeatCount(doc, item, targetWindow); const actual = Number(input.value); const valid = actual === expected;
+        if (debug) console.debug('[EAS Offer Multi]', { final: input.value });
+        return { ...result, valid, initialValue, finalValue: input.value, message: valid ? null : `Falha ao preparar repetições. Esperado: ${expected}. Atual: ${actual}.` };
     };
     const findSubmit = (doc, form) => form?.querySelector('[name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]') || doc.querySelector('[name="create_offer"], [data-action="create-offer"]');
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
@@ -162,7 +160,7 @@
         else if (['pending', 'opening', 'prepared'].includes(item.status)) arm();
         return true;
     };
-    EAS.MarketOffersExecution.start = (context) => { const normalized = { version: 2, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, ...context, queue: (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })) }; syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
+    EAS.MarketOffersExecution.start = (context) => { const queue = (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })); const normalized = { ...context, version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; if (localStorage.getItem('eas_tw_market_offers_debug') === 'true') queue.forEach((queueItem, index) => console.debug('[EAS Offer Flow]', { suggestion: context.queue[index], queue: { repeatCount: queueItem.repeatCount, merchantsRequired: queueItem.merchantsRequired, merchantsAvailable: queueItem.merchantsAvailable } })); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
     EAS.MarketOffersExecution.initialize = () => mount(window);
-    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, read, save, remove, current, syncIndex, nextPendingIndex, normalizeItem, openCurrent, mount, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishError });
+    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, EXECUTION_VERSION, read, save, remove, current, syncIndex, nextPendingIndex, normalizeItem, openCurrent, mount, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishError });
 })();
