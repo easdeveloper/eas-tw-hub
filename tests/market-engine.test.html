@@ -4,7 +4,7 @@
 <script src="../services/market-offers-execution.js"></script>
 <script src="../modules/market-smart-offers.js"></script><script src="../modules/market-balance.js"></script><script src="../modules/market-target-supply.js"></script>
 <script>
-(() => {
+(async () => {
  const failures=[]; const equal=(a,b,label)=>{if(JSON.stringify(a)!==JSON.stringify(b))failures.push(`${label}: esperado ${JSON.stringify(b)}, recebido ${JSON.stringify(a)}`)}; const engine=EAS.MarketEngine;
  const imbalance=engine.calculateResourceImbalance({wood:140000,stone:90000,iron:70000});
  equal(imbalance.target,{wood:100000,stone:100000,iron:100000},'meta 33/33/33');
@@ -69,7 +69,9 @@
  equal(engine.calculateOfferRepeatCount({totalOfferAmount:50000,amountPerOffer:1000,merchantsAvailable:8})<=8,true,'repeat E: nunca ultrapassa comerciantes livres');
  const multiDoc=new DOMParser().parseFromString('<input name="count" value="99"><input name="multi" type="text" value="8">','text/html'); const filledMulti=EAS.MarketOffersExecution.fillRepeatCount(multiDoc,{repeatCount:5,merchantsAvailable:8},window);
  equal([filledMulti.valid,multiDoc.querySelector('input[name="multi"]').value,multiDoc.querySelector('input[name="count"]').value],[true,'5','99'],'multi: seletor exato troca 8 por repeatCount 5');
+ const delayedMultiDoc=new DOMParser().parseFromString('<table><tr><td><input name="multi" type="text" style="width: 50px" value="8"></td></tr></table>','text/html'); const delayedMulti=delayedMultiDoc.querySelector('input[name="multi"]'); setTimeout(()=>{delayedMulti.value='8'},200); const stabilizedMulti=await EAS.MarketOffersExecution.setOfferRepeatCount(delayedMultiDoc,{repeatCount:5,merchantsAvailable:8},window);
+ equal([stabilizedMulti.initialValue,stabilizedMulti.finalValue,stabilizedMulti.valid],['8','5',true],'multi assíncrono: corrige sobrescrita tardia do jogo');
  equal([limited.suggestions.reduce((sum,item)=>sum+item.repeatCount,0),limited.suggestions[0].merchantsAvailable],[6,6],'fila: salva repeatCount e comerciantes disponíveis separadamente');
- document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 38 assertions';document.title=failures.length?'FAIL':'PASS';
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 39 assertions';document.title=failures.length?'FAIL':'PASS';
 })();
 </script>

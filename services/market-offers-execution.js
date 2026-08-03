@@ -40,9 +40,20 @@
         if (debug) console.debug('[EAS Market Offer]', { repeatCountFromQueue: item.repeatCount, merchantsAvailable: item.merchantsAvailable, fieldBefore: multiInput.value });
         const apply = () => { multiInput.focus(); const setter = Object.getOwnPropertyDescriptor(targetWindow.HTMLInputElement.prototype, 'value')?.set; setter ? setter.call(multiInput, String(repeatCount)) : multiInput.value = String(repeatCount); multiInput.dispatchEvent(new targetWindow.Event('input', { bubbles: true })); multiInput.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); multiInput.blur(); };
         apply(); if (Number(multiInput.value) !== repeatCount) apply();
-        targetWindow.setTimeout?.(() => { if (doc.contains(multiInput) && Number(multiInput.value) !== repeatCount) apply(); }, 0);
         if (debug) console.debug('[EAS Market Offer]', { fieldAfter: multiInput.value });
-        return { valid: Number(multiInput.value) === repeatCount, input: multiInput, repeatCount, message: Number(multiInput.value) === repeatCount ? null : 'Não foi possível preencher Quantas vezes oferecer.' };
+        return { valid: Number(multiInput.value) === repeatCount, input: multiInput, repeatCount, apply, message: Number(multiInput.value) === repeatCount ? null : 'Não foi possível preencher Quantas vezes oferecer.' };
+    };
+    const setOfferRepeatCount = async (doc, item, targetWindow = window) => {
+        const input = findRepeatField(doc); const expected = Number(item.repeatCount); if (!input) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
+        if (!Number.isInteger(expected) || expected <= 0) return { valid: false, message: 'repeatCount inválido.' };
+        const debug = localStorage.getItem('eas_tw_market_offers_debug') === 'true'; const sleep = (milliseconds) => new Promise((resolve) => targetWindow.setTimeout(resolve, milliseconds)); const initialValue = input.value;
+        const log = (stage) => { if (debug) console.debug('[EAS Offer Multi]', { stage, expected, current: input.value }); };
+        log('initial'); await sleep(50); log('50ms'); await sleep(100); log('150ms');
+        let result = fillRepeatCount(doc, item, targetWindow); await sleep(100); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow);
+        await sleep(50); log('300ms'); await sleep(250); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow);
+        await sleep(50); log('600ms'); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow);
+        for (let check = 1; check <= 4; check += 1) { await sleep(100); log(`${600 + check * 100}ms`); if (Number(input.value) !== expected) result = fillRepeatCount(doc, item, targetWindow); }
+        const valid = Number(input.value) === expected; return { ...result, valid, initialValue, finalValue: input.value, message: valid ? null : `Não foi possível configurar a quantidade de repetições. Esperado: ${expected}. Atual: ${input.value}.` };
     };
     const findSubmit = (doc, form) => form?.querySelector('[name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]') || doc.querySelector('[name="create_offer"], [data-action="create-offer"]');
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
@@ -89,15 +100,19 @@
         if (village && village.merchants.available < item.merchantsRequired) reasons.push('Comerciantes insuficientes');
         return { valid: reasons.length === 0, reasons, village };
     };
-    const prepareItem = (context, targetWindow) => {
+    const prepareItem = async (context, targetWindow) => {
         syncIndex(context); const item = current(context); if (!item || getVillageId(targetWindow) !== String(item.villageId)) return { valid: false, message: 'Abra o Mercado da aldeia correta.' };
         const validation = validateQueueItem(item); if (!validation.valid) { item.status = 'error'; item.error = validation.reasons.join(', '); save(context); return { valid: false, message: item.error }; }
         const doc = targetWindow.document; const offerAmount = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestAmount = findField(doc, ['buy', 'request_amount', 'amount_buy']); const repeatCount = findRepeatField(doc);
         if (!offerAmount || !requestAmount || !chooseResource(doc, 'offer', item.offerResource, targetWindow) || !chooseResource(doc, 'request', item.requestResource, targetWindow)) return { valid: false, message: 'Campos de criação de oferta não encontrados.' };
+        const form = offerAmount.closest('form') || requestAmount.closest('form'); const submit = findSubmit(doc, form); if (submit) submit.disabled = true;
         if (!repeatCount) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
-        setValue(offerAmount, item.amountPerOffer, targetWindow); setValue(requestAmount, item.requestAmountPerOffer, targetWindow); const repeatResult = fillRepeatCount(doc, item, targetWindow); if (!repeatResult.valid) return repeatResult;
-        item.status = 'prepared'; item.error = null; item.previousSnapshot = snapshotOffers(doc, item); save(context);
-        const form = offerAmount.closest('form') || requestAmount.closest('form'); return { valid: true, item, form, submit: findSubmit(doc, form), message: `Oferta preparada: ${item.repeatCount} × ${item.offerAmount} por ${item.requestAmount}. Clique em Criar no jogo.` };
+        setValue(offerAmount, item.amountPerOffer, targetWindow); setValue(requestAmount, item.requestAmountPerOffer, targetWindow);
+        const duration = doc.querySelector('select[name="duration"], select[name="time"]'); if (duration?.options?.length) { duration.selectedIndex = duration.options.length - 1; duration.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); }
+        const repeatResult = await setOfferRepeatCount(doc, item, targetWindow); if (!repeatResult.valid) return repeatResult;
+        if (Number(repeatCount.value) !== Number(item.repeatCount)) return { valid: false, message: `Não foi possível configurar a quantidade de repetições. Esperado: ${item.repeatCount}. Atual: ${repeatCount.value}.` };
+        if (submit) submit.disabled = false; item.status = 'prepared'; item.error = null; item.previousSnapshot = snapshotOffers(doc, item); save(context);
+        return { valid: true, item, form, submit, message: `Oferta preparada: ${item.repeatCount} × ${item.offerAmount} por ${item.requestAmount}. Clique em Criar no jogo.` };
     };
     const finishSuccess = (context, item, result, targetWindow, render) => {
         item.status = 'created'; item.createdAt = Date.now(); item.offerId = result.offerId; item.confirmation = { evidence: result.evidence, detectedAmount: result.detectedAmount, detectedQuantity: result.detectedQuantity };
@@ -136,8 +151,8 @@
             observer = new targetWindow.MutationObserver(verify); observer.observe(doc.querySelector('#own_offers_table, #content_value, main') || doc.body, { childList: true, subtree: true, characterData: true });
             timeout = setTimeout(() => { stop(); const pending = current(context); if (pending?.status === 'submitting') { pending.status = 'verification-required'; pending.error = 'Não foi possível confirmar automaticamente a criação da oferta.'; save(context); emit({ type: 'offer-verification-required', executionId: context.executionId, queueItemId: pending.id }); render(pending.error, 'error'); } }, 10000);
         };
-        const arm = () => {
-            stop(); const prepared = prepareItem(context, targetWindow); if (!prepared.valid) { render(prepared.message, 'error'); return; }
+        const arm = async () => {
+            stop(); render('Aguardando o formulário do jogo estabilizar...', 'info'); const prepared = await prepareItem(context, targetWindow); if (!prepared.valid) { render(prepared.message, 'error'); return; }
             render(prepared.message, 'success');
             clickListener = (event) => { const submit = event.target.closest?.('[name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]'); if (!submit || (prepared.form && submit.form && submit.form !== prepared.form)) return; doc.removeEventListener('click', clickListener, true); clickListener = null; beginVerification(); };
             doc.addEventListener('click', clickListener, true);
@@ -149,5 +164,5 @@
     };
     EAS.MarketOffersExecution.start = (context) => { const normalized = { version: 2, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, ...context, queue: (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })) }; syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
     EAS.MarketOffersExecution.initialize = () => mount(window);
-    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, read, save, remove, current, syncIndex, nextPendingIndex, normalizeItem, openCurrent, mount, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishError });
+    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, read, save, remove, current, syncIndex, nextPendingIndex, normalizeItem, openCurrent, mount, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishError });
 })();
