@@ -15,6 +15,7 @@
         WorldRules: {},
         CommandRules: {},
         FakesExecution: {},
+        SupportExecution: {},
         PublicMap: {},
         Modules: {},
 

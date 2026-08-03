@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Support Planner tests</title><pre id="result">running</pre>
+<script>window.EAS={Modules:{},Utils:{},Units:{},World:{},SupportExecution:{},Place:{},CommandRules:{}};window.game_data={units:['spear','sword','heavy']};</script>
+<script src="../core/utils.js"></script><script src="../core/units.js"></script><script src="../modules/support.js"></script>
+<script src="../services/support-execution.js"></script>
+<script>
+(() => {
+ const failures=[]; const equal=(a,b,label)=>{if(JSON.stringify(a)!==JSON.stringify(b))failures.push(`${label}: esperado ${JSON.stringify(b)}, recebido ${JSON.stringify(a)}`)};
+ const planner=EAS.Modules.Support;
+ equal(planner.extractDestinations('516|458, 516 | 458; 7|8'),['516|458','007|008'],'destinos normalizados');
+ equal(planner.calculateSendableTroops({troops:{spear:1000,sword:500},reserveMode:'fixed',fixedReserve:{spear:500,sword:300}}),{spear:500,sword:200},'reserva fixa');
+ equal(planner.calculateSendableTroops({troops:{spear:1000,heavy:333},reserveMode:'percentage',reservePercent:20}),{spear:800,heavy:266},'reserva percentual');
+ const villages=[
+  {village:{id:1,name:'A',coordinate:'500|500'},sendable:{spear:60}},
+  {village:{id:2,name:'B',coordinate:'501|500'},sendable:{spear:40}}
+ ];
+ const balanced=planner.distributeSupportNeeds({villages,destinations:['510|510'],needs:{spear:100},mode:'balanced'});
+ equal(balanced.rows.map(row=>row.troops.spear),[60,40],'distribuição equilibrada');
+ equal([...balanced.remainingByVillage.values()].map(troops=>troops.spear),[0,0],'não ultrapassa disponibilidade');
+ const round=planner.distributeSupportNeeds({villages,destinations:['510|510'],needs:{spear:70},mode:'round_robin'});
+ equal(round.rows.reduce((sum,row)=>sum+row.troops.spear,0),70,'round robin total');
+ const duration=EAS.Units.calculateTravelDuration({distance:10,troops:{spear:10,heavy:1},worldSpeed:1,unitSpeed:1});
+ equal(duration,10800000,'duração pela unidade mais lenta');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 7 assertions';document.title=failures.length?'FAIL':'PASS';
+})();
+</script>

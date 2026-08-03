@@ -299,6 +299,33 @@
     min-height: 90px;
 }
 
+.support-planner section {
+    margin-top: 16px;
+}
+
+.support-planner > textarea {
+    min-height: 100px;
+}
+
+.support-unit-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+}
+
+.support-source-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.support-source-list label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 .fake-nt-target-tools {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));

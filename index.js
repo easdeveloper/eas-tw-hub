@@ -64,9 +64,13 @@
                     await loadScript('services/public-map.js');
                     await loadScript('services/fakes-execution.js');
                 }
+                if (!window.EAS.SupportExecution?.initialize) {
+                    await loadScript('services/support-execution.js');
+                }
 
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
+                window.EAS.SupportExecution.initialize();
                 window.EAS.UI.toggle();
                 return;
             }
@@ -85,10 +89,12 @@
             await loadScript('services/place.js');
             await loadScript('services/public-map.js');
             await loadScript('services/fakes-execution.js');
+            await loadScript('services/support-execution.js');
 
             window.EAS.start();
             window.EAS.Place.fillTargetFromUrl();
             window.EAS.FakesExecution.initialize();
+            window.EAS.SupportExecution.initialize();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
             alert(`EAS TW Hub: ${error.message}`);

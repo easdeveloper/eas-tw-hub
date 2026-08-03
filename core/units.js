@@ -58,6 +58,14 @@
         .filter((item) => item.minutesPerField > 0)
         .sort((a, b) => b.minutesPerField - a.minutesPerField)[0] || null;
 
+    EAS.Units.calculateTravelDuration = ({ distance, troops, worldSpeed = 1, unitSpeed = 1 } = {}) => {
+        const slowest = EAS.Units.getSlowestUnit(troops);
+        const factor = Math.max(0.0001, Number(worldSpeed) * Number(unitSpeed));
+        return slowest && Number.isFinite(Number(distance))
+            ? Number(distance) * slowest.minutesPerField * 60 * 1000 / factor
+            : null;
+    };
+
     EAS.Units.population = UNIT_POPULATION;
     EAS.Units.travelSpeed = UNIT_TRAVEL_SPEED;
 })();

@@ -314,6 +314,11 @@
                 id: 'fakes',
                 icon: '🎭',
                 text: 'Gerenciador de Fakes'
+            },
+            {
+                id: 'support',
+                icon: '🛡️',
+                text: 'Planejador de Apoios'
             }
         ];
 
@@ -322,11 +327,6 @@
                 id: 'diagnostic',
                 icon: '🔍',
                 text: 'Diagnóstico do jogo'
-            },
-            {
-                id: 'support',
-                icon: '🛡️',
-                text: 'Planejador de Apoios'
             },
             {
                 id: 'antisnipe',
@@ -400,7 +400,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes') {
+        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support') {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
