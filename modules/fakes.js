@@ -202,7 +202,7 @@
     EAS.Modules.Fakes.distributeTargets = distributeTargets;
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
-    EAS.Modules.Fakes.open = () => {
+    EAS.Modules.Fakes.open = ({ autoAnalyze = false } = {}) => {
         const savedPresetId = readStorage(STORAGE_KEYS.preset, 'simple');
         const selectedPreset = FAKE_PRESETS[savedPresetId] || FAKE_PRESETS.simple;
         const savedCommandType = readStorage(
@@ -212,6 +212,7 @@
         const savedTroops = readStorage(STORAGE_KEYS.troops, selectedPreset.troops);
         const savedCoordinates = readStorage(STORAGE_KEYS.coordinates, '');
         const availableUnits = getAvailableUnits();
+        let worldRule = EAS.WorldRules.get();
 
         const win = EAS.UI.createWindow({
             id: 'eas-module-fakes',
@@ -282,6 +283,29 @@
         troopsSection.appendChild(troopsTitle);
         troopsSection.appendChild(troopsGrid);
 
+        const populationSection = document.createElement('section');
+        populationSection.className = 'fake-manager-population';
+        const populationTitle = document.createElement('h3');
+        populationTitle.textContent = 'População mínima do mundo';
+        const populationInfo = document.createElement('div');
+        populationInfo.className = 'fake-manager-population__info';
+        const completionUnitSelect = createSelect(
+            'population-completion-unit',
+            availableUnits
+                .filter((unit) => EAS.Units.getPopulation(unit.id) > 0)
+                .map((unit) => ({ value: unit.id, label: unit.name })),
+            availableUnits[0]?.id || ''
+        );
+        const populationActions = document.createElement('div');
+        populationActions.className = 'fake-manager-population__actions';
+        populationSection.appendChild(populationTitle);
+        populationSection.appendChild(populationInfo);
+        populationSection.appendChild(EAS.UI.createField({
+            label: 'Unidade para completar população',
+            input: completionUnitSelect
+        }));
+        populationSection.appendChild(populationActions);
+
         const targetsSection = document.createElement('section');
         targetsSection.className = 'fake-manager-targets';
         const targetsTitle = document.createElement('h3');
@@ -327,10 +351,61 @@
             return troops;
         }, {});
 
+        const getPopulationState = (troops = getTroops()) => {
+            const commandPopulation = EAS.Units.calculateCommandPopulation(troops);
+            const minimumPopulation = Number(
+                worldRule?.minimumAttackPopulation || 0
+            );
+            const applies = commandTypeSelect.value === 'attack' &&
+                minimumPopulation > 0;
+
+            return {
+                commandPopulation,
+                minimumPopulation,
+                deficit: applies
+                    ? Math.max(0, minimumPopulation - commandPopulation)
+                    : 0,
+                valid: !applies || commandPopulation >= minimumPopulation
+            };
+        };
+
+        const renderPopulationRule = () => {
+            const population = getPopulationState();
+            const selectedUnit = availableUnits.find(
+                (unit) => unit.id === completionUnitSelect.value
+            );
+            const unitPopulation = EAS.Units.getPopulation(selectedUnit?.id);
+            const additional = unitPopulation > 0
+                ? Math.ceil(population.deficit / unitPopulation)
+                : 0;
+
+            if (!worldRule?.minimumAttackPopulation) {
+                populationInfo.innerHTML = `
+                    <p>Nenhuma regra de população mínima foi detectada para <strong>${EAS.Utils.escapeHtml(EAS.WorldRules.getWorld())}</strong>.</p>
+                    <small>A detecção real acontece quando o jogo rejeita um ataque.</small>
+                `;
+                completionUnitSelect.closest('.eas-field').hidden = true;
+                return;
+            }
+
+            completionUnitSelect.closest('.eas-field').hidden = false;
+            populationInfo.innerHTML = `
+                <div class="fake-manager-population__values">
+                    <span>Mínimo: <strong>${population.minimumPopulation}</strong></span>
+                    <span>Atual: <strong>${population.commandPopulation}</strong></span>
+                    <span>Faltam: <strong>${population.deficit}</strong></span>
+                </div>
+                ${population.deficit > 0 && commandTypeSelect.value === 'attack'
+                    ? `<div class="fake-analysis-warning">Composição inválida para ataques neste mundo. Sugestão: adicionar ${additional} ${EAS.Utils.escapeHtml(selectedUnit?.plural || selectedUnit?.name || 'unidades')}.</div>`
+                    : '<div class="fake-manager-population__valid">A composição atende à regra conhecida.</div>'}
+            `;
+        };
+
         const updateSummary = () => {
             const preset = FAKE_PRESETS[presetSelect.value] || FAKE_PRESETS.custom;
             const coordinates = extractCoordinates(coordinatesInput.value);
             const troops = getTroops();
+            const population = getPopulationState(troops);
             const troopLines = formatTroopLines(troops, coordinates.length, availableUnits);
             const escape = EAS.Utils.escapeHtml;
             const list = (lines) => lines.length
@@ -341,7 +416,8 @@
             summaryContent.innerHTML = `
                 <p><strong>${escape(preset.name)}</strong><br>
                 Comando: ${commandTypeSelect.value === 'support' ? 'Apoio' : 'Ataque'}<br>
-                Alvos: ${coordinates.length}</p>
+                Alvos: ${coordinates.length}<br>
+                População por comando: ${population.commandPopulation}</p>
                 <div class="fake-manager-summary__grid">
                     <div class="fake-manager-summary__block">
                         <strong>Por alvo</strong>
@@ -354,7 +430,9 @@
                 </div>
             `;
 
-            return { coordinates, troops };
+            renderPopulationRule();
+
+            return { coordinates, troops, ...population };
         };
 
         const invalidateAnalysis = () => {
@@ -363,7 +441,11 @@
             analysisTable.innerHTML = '';
         };
 
-        const getVillageStatus = (analysis, troopsStale) => {
+        const getVillageStatus = (analysis, troopsStale, populationValid) => {
+            if (!populationValid) {
+                return 'Composição abaixo da população mínima';
+            }
+
             if (!analysis.hasTroopData) {
                 return 'Sem dados de tropas';
             }
@@ -420,7 +502,7 @@
                 (analysis) => analysis.hasTroopData
             ).length;
             const eligible = assignments.filter(
-                (analysis) => analysis.sufficient
+                (analysis) => analysis.sufficient && operation.valid
             ).length;
             const distributed = assignments.reduce(
                 (total, analysis) => total + analysis.assignedTargets.length,
@@ -445,11 +527,14 @@
                 <div class="fake-analysis-summary__grid">
                     ${summaryItems.map((item) => `<span>${escape(item)}</span>`).join('')}
                 </div>
-                ${undistributed > 0
+                ${undistributed > 0 && operation.valid
                     ? `<div class="fake-analysis-warning">Faltam tropas para distribuir ${undistributed} alvo${undistributed === 1 ? '' : 's'}.</div>`
                     : ''}
                 ${troopsInfo.stale
                     ? '<div class="fake-analysis-warning">O cache de tropas está desatualizado. Atualize as tropas antes de executar a operação.</div>'
+                    : ''}
+                ${!operation.valid
+                    ? `<div class="fake-analysis-warning">Composição abaixo da população mínima. Atual: ${operation.commandPopulation}. Mínimo: ${operation.minimumPopulation}. Faltam: ${operation.deficit}.</div>`
                     : ''}
             `;
 
@@ -480,7 +565,8 @@
                     : ['-'];
                 const statusText = getVillageStatus(
                     analysis,
-                    Boolean(troopsInfo.stale)
+                    Boolean(troopsInfo.stale),
+                    operation.valid
                 );
                 const values = [
                     analysis.village.name,
@@ -534,7 +620,11 @@
 
                 const actionCell = document.createElement('td');
 
-                if (analysis.assignedTargets.length && analysis.village.id) {
+                if (
+                    operation.valid &&
+                    analysis.assignedTargets.length &&
+                    analysis.village.id
+                ) {
                     const button = EAS.UI.createButton({
                         text: 'Abrir Praça',
                         onClick: () => {
@@ -649,7 +739,8 @@
                     village: { ...village },
                     availableTroops,
                     hasTroopData,
-                    ...capacity
+                    ...capacity,
+                    sufficient: capacity.sufficient && operation.valid
                 };
             });
             const assignments = distributeTargets(
@@ -671,8 +762,10 @@
             );
             EAS.UI.showStatus({
                 target: status,
-                message: `Análise concluída: ${distributed} de ${operation.coordinates.length} alvo${operation.coordinates.length === 1 ? '' : 's'} distribuído${distributed === 1 ? '' : 's'}. Nenhum comando foi enviado.`,
-                type: distributed === operation.coordinates.length
+                message: operation.valid
+                    ? `Análise concluída: ${distributed} de ${operation.coordinates.length} alvo${operation.coordinates.length === 1 ? '' : 's'} distribuído${distributed === 1 ? '' : 's'}. Nenhum comando foi enviado.`
+                    : `Composição inválida para ataques neste mundo. População atual: ${operation.commandPopulation}. Mínima: ${operation.minimumPopulation}. Faltam: ${operation.deficit}.`,
+                type: operation.valid && distributed === operation.coordinates.length
                     ? 'success'
                     : 'error'
             });
@@ -693,6 +786,7 @@
             invalidateAnalysis();
             updateSummary();
         });
+        completionUnitSelect.addEventListener('change', renderPopulationRule);
         coordinatesInput.addEventListener('input', () => {
             invalidateAnalysis();
             updateSummary();
@@ -717,6 +811,65 @@
             className: 'eas-button--secondary',
             onClick: () => analyzeOperation({ forceRefresh: true })
         });
+        const verifyWorldRuleButton = EAS.UI.createButton({
+            text: 'Verificar regra do mundo',
+            className: 'eas-button--secondary',
+            onClick: () => {
+                worldRule = EAS.WorldRules.get();
+                renderPopulationRule();
+                EAS.UI.showStatus({
+                    target: status,
+                    message: worldRule?.minimumAttackPopulation
+                        ? `Este mundo exige no mínimo ${worldRule.minimumAttackPopulation} de população por ataque.`
+                        : 'Nenhuma regra foi detectada. Nenhum ataque de teste foi criado.',
+                    type: 'info'
+                });
+            }
+        });
+        const clearWorldRuleButton = EAS.UI.createButton({
+            text: 'Limpar regra detectada',
+            className: 'eas-button--secondary',
+            onClick: () => {
+                if (!confirm('Deseja remover a população mínima salva para este mundo?')) {
+                    return;
+                }
+
+                EAS.WorldRules.clear();
+                worldRule = null;
+                invalidateAnalysis();
+                updateSummary();
+                EAS.UI.showStatus({
+                    target: status,
+                    message: 'Regra do mundo removida. A próxima detecção ocorrerá por uma mensagem real do jogo.',
+                    type: 'info'
+                });
+            }
+        });
+        const adjustPopulationButton = EAS.UI.createButton({
+            text: 'Ajustar composição',
+            onClick: () => {
+                const population = getPopulationState();
+                const unit = completionUnitSelect.value;
+                const unitPopulation = EAS.Units.getPopulation(unit);
+
+                if (!population.deficit || !troopInputs[unit] || !unitPopulation) {
+                    return;
+                }
+
+                const hadAnalysis = !analysisSection.hidden;
+                troopInputs[unit].value = normalizeQuantity(troopInputs[unit].value) +
+                    Math.ceil(population.deficit / unitPopulation);
+                invalidateAnalysis();
+                updateSummary();
+
+                if (hadAnalysis) {
+                    analyzeOperation();
+                }
+            }
+        });
+        populationActions.appendChild(verifyWorldRuleButton);
+        populationActions.appendChild(clearWorldRuleButton);
+        populationActions.appendChild(adjustPopulationButton);
         const clearButton = EAS.UI.createButton({
             text: 'Limpar',
             icon: '🧹',
@@ -775,6 +928,7 @@
         manager.appendChild(description);
         manager.appendChild(presetsForm);
         manager.appendChild(troopsSection);
+        manager.appendChild(populationSection);
         manager.appendChild(targetsSection);
         manager.appendChild(summarySection);
         manager.appendChild(analysisSection);
@@ -782,5 +936,9 @@
         manager.appendChild(status);
         win.body.appendChild(manager);
         updateSummary();
+
+        if (autoAnalyze) {
+            setTimeout(() => analyzeOperation(), 0);
+        }
     };
 })();

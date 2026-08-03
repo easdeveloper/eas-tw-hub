@@ -11,6 +11,8 @@
         World: {},
         Villages: {},
         Troops: {},
+        Units: {},
+        WorldRules: {},
         FakesExecution: {},
         Modules: {},
 

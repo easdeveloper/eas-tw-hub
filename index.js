@@ -52,6 +52,14 @@
                     await loadScript('services/place.js');
                 }
 
+                if (!window.EAS.Units?.calculateCommandPopulation) {
+                    await loadScript('core/units.js');
+                }
+
+                if (!window.EAS.WorldRules?.get) {
+                    await loadScript('core/world-rules.js');
+                }
+
                 if (!window.EAS.FakesExecution?.initialize) {
                     await loadScript('services/fakes-execution.js');
                 }
@@ -69,6 +77,8 @@
             await loadScript('core/storage.js');
             await loadScript('core/ui.js');
             await loadScript('core/world.js');
+            await loadScript('core/units.js');
+            await loadScript('core/world-rules.js');
             await loadScript('core/villages.js');
             await loadScript('core/troops.js');
             await loadScript('services/place.js');

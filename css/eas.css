@@ -268,6 +268,7 @@
 }
 
 .fake-manager-troops,
+.fake-manager-population,
 .fake-manager-targets,
 .fake-manager-summary {
     padding: 12px;
@@ -286,6 +287,36 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
+}
+
+.fake-manager-population__info p {
+    margin: 0 0 7px;
+}
+
+.fake-manager-population__values,
+.fake-manager-population__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.fake-manager-population__values span {
+    padding: 6px 8px;
+    border: 1px solid #d2b272;
+    background: #fffdf5;
+}
+
+.fake-manager-population__valid {
+    margin-top: 8px;
+    padding: 7px;
+    border: 1px solid #719553;
+    background: #eaf4df;
+    color: #365520;
+    font-weight: 700;
+}
+
+.fake-manager-population__actions {
+    margin-top: 9px;
 }
 
 .fake-manager-targets textarea {
@@ -501,6 +532,16 @@
 }
 
 .fake-execution-erro {
+    color: #79291e;
+    font-weight: 700;
+}
+
+.fake-execution-encaminhando {
+    color: #76501d;
+    font-weight: 700;
+}
+
+.fake-execution-rejeitado-por-populacao-minima {
     color: #79291e;
     font-weight: 700;
 }

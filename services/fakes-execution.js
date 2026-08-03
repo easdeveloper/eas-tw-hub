@@ -223,6 +223,24 @@
             };
         }
 
+        const worldRule = EAS.WorldRules.get();
+        const commandPopulation = EAS.Units.calculateCommandPopulation(
+            context.troopsPerTarget
+        );
+
+        if (
+            context.commandType === 'attack' &&
+            worldRule?.minimumAttackPopulation > commandPopulation
+        ) {
+            return {
+                valid: false,
+                populationInvalid: true,
+                commandPopulation,
+                minimumPopulation: worldRule.minimumAttackPopulation,
+                message: `Composição inválida para ataques neste mundo. População atual: ${commandPopulation}. Mínima: ${worldRule.minimumAttackPopulation}. Faltam: ${worldRule.minimumAttackPopulation - commandPopulation}.`
+            };
+        }
+
         const inputs = requiredTroops.reduce((result, [unit]) => {
             result[unit] = findUnitInput(form, unit);
             return result;
@@ -309,6 +327,179 @@
             .find(Boolean) || null;
     };
 
+    const normalizeMessageText = (value) => {
+        return String(value ?? '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    };
+
+    const parseMinimumPopulationError = (value) => {
+        const text = normalizeMessageText(value);
+        const match = text.match(
+            /cada ataque.*?pelo menos\s+(\d+)\s+de populacao.*?tentando enviar\s+(\d+)/i
+        );
+
+        return match
+            ? {
+                minimumPopulation: Number(match[1]),
+                attemptedPopulation: Number(match[2])
+            }
+            : null;
+    };
+
+    const detectMinimumPopulationError = (targetDocument) => {
+        const selectors = [
+            '.error',
+            '.error_box',
+            '.error-message',
+            '#error',
+            '.warn',
+            '.warning'
+        ];
+        const candidates = Array.from(
+            targetDocument.querySelectorAll(selectors.join(','))
+        ).filter((element) =>
+            !element.hidden &&
+            element.getAttribute('aria-hidden') !== 'true' &&
+            element.style.display !== 'none' &&
+            element.style.visibility !== 'hidden'
+        );
+
+        for (const element of candidates) {
+            const detected = parseMinimumPopulationError(element.textContent);
+
+            if (detected) {
+                return detected;
+            }
+        }
+
+        const main = targetDocument.querySelector(
+            '#content_value, #contentContainer, main'
+        ) || targetDocument.body;
+
+        return parseMinimumPopulationError(main?.textContent);
+    };
+
+    const isConfirmationScreen = (targetDocument) => {
+        return Boolean(targetDocument.querySelector(
+            '#command-confirm-form, form[action*="action=command"] input[name="h"]'
+        ));
+    };
+
+    const rejectForMinimumPopulation = (context, target, detected) => {
+        clearOtherTargetStatuses(context, target, 'error');
+        context.errorTargets.push({
+            target,
+            reason: 'minimum-attack-population',
+            minimumPopulation: detected.minimumPopulation,
+            attemptedPopulation: detected.attemptedPopulation
+        });
+        context.forwardingTarget = null;
+        context.lastPopulationRejection = {
+            target,
+            ...detected,
+            detectedAt: Date.now()
+        };
+        EAS.WorldRules.setMinimumAttackPopulation(
+            detected.minimumPopulation,
+            {
+                attemptedPopulation: detected.attemptedPopulation,
+                source: 'game-error'
+            }
+        );
+        saveContext(context);
+    };
+
+    const completeForwardedTarget = (context, target) => {
+        clearOtherTargetStatuses(context, target, 'completed');
+        uniquePush(context.completedTargets, target);
+
+        if (context.targets[context.currentIndex] === target) {
+            context.currentIndex += 1;
+        }
+
+        context.forwardingTarget = null;
+        context.lastPopulationRejection = null;
+        saveContext(context);
+    };
+
+    const watchCommandResult = ({
+        context,
+        target,
+        targetWindow,
+        onRejected,
+        onConfirmed,
+        onTimeout
+    }) => {
+        const startedAt = Date.now();
+        let observedDocument = targetWindow.document;
+        let observer = null;
+        let timer = null;
+
+        const stop = () => {
+            observer?.disconnect();
+            clearInterval(timer);
+        };
+        const inspect = () => {
+            let currentDocument;
+
+            try {
+                currentDocument = targetWindow.document;
+            } catch {
+                return;
+            }
+
+            if (currentDocument !== observedDocument) {
+                observer?.disconnect();
+                observedDocument = currentDocument;
+                observeMain();
+            }
+
+            const detected = detectMinimumPopulationError(currentDocument);
+
+            if (detected && context.commandType === 'attack') {
+                stop();
+                rejectForMinimumPopulation(context, target, detected);
+                onRejected(detected);
+                return;
+            }
+
+            if (isConfirmationScreen(currentDocument)) {
+                stop();
+                completeForwardedTarget(context, target);
+                onConfirmed();
+                return;
+            }
+
+            if (Date.now() - startedAt >= OPEN_TIMEOUT_MS) {
+                stop();
+                context.forwardingTarget = null;
+                saveContext(context);
+                onTimeout();
+            }
+        };
+        const observeMain = () => {
+            const main = observedDocument.querySelector(
+                '#content_value, #contentContainer, main'
+            ) || observedDocument.body;
+
+            if (!main) {
+                return;
+            }
+
+            observer = new targetWindow.MutationObserver(inspect);
+            observer.observe(main, { childList: true, subtree: true });
+        };
+
+        observeMain();
+        timer = setInterval(inspect, POLL_INTERVAL_MS);
+        inspect();
+
+        return stop;
+    };
+
     const copyStyles = (targetWindow) => {
         if (targetWindow.document.querySelector('[data-eas-fakes-style]')) {
             return;
@@ -328,6 +519,17 @@
     };
 
     const getTargetStatus = (context, target, index) => {
+        if (context.forwardingTarget === target) {
+            return 'Encaminhando';
+        }
+
+        if (context.errorTargets.some(
+            (item) => item.target === target &&
+                item.reason === 'minimum-attack-population'
+        )) {
+            return 'Rejeitado por população mínima';
+        }
+
         if (context.errorTargets.some((item) => item.target === target)) {
             return 'Erro';
         }
@@ -356,8 +558,25 @@
 
         const context = normalizeContext(stored);
         const doc = targetWindow.document;
+        const initialPopulationError = detectMinimumPopulationError(doc);
+
+        if (context.commandType === 'attack' && initialPopulationError) {
+            rejectForMinimumPopulation(
+                context,
+                context.forwardingTarget ||
+                    context.targets[context.currentIndex],
+                initialPopulationError
+            );
+        } else if (context.forwardingTarget && isConfirmationScreen(doc)) {
+            completeForwardedTarget(context, context.forwardingTarget);
+        } else if (context.forwardingTarget) {
+            context.forwardingTarget = null;
+            saveContext(context);
+        }
+
         copyStyles(targetWindow);
         doc.getElementById(PANEL_ID)?.remove();
+        let stopResultWatcher = null;
 
         const panel = doc.createElement('aside');
         panel.id = PANEL_ID;
@@ -371,7 +590,10 @@
         closeButton.className = 'fake-execution-close';
         closeButton.textContent = '×';
         closeButton.title = 'Fechar painel';
-        closeButton.addEventListener('click', () => panel.remove());
+        closeButton.addEventListener('click', () => {
+            stopResultWatcher?.();
+            panel.remove();
+        });
         header.appendChild(title);
         header.appendChild(closeButton);
 
@@ -394,7 +616,11 @@
             const processedTargets = new Set([
                 ...context.completedTargets,
                 ...context.skippedTargets,
-                ...context.errorTargets.map((item) => item.target)
+                ...context.errorTargets
+                    .filter((item) =>
+                        item.reason !== 'minimum-attack-population'
+                    )
+                    .map((item) => item.target)
             ]);
             const remaining = Math.max(
                 0,
@@ -440,7 +666,9 @@
                 item.className = `fake-execution-${status
                     .normalize('NFD')
                     .replace(/[\u0300-\u036f]/g, '')
-                    .toLowerCase()}`;
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '-')
+                    .replace(/^-|-$/g, '')}`;
                 item.textContent = `${target} — ${status}`;
                 targetList.appendChild(item);
             });
@@ -482,7 +710,9 @@
             });
             addButton({
                 text: 'Atacar',
-                disabled: !validation.valid || context.commandType !== 'attack',
+                disabled: !validation.valid ||
+                    context.commandType !== 'attack' ||
+                    Boolean(context.forwardingTarget),
                 onClick: () => {
                     const result = prepareCurrent(context, targetWindow);
                     const commandButton = result.valid
@@ -499,20 +729,38 @@
                         return;
                     }
 
-                    clearOtherTargetStatuses(context, result.target, 'completed');
-                    uniquePush(context.completedTargets, result.target);
-                    context.currentIndex += 1;
+                    context.forwardingTarget = result.target;
+                    context.forwardingStartedAt = Date.now();
                     saveContext(context);
                     render(
-                        'Ataque encaminhado para confirmação. O próximo alvo não foi preparado.',
-                        'success'
+                        'Encaminhando ataque. Aguardando resposta do jogo...',
+                        'info'
                     );
+                    stopResultWatcher = watchCommandResult({
+                        context,
+                        target: result.target,
+                        targetWindow,
+                        onRejected: (detected) => render(
+                            `Regra do mundo detectada. Este mundo exige no mínimo ${detected.minimumPopulation} de população por ataque. A composição atual possui ${detected.attemptedPopulation}. Reanalise a operação ou ajuste as tropas.`,
+                            'error'
+                        ),
+                        onConfirmed: () => render(
+                            'Ataque encaminhado para confirmação. O próximo alvo não foi preparado.',
+                            'success'
+                        ),
+                        onTimeout: () => render(
+                            'Não foi possível confirmar o avanço. O alvo atual foi mantido.',
+                            'error'
+                        )
+                    });
                     commandButton.click();
                 }
             });
             addButton({
                 text: 'Apoiar',
-                disabled: !validation.valid || context.commandType !== 'support',
+                disabled: !validation.valid ||
+                    context.commandType !== 'support' ||
+                    Boolean(context.forwardingTarget),
                 onClick: () => {
                     const result = prepareCurrent(context, targetWindow);
                     const commandButton = result.valid
@@ -529,17 +777,54 @@
                         return;
                     }
 
-                    clearOtherTargetStatuses(context, result.target, 'completed');
-                    uniquePush(context.completedTargets, result.target);
-                    context.currentIndex += 1;
+                    context.forwardingTarget = result.target;
+                    context.forwardingStartedAt = Date.now();
                     saveContext(context);
                     render(
-                        'Apoio encaminhado para confirmação. O próximo alvo não foi preparado.',
-                        'success'
+                        'Encaminhando apoio. Aguardando resposta do jogo...',
+                        'info'
                     );
+                    stopResultWatcher = watchCommandResult({
+                        context,
+                        target: result.target,
+                        targetWindow,
+                        onRejected: () => render(
+                            'O apoio foi rejeitado pelo jogo. O alvo atual foi mantido.',
+                            'error'
+                        ),
+                        onConfirmed: () => render(
+                            'Apoio encaminhado para confirmação. O próximo alvo não foi preparado.',
+                            'success'
+                        ),
+                        onTimeout: () => render(
+                            'Não foi possível confirmar o avanço. O alvo atual foi mantido.',
+                            'error'
+                        )
+                    });
                     commandButton.click();
                 }
             });
+            if (context.lastPopulationRejection) {
+                addButton({
+                    text: 'Reanalisar operação',
+                    onClick: () => {
+                        const saved = [
+                            ['eas_tw_fakes_selected_preset', context.preset],
+                            ['eas_tw_fakes_command_type', context.commandType],
+                            ['eas_tw_fakes_troops', context.troopsPerTarget],
+                            ['eas_tw_fakes_coordinates', context.targets.join('\n')]
+                        ];
+
+                        saved.forEach(([key, value]) => {
+                            localStorage.setItem(key, JSON.stringify(value));
+                        });
+                        EAS.UI.loadModule('fakes').then((module) => {
+                            module.open({ autoAnalyze: true });
+                            panel.remove();
+                        });
+                    }
+                });
+            }
             addButton({
                 text: 'Pular alvo',
                 disabled: !currentTarget,
@@ -587,6 +872,7 @@
                 text: 'Encerrar execução',
                 className: 'eas-button--secondary',
                 onClick: () => {
+                    stopResultWatcher?.();
                     removeContext();
                     panel.remove();
                 }
@@ -665,4 +951,6 @@
 
     EAS.FakesExecution.mountPanel = mountPanel;
     EAS.FakesExecution.readContext = readContext;
+    EAS.FakesExecution.parseMinimumPopulationError = parseMinimumPopulationError;
+    EAS.FakesExecution.detectMinimumPopulationError = detectMinimumPopulationError;
 })();
