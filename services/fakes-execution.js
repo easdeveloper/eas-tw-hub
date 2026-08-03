@@ -69,6 +69,15 @@
         }
     };
 
+    const readLocalValue = (key, fallback = null) => {
+        try {
+            const value = localStorage.getItem(key);
+            return value === null ? fallback : JSON.parse(value);
+        } catch {
+            return fallback;
+        }
+    };
+
     const getScreen = (targetWindow = window) => {
         try {
             const url = new URL(targetWindow.location.href);
@@ -114,11 +123,40 @@
                 target,
                 status: 'pending'
             }));
+        const analysisCommandType = readLocalValue(
+            'eas_tw_fakes_analysis',
+            {}
+        )?.commandType;
+        const commandType = COMMAND_TYPES.includes(context?.commandType)
+            ? context.commandType
+            : COMMAND_TYPES.includes(analysisCommandType)
+                ? analysisCommandType
+                : 'attack';
+        const commandTypeFallbackUsed = !COMMAND_TYPES.includes(
+            context?.commandType
+        );
+        const allowCommandSwitch = typeof context?.allowCommandSwitch === 'boolean'
+            ? context.allowCommandSwitch
+            : Boolean(readLocalValue(
+                'eas_tw_fakes_allow_command_switch',
+                false
+            ));
+        const forwardingCommandType = COMMAND_TYPES.includes(
+            context?.forwardingCommandType
+        )
+            ? context.forwardingCommandType
+            : Number.isInteger(context?.forwardingIndex)
+                ? commandType
+                : null;
 
         return {
             ...context,
             queue,
             targets: legacyTargets,
+            commandType,
+            commandTypeFallbackUsed,
+            allowCommandSwitch,
+            forwardingCommandType,
             troopsPerTarget: { ...(context?.troopsPerTarget || {}) },
             currentIndex: Math.max(0, Number(context?.currentIndex || 0)),
             prepared: Array.isArray(context?.prepared)
@@ -234,7 +272,11 @@
         return parsed ?? null;
     };
 
-    const validateCurrent = (context, targetWindow) => {
+    const validateCurrent = (
+        context,
+        targetWindow,
+        { commandType = null } = {}
+    ) => {
         const entry = getCurrentEntry(context);
         const parsedTarget = EAS.Utils.parseCoordinate(entry?.target);
         const form = EAS.Place.getCommandForm(targetWindow.document);
@@ -256,7 +298,7 @@
             };
         }
 
-        if (!COMMAND_TYPES.includes(context.commandType)) {
+        if (commandType !== null && !COMMAND_TYPES.includes(commandType)) {
             return { valid: false, message: 'Tipo de comando inválido.' };
         }
 
@@ -280,7 +322,7 @@
         );
 
         if (
-            context.commandType === 'attack' &&
+            commandType === 'attack' &&
             worldRule?.minimumAttackPopulation > commandPopulation
         ) {
             return {
@@ -338,8 +380,16 @@
         };
     };
 
-    const prepareCurrent = (context, targetWindow) => {
-        const validation = validateCurrent(context, targetWindow);
+    const prepareCurrent = (
+        context,
+        targetWindow,
+        commandType = null
+    ) => {
+        const validation = validateCurrent(
+            context,
+            targetWindow,
+            { commandType }
+        );
 
         if (!validation.valid) {
             return validation;
@@ -373,12 +423,39 @@
 
     const findCommandButton = (form, commandType) => {
         const selectors = commandType === 'attack'
-            ? ['#target_attack', '[name="attack"]', '[data-command="attack"]']
-            : ['#target_support', '[name="support"]', '[data-command="support"]'];
-
-        return selectors
+            ? [
+                'button[name="attack"]',
+                'input[name="attack"]',
+                '#target_attack',
+                '[data-command="attack"]'
+            ]
+            : [
+                'button[name="support"]',
+                'input[name="support"]',
+                '#target_support',
+                '[data-command="support"]'
+            ];
+        const known = selectors
             .map((selector) => form.querySelector(selector))
             .find(Boolean) || null;
+
+        if (known) {
+            return known;
+        }
+
+        const labels = commandType === 'attack'
+            ? ['ataque', 'atacar']
+            : ['apoio', 'apoiar'];
+
+        return Array.from(form.querySelectorAll(
+            'button, input[type="submit"], input[type="button"]'
+        )).find((element) => {
+            const text = normalizeMessageText(
+                element.textContent || element.value
+            ).toLowerCase();
+
+            return labels.includes(text);
+        }) || null;
     };
 
     const normalizeMessageText = (value) => {
@@ -436,10 +513,55 @@
         return parseMinimumPopulationError(main?.textContent);
     };
 
-    const isConfirmationScreen = (targetDocument) => {
-        return Boolean(targetDocument.querySelector(
+    const detectConfirmationCommandType = (targetDocument) => {
+        const confirmation = targetDocument.querySelector(
+            '#command-confirm-form, form[action*="action=command"]'
+        );
+        const main = confirmation || targetDocument.querySelector(
+            '#content_value, #contentContainer, main'
+        ) || targetDocument.body;
+        const text = normalizeMessageText(main?.textContent).toLowerCase();
+
+        if (
+            main?.querySelector?.(
+                '[name="support"], [data-command="support"]'
+            ) ||
+            /confirmar apoio|enviar apoio/.test(text)
+        ) {
+            return 'support';
+        }
+
+        if (
+            main?.querySelector?.(
+                '[name="attack"], [data-command="attack"]'
+            ) ||
+            /confirmar ataque|enviar ataque/.test(text)
+        ) {
+            return 'attack';
+        }
+
+        return null;
+    };
+
+    const isConfirmationScreen = (
+        targetDocument,
+        expectedCommandType = null
+    ) => {
+        const hasConfirmationStructure = Boolean(targetDocument.querySelector(
             '#command-confirm-form, form[action*="action=command"] input[name="h"]'
         ));
+
+        if (!hasConfirmationStructure) {
+            return false;
+        }
+
+        const detectedCommandType = detectConfirmationCommandType(
+            targetDocument
+        );
+
+        return !expectedCommandType ||
+            !detectedCommandType ||
+            detectedCommandType === expectedCommandType;
     };
 
     const rejectForMinimumPopulation = (context, entryIndex, detected) => {
@@ -458,6 +580,7 @@
             entry.status = 'rejected-minimum-population';
         }
         context.forwardingIndex = null;
+        context.forwardingCommandType = null;
         context.lastPopulationRejection = {
             target: entry?.target,
             ...detected,
@@ -473,7 +596,11 @@
         saveContext(context);
     };
 
-    const completeForwardedTarget = (context, entryIndex) => {
+    const completeForwardedTarget = (
+        context,
+        entryIndex,
+        executedCommandType
+    ) => {
         const entry = context.queue[entryIndex];
         const commandKey = getCommandKey(entry, entryIndex);
         clearOtherTargetStatuses(context, commandKey, 'completed');
@@ -481,6 +608,7 @@
 
         if (entry) {
             entry.status = 'forwarded';
+            entry.executedCommandType = executedCommandType;
         }
 
         if (context.currentIndex === entryIndex) {
@@ -488,6 +616,7 @@
         }
 
         context.forwardingIndex = null;
+        context.forwardingCommandType = null;
         context.lastPopulationRejection = null;
         saveContext(context);
     };
@@ -526,16 +655,23 @@
 
             const detected = detectMinimumPopulationError(currentDocument);
 
-            if (detected && context.commandType === 'attack') {
+            if (detected && context.forwardingCommandType === 'attack') {
                 stop();
                 rejectForMinimumPopulation(context, entryIndex, detected);
                 onRejected(detected);
                 return;
             }
 
-            if (isConfirmationScreen(currentDocument)) {
+            if (isConfirmationScreen(
+                currentDocument,
+                context.forwardingCommandType
+            )) {
                 stop();
-                completeForwardedTarget(context, entryIndex);
+                completeForwardedTarget(
+                    context,
+                    entryIndex,
+                    context.forwardingCommandType
+                );
                 onConfirmed();
                 return;
             }
@@ -543,6 +679,7 @@
             if (Date.now() - startedAt >= OPEN_TIMEOUT_MS) {
                 stop();
                 context.forwardingIndex = null;
+                context.forwardingCommandType = null;
                 saveContext(context);
                 onTimeout();
             }
@@ -632,7 +769,7 @@
 
         if (
             hasForwardingEntry &&
-            context.commandType === 'attack' &&
+            context.forwardingCommandType === 'attack' &&
             initialPopulationError
         ) {
             rejectForMinimumPopulation(
@@ -640,10 +777,18 @@
                 context.forwardingIndex,
                 initialPopulationError
             );
-        } else if (hasForwardingEntry && isConfirmationScreen(doc)) {
-            completeForwardedTarget(context, context.forwardingIndex);
+        } else if (hasForwardingEntry && isConfirmationScreen(
+            doc,
+            context.forwardingCommandType
+        )) {
+            completeForwardedTarget(
+                context,
+                context.forwardingIndex,
+                context.forwardingCommandType
+            );
         } else if (hasForwardingEntry) {
             context.forwardingIndex = null;
+            context.forwardingCommandType = null;
             saveContext(context);
         }
 
@@ -685,6 +830,25 @@
             const validation = currentEntry
                 ? validateCurrent(context, targetWindow)
                 : { valid: false, message: 'Todos os alvos foram processados.' };
+            const attackValidation = validation.valid
+                ? validateCurrent(context, targetWindow, {
+                    commandType: 'attack'
+                })
+                : validation;
+            const supportValidation = validation.valid
+                ? validateCurrent(context, targetWindow, {
+                    commandType: 'support'
+                })
+                : validation;
+            const attackTypeEnabled = context.commandType === 'attack' ||
+                context.allowCommandSwitch;
+            const supportTypeEnabled = context.commandType === 'support' ||
+                context.allowCommandSwitch;
+            const isForwarding = Number.isInteger(context.forwardingIndex);
+            const attackAllowed = attackTypeEnabled &&
+                attackValidation.valid && !isForwarding;
+            const supportAllowed = supportTypeEnabled &&
+                supportValidation.valid && !isForwarding;
             const completed = new Set(context.completed).size;
             const skipped = new Set(context.skipped).size;
             const errors = new Set(
@@ -762,12 +926,19 @@
 
             const actions = doc.createElement('div');
             actions.className = 'fake-execution-actions';
-            const addButton = ({ text, className = '', disabled = false, onClick }) => {
+            const addButton = ({
+                text,
+                className = '',
+                disabled = false,
+                title = '',
+                onClick
+            }) => {
                 const button = doc.createElement('button');
                 button.type = 'button';
                 button.className = `eas-button ${className}`.trim();
                 button.textContent = text;
                 button.disabled = disabled;
+                button.title = title;
                 button.addEventListener('click', onClick);
                 actions.appendChild(button);
             };
@@ -796,11 +967,17 @@
             });
             addButton({
                 text: 'Atacar',
-                disabled: !validation.valid ||
-                    context.commandType !== 'attack' ||
-                    Number.isInteger(context.forwardingIndex),
+                disabled: !attackAllowed,
+                title: attackAllowed
+                    ? 'Ataque disponível'
+                    : attackValidation.message ||
+                        'O tipo padrão da operação é Apoio.',
                 onClick: () => {
-                    const result = prepareCurrent(context, targetWindow);
+                    const result = prepareCurrent(
+                        context,
+                        targetWindow,
+                        'attack'
+                    );
                     const commandButton = result.valid
                         ? findCommandButton(result.form, 'attack')
                         : null;
@@ -816,6 +993,7 @@
                     }
 
                     context.forwardingIndex = context.currentIndex;
+                    context.forwardingCommandType = 'attack';
                     context.forwardingStartedAt = Date.now();
                     result.entry.status = 'forwarding';
                     saveContext(context);
@@ -845,11 +1023,17 @@
             });
             addButton({
                 text: 'Apoiar',
-                disabled: !validation.valid ||
-                    context.commandType !== 'support' ||
-                    Number.isInteger(context.forwardingIndex),
+                disabled: !supportAllowed,
+                title: supportAllowed
+                    ? 'Apoio disponível'
+                    : supportValidation.message ||
+                        'O tipo padrão da operação é Ataque.',
                 onClick: () => {
-                    const result = prepareCurrent(context, targetWindow);
+                    const result = prepareCurrent(
+                        context,
+                        targetWindow,
+                        'support'
+                    );
                     const commandButton = result.valid
                         ? findCommandButton(result.form, 'support')
                         : null;
@@ -865,6 +1049,7 @@
                     }
 
                     context.forwardingIndex = context.currentIndex;
+                    context.forwardingCommandType = 'support';
                     context.forwardingStartedAt = Date.now();
                     result.entry.status = 'forwarding';
                     saveContext(context);
@@ -904,7 +1089,8 @@
                                 context.queue.map((entry) => entry.target)
                             )].join('\n')],
                             ['eas_tw_fakes_per_target', context.fakesPerTarget || 1],
-                            ['eas_tw_fakes_selected_villages', context.selectedVillageIds || []]
+                            ['eas_tw_fakes_selected_villages', context.selectedVillageIds || []],
+                            ['eas_tw_fakes_allow_command_switch', context.allowCommandSwitch]
                         ];
 
                         saved.forEach(([key, value]) => {
@@ -974,12 +1160,35 @@
                 }
             });
 
+            const actionAvailability = doc.createElement('div');
+            actionAvailability.className = 'fake-action-status';
+            const attackReason = attackAllowed
+                ? 'Disponível'
+                : !attackTypeEnabled
+                    ? 'Bloqueado — tipo padrão Apoio'
+                    : attackValidation.populationInvalid
+                        ? `Bloqueado — população ${attackValidation.commandPopulation}/${attackValidation.minimumPopulation}${context.allowCommandSwitch && supportAllowed ? '. Você ainda pode enviar como apoio.' : ''}`
+                        : `Bloqueado — ${attackValidation.message}`;
+            const supportReason = supportAllowed
+                ? 'Disponível'
+                : !supportTypeEnabled
+                    ? 'Bloqueado — tipo padrão Ataque'
+                    : `Bloqueado — ${supportValidation.message}`;
+            actionAvailability.innerHTML = `
+                <div class="${attackAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Ataque:</strong> ${EAS.Utils.escapeHtml(attackReason)}</div>
+                <div class="${supportAllowed ? 'fake-action-available' : 'fake-action-disabled-reason'}"><strong>Apoio:</strong> ${EAS.Utils.escapeHtml(supportReason)}</div>
+                ${context.commandTypeFallbackUsed
+                    ? '<div class="fake-action-disabled-reason">Tipo de comando ausente ou inválido no contexto antigo; Ataque foi usado como fallback.</div>'
+                    : ''}
+            `;
+
             content.appendChild(summary);
             content.appendChild(troops);
             content.appendChild(executionStatus);
             content.appendChild(targetList);
             content.appendChild(notice);
             content.appendChild(actions);
+            content.appendChild(actionAvailability);
         };
 
         render();
@@ -1057,4 +1266,7 @@
     EAS.FakesExecution.readContext = readContext;
     EAS.FakesExecution.parseMinimumPopulationError = parseMinimumPopulationError;
     EAS.FakesExecution.detectMinimumPopulationError = detectMinimumPopulationError;
+    EAS.FakesExecution.findPlaceCommandButton = findCommandButton;
+    EAS.FakesExecution.detectConfirmationCommandType =
+        detectConfirmationCommandType;
 })();

@@ -11,6 +11,7 @@
         coordinates: 'eas_tw_fakes_coordinates',
         fakesPerTarget: 'eas_tw_fakes_per_target',
         selectedVillages: 'eas_tw_fakes_selected_villages',
+        allowCommandSwitch: 'eas_tw_fakes_allow_command_switch',
         analysis: 'eas_tw_fakes_analysis'
     };
 
@@ -281,6 +282,10 @@
             STORAGE_KEYS.selectedVillages,
             null
         );
+        const savedAllowCommandSwitch = Boolean(readStorage(
+            STORAGE_KEYS.allowCommandSwitch,
+            false
+        ));
         const availableUnits = getAvailableUnits();
         let worldRule = EAS.WorldRules.get();
 
@@ -338,6 +343,16 @@
             label: 'Fakes por alvo',
             input: fakesPerTargetInput
         }));
+        const commandSwitchOption = document.createElement('label');
+        commandSwitchOption.className = 'fake-command-switch';
+        const commandSwitchInput = document.createElement('input');
+        commandSwitchInput.type = 'checkbox';
+        commandSwitchInput.checked = savedAllowCommandSwitch;
+        commandSwitchOption.appendChild(commandSwitchInput);
+        commandSwitchOption.appendChild(document.createTextNode(
+            'Permitir trocar Ataque/Apoio durante a execução'
+        ));
+        presetsForm.appendChild(commandSwitchOption);
 
         const troopsSection = document.createElement('section');
         troopsSection.className = 'fake-manager-troops';
@@ -449,6 +464,8 @@
             );
             const applies = commandTypeSelect.value === 'attack' &&
                 minimumPopulation > 0;
+            const attackPopulationValid = !applies ||
+                commandPopulation >= minimumPopulation;
 
             return {
                 commandPopulation,
@@ -456,7 +473,8 @@
                 deficit: applies
                     ? Math.max(0, minimumPopulation - commandPopulation)
                     : 0,
-                valid: !applies || commandPopulation >= minimumPopulation
+                attackPopulationValid,
+                valid: attackPopulationValid || commandSwitchInput.checked
             };
         };
 
@@ -851,7 +869,7 @@
                 ${distributedCommands < desiredCommands
                     ? `<div class="fake-analysis-warning">Capacidade insuficiente: faltam ${desiredCommands - distributedCommands} comandos.</div>`
                     : ''}
-                ${!operation.valid
+                ${!operation.attackPopulationValid && commandTypeSelect.value === 'attack'
                     ? `<div class="fake-analysis-warning">Composição abaixo da população mínima. Atual: ${operation.commandPopulation}. Mínimo: ${operation.minimumPopulation}.</div>`
                     : ''}
             `;
@@ -1099,6 +1117,7 @@
                     const execution = {
                         preset: presetSelect.value,
                         commandType: commandTypeSelect.value,
+                        allowCommandSwitch: commandSwitchInput.checked,
                         troopsPerTarget: { ...operation.troops },
                         fakesPerTarget,
                         selectedVillageIds: selected.map((analysis) =>
@@ -1230,6 +1249,7 @@
             writeStorage(STORAGE_KEYS.analysis, {
                 preset: presetSelect.value,
                 commandType: commandTypeSelect.value,
+                allowCommandSwitch: commandSwitchInput.checked,
                 troopsPerTarget: { ...operation.troops },
                 targets: [...operation.coordinates],
                 fakesPerTarget: Math.max(
@@ -1282,6 +1302,13 @@
 
         presetSelect.addEventListener('change', applyPreset);
         commandTypeSelect.addEventListener('change', () => {
+            invalidateAndMaybeReanalyze();
+        });
+        commandSwitchInput.addEventListener('change', () => {
+            writeStorage(
+                STORAGE_KEYS.allowCommandSwitch,
+                commandSwitchInput.checked
+            );
             invalidateAndMaybeReanalyze();
         });
         fakesPerTargetInput.addEventListener('input', () => {
@@ -1405,6 +1432,10 @@
                     writeStorage(
                         STORAGE_KEYS.fakesPerTarget,
                         Math.max(1, normalizeQuantity(fakesPerTargetInput.value))
+                    ),
+                    writeStorage(
+                        STORAGE_KEYS.allowCommandSwitch,
+                        commandSwitchInput.checked
                     )
                 ].every(Boolean);
 

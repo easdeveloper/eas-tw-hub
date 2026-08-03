@@ -267,6 +267,14 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.fake-command-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 35px;
+    font-weight: 700;
+}
+
 .fake-manager-troops,
 .fake-manager-population,
 .fake-manager-targets,
@@ -616,6 +624,27 @@
     min-height: 34px;
     padding: 7px;
     font-size: 11px;
+}
+
+.fake-action-status {
+    display: grid;
+    gap: 5px;
+    margin-top: 9px;
+    font-size: 11px;
+}
+
+.fake-action-available,
+.fake-action-disabled-reason {
+    padding: 6px 8px;
+    border: 1px solid #719553;
+    background: #eaf4df;
+    color: #365520;
+}
+
+.fake-action-disabled-reason {
+    border-color: #c7a15e;
+    background: #fff3ce;
+    color: #79291e;
 }
 
 .eas-attack-row--horario-ja-passou td {
