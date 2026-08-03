@@ -30,12 +30,18 @@
     const injectLoader = (targetWindow) => {
         try { const doc = targetWindow.document; if (targetWindow.EAS?.MarketOffersExecution?.initialize) { targetWindow.EAS.MarketOffersExecution.initialize(); return true; } if (doc.querySelector('script[data-eas-market-auto-loader]')) return true; const script = doc.createElement('script'); script.src = `https://easdeveloper.github.io/eas-tw-hub/index.js?v=${Date.now()}`; script.dataset.easMarketAutoLoader = 'true'; (doc.head || doc.documentElement).appendChild(script); return true; } catch { return false; }
     };
+    const watchExecutionWindow = (targetWindow, ownerWindow = window) => {
+        if (!targetWindow || targetWindow.closed) return null; if (targetWindow.__easMarketWatchTimer) return targetWindow.__easMarketWatchTimer;
+        const timer = ownerWindow.setInterval(() => { if (targetWindow.closed || !read() || read()?.endedAt) { ownerWindow.clearInterval(timer); return; } try { if (targetWindow.document?.readyState !== 'loading' && !targetWindow.EAS?.MarketOffersExecution?.initialize) injectLoader(targetWindow); else targetWindow.EAS?.MarketOffersExecution?.initialize?.(); } catch {} }, 300);
+        try { targetWindow.__easMarketWatchTimer = timer; } catch {} return timer;
+    };
     const openCurrent = (context) => {
         syncIndex(context); const item = current(context); if (!item) return false;
         item.status = item.status === 'error' || item.status === 'verification-required' ? item.status : 'opening'; context.popupName = `eas-market-offer-${context.executionId}`; save(context);
         if (window.name === context.popupName) { window.location.assign(marketUrl(item.villageId)); return true; }
         const popup = window.open(marketUrl(item.villageId), context.popupName); if (!popup) return false;
         try { popup.addEventListener('load', () => injectLoader(popup)); } catch {}
+        watchExecutionWindow(popup, window);
         return true;
     };
     const setValue = (input, value, targetWindow) => { const setter = Object.getOwnPropertyDescriptor(targetWindow.HTMLInputElement.prototype, 'value')?.set; setter ? setter.call(input, String(value)) : input.value = String(value); input.dispatchEvent(new targetWindow.Event('input', { bubbles: true })); input.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); };
@@ -138,17 +144,29 @@
         if (!current(context)) emit({ type: 'offer-execution-finished', executionId: context.executionId });
         return current(context);
     };
+    const getNextPendingOfferItem = (execution) => getCurrentPendingOfferItem(execution);
+    const advanceMarketOfferExecution = async ({ context, item, result, targetWindow, render = () => {}, prepareNext = async () => {} }) => {
+        const nextItem = finishSuccess(context, item, result, targetWindow); render('Oferta criada com sucesso.', 'success');
+        await new Promise((resolve) => targetWindow.setTimeout(resolve, 700));
+        if (!nextItem) {
+            const villageIds = [...new Set(context.queue.filter((entry) => entry.status === 'created').map((entry) => entry.villageId))];
+            Promise.allSettled(villageIds.map((villageId) => EAS.MarketEngine.refreshMarketVillage(villageId))).then(() => emit({ type: 'market-villages-refreshed', executionId: context.executionId, villageIds }));
+            render('', 'success'); return { state: 'finished', nextItem: null };
+        }
+        if (getVillageId(targetWindow) === String(nextItem.villageId)) { render('Preparando próxima oferta...', 'info'); await prepareNext(); return { state: 'same-village', nextItem }; }
+        render(`Abrindo próxima aldeia: ${nextItem.villageName}.`, 'info'); save(context); targetWindow.location.assign(marketUrl(nextItem.villageId)); return { state: 'different-village', nextItem };
+    };
     const finishError = (context, item, message, render) => { item.status = 'error'; item.error = message; addHistory(item, 'error', message); save(context); emit({ type: 'offer-error', executionId: context.executionId, queueItemId: item.id, error: message }); render(message, 'error'); };
     const mount = (targetWindow = window) => {
         const context = read(); if (!context) return false; syncIndex(context); const item = current(context); const url = new URL(targetWindow.location.href); const screen = url.searchParams.get('screen'); const mode = url.searchParams.get('mode');
         if (screen !== 'market' || mode !== 'own_offer') return false;
-        const doc = targetWindow.document; const correctVillage = !item || getVillageId(targetWindow) === String(item.villageId); let panel = doc.getElementById(PANEL_ID); if (!panel) { panel = doc.createElement('aside'); panel.id = PANEL_ID; panel.className = 'fake-execution-panel market-offers-execution-panel'; doc.body.appendChild(panel); } let observer = null; let timeout = null; let clickListener = null; let preparedSubmit = null;
+        const doc = targetWindow.document; const correctVillage = !item || getVillageId(targetWindow) === String(item.villageId); let panel = doc.getElementById(PANEL_ID); if (!panel) { panel = doc.createElement('aside'); panel.id = PANEL_ID; panel.className = 'fake-execution-panel market-offers-execution-panel'; doc.body.appendChild(panel); } let observer = null; let timeout = null; let clickListener = null; let preparedSubmit = null; let submissionLocked = false;
         const stop = () => { observer?.disconnect(); observer = null; clearTimeout(timeout); timeout = null; if (clickListener) { doc.removeEventListener('click', clickListener, true); clickListener = null; } };
         const render = (message = '', type = 'info') => {
             syncIndex(context); const active = current(context); const created = context.queue.filter((entry) => entry.status === 'created').length; const skipped = context.queue.filter((entry) => entry.status === 'skipped').length; const errors = context.queue.filter((entry) => ['error', 'verification-required'].includes(entry.status)).length; const sameVillage = active && getVillageId(targetWindow) === String(active.villageId); const finished = !active;
             panel.innerHTML = `<div class="fake-execution-header"><strong>Criação de Ofertas</strong></div><div class="fake-execution-content"><div class="fake-execution-summary"><div><strong>Aldeia</strong><span>${EAS.Utils.escapeHtml(active?.villageName || '-')}</span></div><div><strong>Oferta</strong><span>${active ? `${active.repeatCount} × ${active.offerAmount} ${active.offerResource} por ${active.requestAmount} ${active.requestResource}` : '-'}</span></div><div><strong>Total</strong><span>${active ? `${active.totalOfferAmount} por ${active.totalRequestAmount}` : '-'}</span></div><div><strong>Comerciantes</strong><span>${active?.merchantsRequired || 0}</span></div><div><strong>Progresso</strong><span>${created} de ${context.queue.length} concluídas</span></div><div><strong>Estado</strong><span>${finished ? 'Execução concluída' : !sameVillage ? 'Aldeia incorreta' : active.status}</span></div></div>${finished ? `<div class="eas-status eas-status--success">Execução concluída. Criadas: ${created}. Puladas: ${skipped}. Erros: ${errors}.</div>` : `<div class="eas-status eas-status--${type}">${EAS.Utils.escapeHtml(message || (!sameVillage ? 'A oferta atual pertence a outra aldeia.' : 'Carregando execução...'))}</div>`}<div class="fake-execution-actions" data-actions></div></div>`;
             const actions = panel.querySelector('[data-actions]'); const add = (text, handler, disabled = false) => { const button = doc.createElement('button'); button.className = 'eas-button'; button.textContent = text; button.disabled = disabled; button.onclick = handler; actions.appendChild(button); };
-            add('Criar esta oferta', () => submitCurrent(), !active || !sameVillage || active.status !== 'prepared' || !preparedSubmit);
+            add(active?.status === 'submitting' ? 'Criando...' : 'Criar esta oferta', () => submitCurrent(), submissionLocked || !active || !sameVillage || active.status !== 'prepared' || !preparedSubmit);
             add('Preparar novamente', () => arm(), !active || !sameVillage || active.status === 'submitting');
             add(sameVillage ? 'Abrir próxima aldeia' : 'Abrir aldeia correta', () => openCurrent(context), !active || sameVillage);
             add('Repetir oferta com erro', () => { active.status = 'pending'; active.error = null; save(context); arm(); }, !active || !sameVillage || !['error', 'verification-required'].includes(active.status));
@@ -161,15 +179,15 @@
         };
         const verify = () => {
             const active = current(context); if (!active || active.status !== 'submitting') return;
-            const error = errorMessage(targetWindow.document); if (error) { stop(); finishError(context, active, error, render); return; }
+            const error = errorMessage(targetWindow.document); if (error) { stop(); submissionLocked = false; finishError(context, active, error, render); return; }
             const result = detectOfferCreationSuccess({ document: targetWindow.document, expectedOffer: active, previousSnapshot: active.previousSnapshot });
-            if (result.success) { stop(); const next = finishSuccess(context, active, result, targetWindow); render('Oferta criada com sucesso.', 'success'); targetWindow.setTimeout(() => { if (!next) render('', 'success'); else if (getVillageId(targetWindow) === String(next.villageId)) arm(); else render(`Próxima oferta pertence à aldeia ${next.villageName}.`, 'info'); }, 1500); }
+            if (result.success) { stop(); submissionLocked = false; advanceMarketOfferExecution({ context, item: active, result, targetWindow, render, prepareNext: arm }); }
         };
         const beginVerification = () => {
             const active = current(context); if (!active || active.status === 'submitting') return;
             active.previousSnapshot = active.previousSnapshot || snapshotOffers(doc, active); active.status = 'submitting'; active.submittedAt = Date.now(); save(context); render('Aguardando confirmação real do jogo...', 'info');
             observer = new targetWindow.MutationObserver(verify); observer.observe(doc.querySelector('#own_offers_table, #content_value, main') || doc.body, { childList: true, subtree: true, characterData: true });
-            timeout = setTimeout(() => { stop(); const pending = current(context); if (pending?.status === 'submitting') { pending.status = 'verification-required'; pending.error = 'Não foi possível confirmar automaticamente a criação da oferta.'; save(context); emit({ type: 'offer-verification-required', executionId: context.executionId, queueItemId: pending.id }); render(pending.error, 'error'); } }, 10000);
+            timeout = setTimeout(() => { stop(); submissionLocked = false; const pending = current(context); if (pending?.status === 'submitting') { pending.status = 'verification-required'; pending.error = 'Não foi possível confirmar automaticamente a criação da oferta.'; save(context); emit({ type: 'offer-verification-required', executionId: context.executionId, queueItemId: pending.id }); render(pending.error, 'error'); } }, 10000);
         };
         const arm = async () => {
             stop(); render('Aguardando o formulário do jogo estabilizar...', 'info'); const prepared = await prepareItem(context, targetWindow); if (!prepared.valid) { render(prepared.message, 'error'); return; }
@@ -178,10 +196,10 @@
             doc.addEventListener('click', clickListener, true);
         };
         const submitCurrent = () => {
-            const active = current(context); if (!active || active.status !== 'prepared' || !preparedSubmit) return;
+            const active = current(context); if (submissionLocked || !active || active.status !== 'prepared' || !preparedSubmit) return;
             const repeatInput = findRepeatField(doc); const offerInput = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestInput = findField(doc, ['buy', 'request_amount', 'amount_buy']);
             if (Number(repeatInput?.value) !== active.repeatCount || Number(offerInput?.value) !== active.amountPerOffer || Number(requestInput?.value) !== active.requestAmountPerOffer) { render('Os campos foram alterados. Prepare novamente antes de criar.', 'error'); return; }
-            active.previousSnapshot = snapshotOffers(doc, active); save(context); beginVerification(); preparedSubmit.click();
+            submissionLocked = true; active.previousSnapshot = snapshotOffers(doc, active); save(context); beginVerification(); preparedSubmit.click();
         };
         const recalculatePending = () => {
             let config = {}; try { config = JSON.parse(localStorage.getItem('eas_tw_market_offers_config') || '{}'); } catch {}
@@ -190,12 +208,12 @@
         render();
         if (!item) render('', 'success');
         else if (!correctVillage) render('A oferta atual pertence a outra aldeia.', 'info');
-        else if (item.status === 'submitting') { const result = detectOfferCreationSuccess({ document: doc, expectedOffer: item, previousSnapshot: item.previousSnapshot }); if (result.success) { const next = finishSuccess(context, item, result, targetWindow); render('Oferta criada com sucesso.', 'success'); if (next && getVillageId(targetWindow) === String(next.villageId)) targetWindow.setTimeout(() => arm(), 1500); } else { item.status = 'verification-required'; item.error = 'A página foi recarregada durante o envio. Confirme a oferta antes de repetir.'; save(context); render(item.error, 'error'); } }
+        else if (item.status === 'submitting') { const result = detectOfferCreationSuccess({ document: doc, expectedOffer: item, previousSnapshot: item.previousSnapshot }); if (result.success) advanceMarketOfferExecution({ context, item, result, targetWindow, render, prepareNext: arm }); else { item.status = 'verification-required'; item.error = 'A página foi recarregada durante o envio. Confirme a oferta antes de repetir.'; save(context); render(item.error, 'error'); } }
         else if (['pending', 'opening', 'prepared'].includes(item.status)) arm();
         return true;
     };
     EAS.MarketOffersExecution.start = (context) => { const queue = (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })); const normalized = { ...context, version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; if (localStorage.getItem('eas_tw_market_offers_debug') === 'true') queue.forEach((queueItem, index) => console.debug('[EAS Offer Flow]', { suggestion: context.queue[index], queue: { repeatCount: queueItem.repeatCount, merchantsRequired: queueItem.merchantsRequired, merchantsAvailable: queueItem.merchantsAvailable } })); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
     const initializeMarketOfferExecutionIfNeeded = (targetWindow = window) => { const execution = read(); const item = getCurrentPendingOfferItem(execution); if (!execution || (!item && !execution.queue?.length)) return false; const url = new URL(targetWindow.location.href); if (url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer') return false; return mount(targetWindow); };
     EAS.MarketOffersExecution.initialize = () => initializeMarketOfferExecutionIfNeeded(window);
-    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, EXECUTION_VERSION, PANEL_ID, read, save, remove, current, getCurrentPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, injectLoader, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishSuccess, finishError });
+    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, CHANNEL_NAME, EXECUTION_VERSION, PANEL_ID, read, save, remove, current, getCurrentPendingOfferItem, getNextPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, injectLoader, watchExecutionWindow, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishSuccess, advanceMarketOfferExecution, finishError });
 })();
