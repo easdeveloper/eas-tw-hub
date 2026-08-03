@@ -5,6 +5,7 @@
     EAS.Modules.Attack = EAS.Modules.Attack || {};
 
     const STORAGE_KEY = 'modules.attack';
+    const TIMEZONE_JAPAN_STORAGE_KEY = 'eas_tw_attack_timezone_japan';
     const MS_PER_MINUTE = 60 * 1000;
     const SERVER_TIME_ZONE = 'America/Sao_Paulo';
     const JAPAN_TIME_ZONE = 'Asia/Tokyo';
@@ -35,6 +36,26 @@
     const saveSettings = (settings) => {
         if (EAS.Storage?.set) {
             EAS.Storage.set(STORAGE_KEY, settings);
+        }
+    };
+
+    const getShowJapanTimezone = () => {
+        try {
+            return localStorage.getItem(TIMEZONE_JAPAN_STORAGE_KEY) === 'true';
+        } catch {
+            return false;
+        }
+    };
+
+    const saveShowJapanTimezone = (showJapanTimezone) => {
+        try {
+            localStorage.setItem(
+                TIMEZONE_JAPAN_STORAGE_KEY,
+                String(showJapanTimezone)
+            );
+        } catch {
+            // Keep the option functional for the current window when storage
+            // is unavailable (for example, due to browser privacy settings).
         }
     };
 
@@ -225,8 +246,13 @@
         ].map(pad).join(':')}`;
     };
 
-    const formatSendDateTime = (timestamp) => {
+    const formatSendDateTime = (timestamp, showJapanTimezone) => {
         const serverDateTime = formatDateTime(timestamp);
+
+        if (!showJapanTimezone) {
+            return `<strong>${EAS.Utils.escapeHtml(serverDateTime)}</strong>`;
+        }
+
         const instant = parseDateTimeInTimeZone(
             serverDateTime,
             SERVER_TIME_ZONE
@@ -414,7 +440,7 @@
         };
     };
 
-    const renderRows = (tbody, rows) => {
+    const renderRows = (tbody, rows, showJapanTimezone) => {
         tbody.innerHTML = '';
 
         rows.forEach((row) => {
@@ -434,7 +460,7 @@
                     ? '-'
                     : EAS.Utils.formatNumber(row.distance, 2, 2),
                 formatDuration(row.durationMs),
-                formatSendDateTime(row.sendTimestamp),
+                formatSendDateTime(row.sendTimestamp, showJapanTimezone),
                 row.status
             ];
 
@@ -628,6 +654,7 @@
 
     EAS.Modules.Attack.open = () => {
         const savedSettings = getSettings();
+        const showJapanTimezone = getShowJapanTimezone();
         const win = EAS.UI.createWindow({
             id: 'eas-module-attack',
             title: 'Planejador de Ataques',
@@ -659,6 +686,18 @@
         timeInput.maxLength = 8;
 
         const unitSelect = createSelect(savedSettings.unit);
+        const timezoneJapanOption = document.createElement('label');
+        timezoneJapanOption.className = 'attack-timezone-option';
+
+        const timezoneJapanInput = document.createElement('input');
+        timezoneJapanInput.type = 'checkbox';
+        timezoneJapanInput.id = 'attack-timezone-japan';
+        timezoneJapanInput.checked = showJapanTimezone;
+
+        timezoneJapanOption.appendChild(timezoneJapanInput);
+        timezoneJapanOption.appendChild(
+            document.createTextNode('Fuso horário – Japão')
+        );
 
         form.appendChild(
             EAS.UI.createField({
@@ -687,6 +726,7 @@
                 input: unitSelect
             })
         );
+        form.appendChild(timezoneJapanOption);
 
         const actions = document.createElement('div');
         actions.className = 'eas-actions';
@@ -722,6 +762,16 @@
             rows: []
         });
         table.element.hidden = true;
+        let renderedRows = [];
+
+        timezoneJapanInput.addEventListener('change', () => {
+            saveShowJapanTimezone(timezoneJapanInput.checked);
+            renderRows(
+                table.tbody,
+                renderedRows,
+                timezoneJapanInput.checked
+            );
+        });
 
         const calculateButton = EAS.UI.createButton({
             text: 'Calcular',
@@ -737,6 +787,7 @@
                 renderDiagnostics(diagnosticsContainer, unitSelect.value);
 
                 if (!serverDateTime.available) {
+                    renderedRows = [];
                     EAS.UI.showStatus({
                         target: status,
                         message: 'Não foi possível identificar o horário do servidor do Tribal Wars.',
@@ -751,6 +802,7 @@
                 }
 
                 if (arrivalTimestamp === null) {
+                    renderedRows = [];
                     EAS.UI.showStatus({
                         target: status,
                         message: 'Informe data e horário de chegada válidos, incluindo segundos.',
@@ -773,6 +825,7 @@
                 try {
                     await EAS.Troops.ensureLoaded();
                 } catch (error) {
+                    renderedRows = [];
                     EAS.UI.showStatus({
                         target: status,
                         message: error.message,
@@ -803,7 +856,12 @@
                 const unit = getUnitById(unitSelect.value);
                 const sourceInfo = EAS.Troops.getSourceInfo();
 
-                renderRows(table.tbody, rows);
+                renderedRows = rows;
+                renderRows(
+                    table.tbody,
+                    renderedRows,
+                    timezoneJapanInput.checked
+                );
                 renderExclusions(exclusionsContainer, exclusions);
                 renderDiagnostics(diagnosticsContainer, unitSelect.value);
                 table.element.hidden = rows.length === 0;
@@ -839,6 +897,7 @@
             icon: '🧹',
             className: 'eas-button--secondary',
             onClick: () => {
+                renderedRows = [];
                 coordinateInput.value = '';
                 unitSelect.value = UNIT_SPEEDS[0].id;
                 table.setRows([]);
