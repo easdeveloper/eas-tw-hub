@@ -8,7 +8,8 @@
         preset: 'eas_tw_fakes_selected_preset',
         commandType: 'eas_tw_fakes_command_type',
         troops: 'eas_tw_fakes_troops',
-        coordinates: 'eas_tw_fakes_coordinates'
+        coordinates: 'eas_tw_fakes_coordinates',
+        analysis: 'eas_tw_fakes_analysis'
     };
 
     const UNIT_DEFINITIONS = [
@@ -136,7 +137,69 @@
             });
     };
 
+    const calculateFakeCapacity = (availableTroops, troopsPerTarget) => {
+        const requiredUnits = Object.entries(troopsPerTarget || {})
+            .filter(([, quantity]) => normalizeQuantity(quantity) > 0);
+
+        if (!requiredUnits.length) {
+            return {
+                capacity: 0,
+                limitingUnits: [],
+                missingUnits: [],
+                sufficient: false
+            };
+        }
+
+        const capacities = requiredUnits.map(([unit, required]) => ({
+            unit,
+            capacity: Math.floor(
+                normalizeQuantity(availableTroops?.[unit]) /
+                normalizeQuantity(required)
+            )
+        }));
+        const capacity = Math.min(...capacities.map((item) => item.capacity));
+        const missingUnits = capacities
+            .filter((item) => normalizeQuantity(availableTroops?.[item.unit]) === 0)
+            .map((item) => item.unit);
+        const limitingUnits = capacity > 0
+            ? capacities
+                .filter((item) => item.capacity === capacity)
+                .map((item) => item.unit)
+            : [];
+
+        return {
+            capacity,
+            limitingUnits,
+            missingUnits,
+            sufficient: capacity > 0
+        };
+    };
+
+    const distributeTargets = (villageAnalyses, targets) => {
+        let targetIndex = 0;
+
+        return villageAnalyses.map((analysis) => {
+            const availableSlots = Math.max(0, targets.length - targetIndex);
+            const assignmentCount = analysis.sufficient
+                ? Math.min(analysis.capacity, availableSlots)
+                : 0;
+            const assignedTargets = targets.slice(
+                targetIndex,
+                targetIndex + assignmentCount
+            );
+
+            targetIndex += assignmentCount;
+
+            return {
+                ...analysis,
+                assignedTargets
+            };
+        });
+    };
+
     EAS.Modules.Fakes.extractCoordinates = extractCoordinates;
+    EAS.Modules.Fakes.calculateFakeCapacity = calculateFakeCapacity;
+    EAS.Modules.Fakes.distributeTargets = distributeTargets;
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
     EAS.Modules.Fakes.open = () => {
@@ -242,6 +305,19 @@
         summarySection.appendChild(summaryTitle);
         summarySection.appendChild(summaryContent);
 
+        const analysisSection = document.createElement('section');
+        analysisSection.className = 'fake-analysis';
+        analysisSection.hidden = true;
+        const analysisTitle = document.createElement('h3');
+        analysisTitle.textContent = 'Análise das aldeias';
+        const analysisSummary = document.createElement('div');
+        analysisSummary.className = 'fake-analysis-summary';
+        const analysisTable = document.createElement('div');
+        analysisTable.className = 'fake-analysis-table eas-table-wrapper';
+        analysisSection.appendChild(analysisTitle);
+        analysisSection.appendChild(analysisSummary);
+        analysisSection.appendChild(analysisTable);
+
         const status = document.createElement('div');
         status.className = 'eas-status eas-status--info';
         status.textContent = 'Revise os dados da operação.';
@@ -281,20 +357,338 @@
             return { coordinates, troops };
         };
 
+        const invalidateAnalysis = () => {
+            analysisSection.hidden = true;
+            analysisSummary.innerHTML = '';
+            analysisTable.innerHTML = '';
+        };
+
+        const getVillageStatus = (analysis, troopsStale) => {
+            if (!analysis.hasTroopData) {
+                return 'Sem dados de tropas';
+            }
+
+            if (troopsStale) {
+                return 'Dados desatualizados';
+            }
+
+            if (analysis.missingUnits.length) {
+                return 'Sem a unidade necessária';
+            }
+
+            if (!analysis.sufficient) {
+                return 'Tropas insuficientes';
+            }
+
+            if (!analysis.assignedTargets.length) {
+                return 'Não utilizada';
+            }
+
+            if (analysis.assignedTargets.length < analysis.capacity) {
+                return 'Capacidade parcial';
+            }
+
+            return 'Pronto';
+        };
+
+        const createAnalysisContext = ({
+            operation,
+            assignments,
+            troopsInfo
+        }) => ({
+            preset: presetSelect.value,
+            commandType: commandTypeSelect.value,
+            troopsPerTarget: { ...operation.troops },
+            targets: [...operation.coordinates],
+            assignments: assignments
+                .filter((analysis) => analysis.assignedTargets.length > 0)
+                .map((analysis) => ({
+                    villageId: analysis.village.id,
+                    villageName: analysis.village.name,
+                    villageCoord: analysis.village.coordinate,
+                    capacity: analysis.capacity,
+                    assignedTargets: [...analysis.assignedTargets]
+                })),
+            troopsSource: troopsInfo.source || 'none',
+            troopsUpdatedAt: troopsInfo.updatedAtLocal || null,
+            createdAt: Date.now()
+        });
+
+        const renderAnalysis = ({ operation, assignments, troopsInfo }) => {
+            const escape = EAS.Utils.escapeHtml;
+            const withTroopData = assignments.filter(
+                (analysis) => analysis.hasTroopData
+            ).length;
+            const eligible = assignments.filter(
+                (analysis) => analysis.sufficient
+            ).length;
+            const distributed = assignments.reduce(
+                (total, analysis) => total + analysis.assignedTargets.length,
+                0
+            );
+            const undistributed = operation.coordinates.length - distributed;
+            const totalCapacity = assignments.reduce(
+                (total, analysis) => total + analysis.capacity,
+                0
+            );
+            const summaryItems = [
+                `${assignments.length} aldeias cadastradas`,
+                `${withTroopData} com dados de tropas`,
+                `${eligible} aldeias aptas`,
+                `${operation.coordinates.length} alvos informados`,
+                `${distributed} alvos distribuídos`,
+                `${undistributed} alvos sem aldeia disponível`,
+                `Capacidade total: ${totalCapacity} comandos`
+            ];
+
+            analysisSummary.innerHTML = `
+                <div class="fake-analysis-summary__grid">
+                    ${summaryItems.map((item) => `<span>${escape(item)}</span>`).join('')}
+                </div>
+                ${undistributed > 0
+                    ? `<div class="fake-analysis-warning">Faltam tropas para distribuir ${undistributed} alvo${undistributed === 1 ? '' : 's'}.</div>`
+                    : ''}
+                ${troopsInfo.stale
+                    ? '<div class="fake-analysis-warning">O cache de tropas está desatualizado. Atualize as tropas antes de executar a operação.</div>'
+                    : ''}
+            `;
+
+            const table = document.createElement('table');
+            table.className = 'eas-table';
+            table.innerHTML = `
+                <thead><tr>
+                    <th>Aldeia</th>
+                    <th>Coordenada</th>
+                    <th>Tropas disponíveis</th>
+                    <th>Capacidade</th>
+                    <th>Alvos atribuídos</th>
+                    <th>Status</th>
+                    <th>Ação</th>
+                </tr></thead>
+            `;
+            const tbody = document.createElement('tbody');
+
+            assignments.forEach((analysis) => {
+                const tr = document.createElement('tr');
+                const usedUnits = availableUnits.filter(
+                    (unit) => normalizeQuantity(operation.troops[unit.id]) > 0
+                );
+                const availableText = analysis.hasTroopData
+                    ? usedUnits.map((unit) =>
+                        `${unit.plural}: ${normalizeQuantity(analysis.availableTroops[unit.id])}`
+                    )
+                    : ['-'];
+                const statusText = getVillageStatus(
+                    analysis,
+                    Boolean(troopsInfo.stale)
+                );
+                const values = [
+                    analysis.village.name,
+                    analysis.village.coordinate
+                ];
+
+                values.forEach((value) => {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+
+                const troopsCell = document.createElement('td');
+                availableText.forEach((line) => {
+                    const item = document.createElement('div');
+                    item.textContent = line;
+                    troopsCell.appendChild(item);
+                });
+                tr.appendChild(troopsCell);
+
+                const capacityCell = document.createElement('td');
+                capacityCell.textContent = String(analysis.capacity);
+                tr.appendChild(capacityCell);
+
+                const targetsCell = document.createElement('td');
+                targetsCell.appendChild(document.createTextNode(
+                    String(analysis.assignedTargets.length)
+                ));
+
+                if (analysis.assignedTargets.length) {
+                    const details = document.createElement('details');
+                    details.className = 'fake-analysis-targets';
+                    const summary = document.createElement('summary');
+                    summary.textContent = 'Ver alvos';
+                    const list = document.createElement('ul');
+                    analysis.assignedTargets.forEach((target) => {
+                        const item = document.createElement('li');
+                        item.textContent = target;
+                        list.appendChild(item);
+                    });
+                    details.appendChild(summary);
+                    details.appendChild(list);
+                    targetsCell.appendChild(details);
+                }
+                tr.appendChild(targetsCell);
+
+                const statusCell = document.createElement('td');
+                statusCell.className = 'fake-analysis-status';
+                statusCell.textContent = statusText;
+                tr.appendChild(statusCell);
+
+                const actionCell = document.createElement('td');
+
+                if (analysis.assignedTargets.length && analysis.village.id) {
+                    const button = EAS.UI.createButton({
+                        text: 'Abrir Praça',
+                        onClick: () => {
+                            const context = createAnalysisContext({
+                                operation,
+                                assignments,
+                                troopsInfo
+                            });
+                            writeStorage(STORAGE_KEYS.analysis, {
+                                ...context,
+                                selectedVillageId: analysis.village.id,
+                                selectedTargets: [...analysis.assignedTargets],
+                                currentTargetIndex: 0
+                            });
+                            EAS.Place.openAndFillTarget({
+                                villageId: analysis.village.id,
+                                coordinate: analysis.assignedTargets[0]
+                            });
+                        }
+                    });
+                    actionCell.appendChild(button);
+                } else {
+                    actionCell.textContent = '-';
+                }
+                tr.appendChild(actionCell);
+                tbody.appendChild(tr);
+            });
+
+            table.appendChild(tbody);
+            analysisTable.innerHTML = '';
+            analysisTable.appendChild(table);
+            analysisSection.hidden = false;
+        };
+
+        const analyzeOperation = async ({ forceRefresh = false } = {}) => {
+            const operation = updateSummary();
+            const hasTroops = Object.values(operation.troops).some(
+                (value) => value > 0
+            );
+            const villages = EAS.Villages.list();
+            let validationMessage = '';
+
+            if (!operation.coordinates.length) {
+                validationMessage = 'Informe ao menos uma coordenada válida.';
+            } else if (!hasTroops) {
+                validationMessage = 'Informe ao menos uma unidade por alvo.';
+            } else if (!commandTypeSelect.value) {
+                validationMessage = 'Selecione o tipo de comando.';
+            } else if (!villages.length) {
+                validationMessage = 'Nenhuma aldeia cadastrada foi encontrada.';
+            }
+
+            if (validationMessage) {
+                invalidateAnalysis();
+                EAS.UI.showStatus({
+                    target: status,
+                    message: validationMessage,
+                    type: 'error'
+                });
+                return;
+            }
+
+            EAS.UI.showStatus({
+                target: status,
+                message: forceRefresh
+                    ? 'Atualizando tropas e refazendo a análise...'
+                    : 'Carregando tropas e analisando aldeias...',
+                type: 'info'
+            });
+
+            try {
+                await EAS.Troops.ensureLoaded({ forceRefresh });
+            } catch (error) {
+                invalidateAnalysis();
+                EAS.UI.showStatus({
+                    target: status,
+                    message: error.message,
+                    type: 'error'
+                });
+                return;
+            }
+
+            const troopsInfo = EAS.Troops.getSourceInfo();
+            const villageAnalyses = villages.map((village) => {
+                const hasTroopData = EAS.Troops.hasVillageData(village.id);
+                const availableTroops = hasTroopData
+                    ? { ...EAS.Troops.getVillageTroops(village.id) }
+                    : {};
+                const capacity = hasTroopData
+                    ? calculateFakeCapacity(availableTroops, operation.troops)
+                    : {
+                        capacity: 0,
+                        limitingUnits: [],
+                        missingUnits: [],
+                        sufficient: false
+                    };
+
+                return {
+                    village: { ...village },
+                    availableTroops,
+                    hasTroopData,
+                    ...capacity
+                };
+            });
+            const assignments = distributeTargets(
+                villageAnalyses,
+                operation.coordinates
+            );
+            const context = createAnalysisContext({
+                operation,
+                assignments,
+                troopsInfo
+            });
+
+            writeStorage(STORAGE_KEYS.analysis, context);
+            renderAnalysis({ operation, assignments, troopsInfo });
+
+            const distributed = assignments.reduce(
+                (total, analysis) => total + analysis.assignedTargets.length,
+                0
+            );
+            EAS.UI.showStatus({
+                target: status,
+                message: `Análise concluída: ${distributed} de ${operation.coordinates.length} alvo${operation.coordinates.length === 1 ? '' : 's'} distribuído${distributed === 1 ? '' : 's'}. Nenhum comando foi enviado.`,
+                type: distributed === operation.coordinates.length
+                    ? 'success'
+                    : 'error'
+            });
+        };
+
         const applyPreset = () => {
             const preset = FAKE_PRESETS[presetSelect.value] || FAKE_PRESETS.custom;
             commandTypeSelect.value = preset.commandType;
             availableUnits.forEach((unit) => {
                 troopInputs[unit.id].value = normalizeQuantity(preset.troops[unit.id]);
             });
+            invalidateAnalysis();
             updateSummary();
         };
 
         presetSelect.addEventListener('change', applyPreset);
-        commandTypeSelect.addEventListener('change', updateSummary);
-        coordinatesInput.addEventListener('input', updateSummary);
+        commandTypeSelect.addEventListener('change', () => {
+            invalidateAnalysis();
+            updateSummary();
+        });
+        coordinatesInput.addEventListener('input', () => {
+            invalidateAnalysis();
+            updateSummary();
+        });
         Object.values(troopInputs).forEach((input) => {
-            input.addEventListener('input', updateSummary);
+            input.addEventListener('input', () => {
+                invalidateAnalysis();
+                updateSummary();
+            });
         });
 
         const actions = document.createElement('div');
@@ -302,27 +696,13 @@
         const analyzeButton = EAS.UI.createButton({
             text: 'Analisar operação',
             icon: '🔍',
-            onClick: () => {
-                const operation = updateSummary();
-                const hasTroops = Object.values(operation.troops).some((value) => value > 0);
-
-                if (!operation.coordinates.length || !hasTroops) {
-                    EAS.UI.showStatus({
-                        target: status,
-                        message: !operation.coordinates.length
-                            ? 'Informe ao menos uma coordenada válida.'
-                            : 'Informe ao menos uma unidade por alvo.',
-                        type: 'error'
-                    });
-                    return;
-                }
-
-                EAS.UI.showStatus({
-                    target: status,
-                    message: `Operação analisada: ${operation.coordinates.length} alvo${operation.coordinates.length === 1 ? '' : 's'}. Nenhum comando foi enviado.`,
-                    type: 'success'
-                });
-            }
+            onClick: () => analyzeOperation()
+        });
+        const refreshTroopsButton = EAS.UI.createButton({
+            text: 'Atualizar tropas',
+            icon: '🔄',
+            className: 'eas-button--secondary',
+            onClick: () => analyzeOperation({ forceRefresh: true })
         });
         const clearButton = EAS.UI.createButton({
             text: 'Limpar',
@@ -333,6 +713,7 @@
                 Object.values(troopInputs).forEach((input) => {
                     input.value = 0;
                 });
+                invalidateAnalysis();
                 updateSummary();
                 EAS.UI.showStatus({
                     target: status,
@@ -373,6 +754,7 @@
         });
 
         actions.appendChild(analyzeButton);
+        actions.appendChild(refreshTroopsButton);
         actions.appendChild(clearButton);
         actions.appendChild(saveButton);
         actions.appendChild(backButton);
@@ -382,6 +764,7 @@
         manager.appendChild(troopsSection);
         manager.appendChild(targetsSection);
         manager.appendChild(summarySection);
+        manager.appendChild(analysisSection);
         manager.appendChild(actions);
         manager.appendChild(status);
         win.body.appendChild(manager);
