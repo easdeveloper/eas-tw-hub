@@ -157,6 +157,13 @@
         cache.villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((item) => [String(item.villageId), item])) : (cache.villages || {});
         cache.villages[key] = normalized; cache.updatedAt = Date.now(); saveCache(cache); return normalized;
     };
+    const refreshCurrentMarketVillageFromPage = (doc = document, villageId = EAS.World?.getCurrentVillage?.().id) => {
+        const key = String(villageId || ''); if (!key) throw new Error('Aldeia atual não identificada.');
+        const cache = getCache(); const listed = EAS.Villages?.list?.() || []; const village = listed.find((item) => String(item.id) === key) || cacheVillages(cache).find((item) => String(item.villageId) === key) || { id: key };
+        const parsed = parseMarketVillageDocument(doc, village); if (parsed.sessionExpired || !parsed.marketAvailable) throw new Error(parsed.sessionExpired ? 'Sessão expirada' : 'Mercado indisponível');
+        const normalized = normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-current-page' }); normalized.status = parsed.status;
+        cache.villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((item) => [String(item.villageId), item])) : (cache.villages || {}); cache.villages[key] = normalized; cache.updatedAt = Date.now(); saveCache(cache); return normalized;
+    };
     const applyCreatedOfferToCache = (item) => {
         const cache = getCache(); const key = String(item.villageId); const villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((village) => [String(village.villageId), village])) : { ...(cache.villages || {}) };
         const village = normalizeVillage(villages[key] || { id: key }); const repeatCount = Math.max(1, amount(item.repeatCount || 1));
@@ -272,5 +279,5 @@
         }; win.body.append(body, status); render();
     };
 
-    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
+    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshCurrentMarketVillageFromPage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
 })();

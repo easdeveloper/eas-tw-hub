@@ -28,6 +28,29 @@
         loadScript
     };
 
+    const getPendingMarketExecution = () => {
+        try {
+            const execution = JSON.parse(localStorage.getItem('eas_tw_market_offers_execution') || 'null');
+            if (!execution || Number(execution.version) < 3 || execution.endedAt) return null;
+            const currentIndex = (execution.queue || []).findIndex((item) => !['created', 'skipped', 'cancelled'].includes(item.status));
+            return currentIndex >= 0 ? { execution, item: execution.queue[currentIndex], currentIndex } : null;
+        } catch { return null; }
+    };
+
+    const shouldInitializeMarketOfferExecution = () => {
+        const url = new URL(location.href); const pending = getPendingMarketExecution();
+        if (!pending || url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer') return false;
+        const villageId = String(window.game_data?.village?.id || url.searchParams.get('village') || '');
+        return villageId === String(pending.item.villageId);
+    };
+
+    const initializeMarketOfferExecutionIfNeeded = () => {
+        if (!shouldInitializeMarketOfferExecution()) return false;
+        return Boolean(window.EAS?.MarketOffersExecution?.initialize?.());
+    };
+
+    window.initializeMarketOfferExecutionIfNeeded = initializeMarketOfferExecutionIfNeeded;
+
     const loadStyle = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`link[data-eas-style="${src}"]`);
 
@@ -47,7 +70,9 @@
 
     const start = async () => {
         try {
+            if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
+                const executionOnly = shouldInitializeMarketOfferExecution();
                 if (!window.EAS.Place?.fillTargetFromUrl) {
                     await loadScript('services/place.js');
                 }
@@ -78,7 +103,7 @@
                 window.EAS.FakesExecution.initialize();
                 window.EAS.SupportExecution.initialize();
                 window.EAS.MarketOffersExecution.initialize();
-                window.EAS.UI.toggle();
+                if (!executionOnly) window.EAS.UI.toggle();
                 return;
             }
 
@@ -100,7 +125,8 @@
             await loadScript('services/market-engine.js');
             await loadScript('services/market-offers-execution.js');
 
-            window.EAS.start();
+            const executionOnly = shouldInitializeMarketOfferExecution();
+            if (!executionOnly) window.EAS.start();
             window.EAS.Place.fillTargetFromUrl();
             window.EAS.FakesExecution.initialize();
             window.EAS.SupportExecution.initialize();
