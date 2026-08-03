@@ -342,6 +342,45 @@
     border-radius: 4px;
 }
 
+.market-resource-grid,
+.market-scenarios {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.market-scenarios > div {
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fafafa;
+}
+
+.market-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 14px 0 0;
+    font-weight: 600;
+}
+
+.market-progress {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.market-progress progress {
+    width: 100%;
+}
+
+.market-offers .eas-table input[type="number"] {
+    width: 92px;
+}
+
 .fake-nt-target-tools {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));

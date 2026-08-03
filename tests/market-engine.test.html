@@ -1,6 +1,7 @@
 <!doctype html><meta charset="utf-8"><title>Market Engine tests</title><pre id="result">running</pre>
-<script>window.EAS={MarketEngine:{},Modules:{},World:{getGameData:()=>({config:{merchant_capacity:1000}})},Villages:{list:()=>[]},Utils:{formatDateTime:()=>''}};</script>
+<script>window.EAS={MarketEngine:{},MarketOffersExecution:{},Modules:{},World:{getGameData:()=>({config:{merchant_capacity:1000}}),getWorldName:()=>'test'},Villages:{list:()=>[]},Utils:{formatDateTime:()=>'',escapeHtml:value=>String(value)}};</script>
 <script src="../services/market-engine.js"></script>
+<script src="../services/market-offers-execution.js"></script>
 <script src="../modules/market-smart-offers.js"></script><script src="../modules/market-balance.js"></script><script src="../modules/market-target-supply.js"></script>
 <script>
 (() => {
@@ -9,8 +10,13 @@
  equal(imbalance.target,{wood:100000,stone:100000,iron:100000},'meta 33/33/33');
  equal(imbalance.surplus,{wood:40000,stone:0,iron:0},'excedente');
  equal(imbalance.deficit,{wood:0,stone:10000,iron:30000},'déficit');
+ const requested=engine.calculateResourceImbalance({wood:31703,stone:15368,iron:2441});
+ equal(requested.target,{wood:16504,stone:16504,iron:16504},'meta global solicitada');
+ equal(requested.surplus.wood,15199,'excedente global solicitado');
+ equal([requested.deficit.stone,requested.deficit.iron],[1136,14063],'déficits globais solicitados');
  equal(engine.calculateBalancedResourceTarget(100001),{wood:33334,stone:33334,iron:33333},'resto determinístico');
  equal(engine.calculateMerchantsRequired({wood:10000,stone:5000},1000),15,'comerciantes');
+ equal(engine.splitOfferAmount(14063,{maximum:5000,minimum:100,roundToHundreds:true}),{blocks:[5000,5000,4000],remainder:63},'divisão em blocos');
  const target={id:2,storage:200000,resources:{wood:190000,stone:0,iron:0},merchants:{available:0,total:0}};
  equal(engine.getProjectedStorageSpace(target).wood,10000,'capacidade por recurso');
  const source={id:1,resources:{wood:50000,stone:0,iron:0},storage:200000,merchants:{available:0,total:10}};
@@ -18,6 +24,13 @@
  equal(engine.validateTransport({source:{...source,id:2,merchants:{available:10,total:10}},target,resources:{wood:1000}}).reasons.includes('same-village'),true,'mesma aldeia');
  const committed=engine.getAvailableResources({id:3,resources:{wood:20000,stone:0,iron:0},activeOffers:{wood:10000,requested:{iron:10000}},merchants:{available:10,total:10}});
  equal(committed.wood,10000,'oferta ativa comprometida');
+ const limited=engine.buildGlobalOfferSuggestions([{id:9,name:'Origem',coordinate:'500|500',resources:{wood:20000,stone:5000,iron:5000},storage:50000,merchants:{available:6,total:6},available:true,status:'ready'}],{maximumPerOffer:10000,minimumPerOffer:100,roundToHundreds:true,reserve:{wood:0}});
+ equal(limited.suggestions.reduce((sum,item)=>sum+item.offerAmount,0),6000,'limite de comerciantes');
+ const reserved=engine.buildOfferPlan({id:10,resources:{wood:10000,stone:0,iron:0},storage:50000,merchants:{available:20,total:20},available:true},{maximumPerOffer:10000,reserve:{wood:3000}});
+ equal(reserved.every(item=>item.offerAmount<=7000),true,'reserva de origem');
+ const marketDoc=new DOMParser().parseFromString('<span id="wood">50.000</span><span id="stone">20.000</span><span id="iron">10.000</span><span id="storage">100.000</span><span id="market_merchant_available_count">8</span><span id="market_merchant_total_count">10</span><table id="own_offers_table"><tr data-offer-id="o1" data-offer-resource="wood" data-offer-amount="5000" data-request-resource="iron" data-request-amount="5000"></tr></table><form action="game.php?screen=market"></form>','text/html');
+ const parsed=engine.parseMarketVillageDocument(marketDoc,{id:11});
+ equal([parsed.merchants.available,parsed.merchants.total,parsed.activeOfferList.length],[8,10,1],'parser de mercado');
  const supplied=engine.distributeTargetNeed({need:{wood:90000},origins:[1,2,3].map(id=>({id,resources:{wood:60000,stone:0,iron:0},storage:200000,merchants:{available:100,total:100}})),merchantCapacity:1000});
  equal(supplied.plans.map(plan=>plan.resources.wood),[30000,30000,30000],'abastecimento equilibrado');
  const moved=engine.applyInternalTransport({sourceResources:{wood:100,stone:50,iron:20},targetResources:{wood:10,stone:20,iron:30},resources:{wood:40,stone:10,iron:0}});
@@ -25,6 +38,10 @@
  equal(typeof EAS.Modules.MarketSmartOffers.open,'function','módulo ofertas registrado');
  equal(typeof EAS.Modules.MarketBalance.open,'function','módulo balanceamento registrado');
  equal(typeof EAS.Modules.MarketTargetSupply.open,'function','módulo abastecimento registrado');
- document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 14 assertions';document.title=failures.length?'FAIL':'PASS';
+ const blankDoc=new DOMParser().parseFromString('<div></div>','text/html');
+ equal(EAS.MarketOffersExecution.classifyOfferResult(blankDoc,{offerResource:'wood',offerAmount:1000,requestResource:'iron'},0),null,'clique sem evidência não conclui');
+ const successDoc=new DOMParser().parseFromString('<div class="success">Oferta criada</div>','text/html');
+ equal(EAS.MarketOffersExecution.classifyOfferResult(successDoc,{offerResource:'wood',offerAmount:1000,requestResource:'iron'},0).status,'created','sucesso com evidência');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 24 assertions';document.title=failures.length?'FAIL':'PASS';
 })();
 </script>

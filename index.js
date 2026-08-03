@@ -70,10 +70,14 @@
                 if (!window.EAS.MarketEngine?.calculateResourceImbalance) {
                     await loadScript('services/market-engine.js');
                 }
+                if (!window.EAS.MarketOffersExecution?.initialize) {
+                    await loadScript('services/market-offers-execution.js');
+                }
 
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
                 window.EAS.SupportExecution.initialize();
+                window.EAS.MarketOffersExecution.initialize();
                 window.EAS.UI.toggle();
                 return;
             }
@@ -94,11 +98,13 @@
             await loadScript('services/fakes-execution.js');
             await loadScript('services/support-execution.js');
             await loadScript('services/market-engine.js');
+            await loadScript('services/market-offers-execution.js');
 
             window.EAS.start();
             window.EAS.Place.fillTargetFromUrl();
             window.EAS.FakesExecution.initialize();
             window.EAS.SupportExecution.initialize();
+            window.EAS.MarketOffersExecution.initialize();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
             alert(`EAS TW Hub: ${error.message}`);

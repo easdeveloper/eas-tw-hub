@@ -18,6 +18,7 @@
         SupportExecution: {},
         PublicMap: {},
         MarketEngine: {},
+        MarketOffersExecution: {},
         Modules: {},
 
         start() {
