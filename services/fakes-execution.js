@@ -88,29 +88,69 @@
 
     const isMatchingPlace = (context, targetWindow = window) => {
         const screen = getScreen(targetWindow);
+        const queue = Array.isArray(context?.queue) ? context.queue : [];
+        const allowedVillageIds = queue.length
+            ? queue.map((entry) => Number(entry.villageId))
+            : [Number(context?.villageId || 0)];
 
         return screen.screen === 'place' &&
-            Number(screen.villageId) === Number(context?.villageId || 0);
+            allowedVillageIds.includes(Number(screen.villageId));
     };
 
-    const normalizeContext = (context) => ({
-        ...context,
-        targets: Array.isArray(context?.targets) ? [...context.targets] : [],
-        troopsPerTarget: { ...(context?.troopsPerTarget || {}) },
-        currentIndex: Math.max(0, Number(context?.currentIndex || 0)),
-        preparedTargets: Array.isArray(context?.preparedTargets)
-            ? [...context.preparedTargets]
-            : [],
-        skippedTargets: Array.isArray(context?.skippedTargets)
-            ? [...context.skippedTargets]
-            : [],
-        completedTargets: Array.isArray(context?.completedTargets)
-            ? [...context.completedTargets]
-            : [],
-        errorTargets: Array.isArray(context?.errorTargets)
-            ? [...context.errorTargets]
-            : []
-    });
+    const normalizeContext = (context) => {
+        const legacyTargets = Array.isArray(context?.targets)
+            ? context.targets
+            : [];
+        const queue = Array.isArray(context?.queue) && context.queue.length
+            ? context.queue.map((entry) => ({
+                ...entry,
+                villageId: Number(entry.villageId || 0),
+                status: entry.status || 'pending'
+            }))
+            : legacyTargets.map((target) => ({
+                villageId: Number(context?.villageId || 0),
+                villageName: context?.villageName || '',
+                villageCoord: context?.villageCoord || '',
+                target,
+                status: 'pending'
+            }));
+
+        return {
+            ...context,
+            queue,
+            targets: legacyTargets,
+            troopsPerTarget: { ...(context?.troopsPerTarget || {}) },
+            currentIndex: Math.max(0, Number(context?.currentIndex || 0)),
+            prepared: Array.isArray(context?.prepared)
+                ? [...context.prepared]
+                : Array.isArray(context?.preparedTargets)
+                    ? [...context.preparedTargets]
+                    : [],
+            skipped: Array.isArray(context?.skipped)
+                ? [...context.skipped]
+                : Array.isArray(context?.skippedTargets)
+                    ? [...context.skippedTargets]
+                    : [],
+            completed: Array.isArray(context?.completed)
+                ? [...context.completed]
+                : Array.isArray(context?.completedTargets)
+                    ? [...context.completedTargets]
+                    : [],
+            errors: Array.isArray(context?.errors)
+                ? [...context.errors]
+                : Array.isArray(context?.errorTargets)
+                    ? [...context.errorTargets]
+                    : []
+        };
+    };
+
+    const getCurrentEntry = (context) => {
+        return context.queue[context.currentIndex] || null;
+    };
+
+    const getCommandKey = (entry, index) => {
+        return `${index}:${entry?.villageId || 0}:${entry?.target || ''}`;
+    };
 
     const uniquePush = (items, value) => {
         if (!items.includes(value)) {
@@ -128,16 +168,16 @@
 
     const clearOtherTargetStatuses = (context, target, keptStatus) => {
         if (keptStatus !== 'completed') {
-            removeValue(context.completedTargets, target);
+            removeValue(context.completed, target);
         }
 
         if (keptStatus !== 'skipped') {
-            removeValue(context.skippedTargets, target);
+            removeValue(context.skipped, target);
         }
 
         if (keptStatus !== 'error') {
-            context.errorTargets = context.errorTargets.filter(
-                (item) => item.target !== target
+            context.errors = context.errors.filter(
+                (item) => item.commandKey !== target
             );
         }
     };
@@ -195,14 +235,25 @@
     };
 
     const validateCurrent = (context, targetWindow) => {
-        const target = context.targets[context.currentIndex];
-        const parsedTarget = EAS.Utils.parseCoordinate(target);
+        const entry = getCurrentEntry(context);
+        const parsedTarget = EAS.Utils.parseCoordinate(entry?.target);
         const form = EAS.Place.getCommandForm(targetWindow.document);
         const requiredTroops = Object.entries(context.troopsPerTarget)
             .filter(([, quantity]) => Number(quantity) > 0);
 
         if (!parsedTarget) {
             return { valid: false, message: 'Alvo inválido.' };
+        }
+
+        if (
+            Number(getScreen(targetWindow).villageId) !==
+            Number(entry.villageId)
+        ) {
+            return {
+                valid: false,
+                wrongVillage: true,
+                message: `Abra a aldeia ${entry.villageName} (${entry.villageCoord}) para continuar.`
+            };
         }
 
         if (!COMMAND_TYPES.includes(context.commandType)) {
@@ -256,7 +307,7 @@
             };
         }
 
-        const cachedTroops = getCachedTroops(context.villageId);
+        const cachedTroops = getCachedTroops(entry.villageId);
         const insufficient = requiredTroops.filter(([unit, quantity]) => {
             const available = cachedTroops
                 ? Number(cachedTroops[unit] || 0)
@@ -279,6 +330,8 @@
         return {
             valid: true,
             target: parsedTarget.coordinate,
+            entry,
+            commandKey: getCommandKey(entry, context.currentIndex),
             form,
             inputs,
             requiredTroops
@@ -311,7 +364,8 @@
             };
         }
 
-        uniquePush(context.preparedTargets, validation.target);
+        uniquePush(context.prepared, validation.commandKey);
+        validation.entry.status = 'prepared';
         saveContext(context);
 
         return validation;
@@ -388,17 +442,24 @@
         ));
     };
 
-    const rejectForMinimumPopulation = (context, target, detected) => {
-        clearOtherTargetStatuses(context, target, 'error');
-        context.errorTargets.push({
-            target,
+    const rejectForMinimumPopulation = (context, entryIndex, detected) => {
+        const entry = context.queue[entryIndex];
+        const commandKey = getCommandKey(entry, entryIndex);
+        clearOtherTargetStatuses(context, commandKey, 'error');
+        context.errors.push({
+            commandKey,
+            target: entry?.target,
+            villageId: entry?.villageId,
             reason: 'minimum-attack-population',
             minimumPopulation: detected.minimumPopulation,
             attemptedPopulation: detected.attemptedPopulation
         });
-        context.forwardingTarget = null;
+        if (entry) {
+            entry.status = 'rejected-minimum-population';
+        }
+        context.forwardingIndex = null;
         context.lastPopulationRejection = {
-            target,
+            target: entry?.target,
             ...detected,
             detectedAt: Date.now()
         };
@@ -412,22 +473,28 @@
         saveContext(context);
     };
 
-    const completeForwardedTarget = (context, target) => {
-        clearOtherTargetStatuses(context, target, 'completed');
-        uniquePush(context.completedTargets, target);
+    const completeForwardedTarget = (context, entryIndex) => {
+        const entry = context.queue[entryIndex];
+        const commandKey = getCommandKey(entry, entryIndex);
+        clearOtherTargetStatuses(context, commandKey, 'completed');
+        uniquePush(context.completed, commandKey);
 
-        if (context.targets[context.currentIndex] === target) {
+        if (entry) {
+            entry.status = 'forwarded';
+        }
+
+        if (context.currentIndex === entryIndex) {
             context.currentIndex += 1;
         }
 
-        context.forwardingTarget = null;
+        context.forwardingIndex = null;
         context.lastPopulationRejection = null;
         saveContext(context);
     };
 
     const watchCommandResult = ({
         context,
-        target,
+        entryIndex,
         targetWindow,
         onRejected,
         onConfirmed,
@@ -461,21 +528,21 @@
 
             if (detected && context.commandType === 'attack') {
                 stop();
-                rejectForMinimumPopulation(context, target, detected);
+                rejectForMinimumPopulation(context, entryIndex, detected);
                 onRejected(detected);
                 return;
             }
 
             if (isConfirmationScreen(currentDocument)) {
                 stop();
-                completeForwardedTarget(context, target);
+                completeForwardedTarget(context, entryIndex);
                 onConfirmed();
                 return;
             }
 
             if (Date.now() - startedAt >= OPEN_TIMEOUT_MS) {
                 stop();
-                context.forwardingTarget = null;
+                context.forwardingIndex = null;
                 saveContext(context);
                 onTimeout();
             }
@@ -518,31 +585,33 @@
         targetWindow.document.head.appendChild(link);
     };
 
-    const getTargetStatus = (context, target, index) => {
-        if (context.forwardingTarget === target) {
+    const getTargetStatus = (context, entry, index) => {
+        const commandKey = getCommandKey(entry, index);
+
+        if (context.forwardingIndex === index) {
             return 'Encaminhando';
         }
 
-        if (context.errorTargets.some(
-            (item) => item.target === target &&
+        if (context.errors.some(
+            (item) => item.commandKey === commandKey &&
                 item.reason === 'minimum-attack-population'
         )) {
             return 'Rejeitado por população mínima';
         }
 
-        if (context.errorTargets.some((item) => item.target === target)) {
+        if (context.errors.some((item) => item.commandKey === commandKey)) {
             return 'Erro';
         }
 
-        if (context.skippedTargets.includes(target)) {
+        if (context.skipped.includes(commandKey)) {
             return 'Pulado';
         }
 
-        if (context.completedTargets.includes(target)) {
+        if (context.completed.includes(commandKey)) {
             return 'Enviado';
         }
 
-        if (context.preparedTargets.includes(target)) {
+        if (context.prepared.includes(commandKey)) {
             return 'Preparado';
         }
 
@@ -559,18 +628,22 @@
         const context = normalizeContext(stored);
         const doc = targetWindow.document;
         const initialPopulationError = detectMinimumPopulationError(doc);
+        const hasForwardingEntry = Number.isInteger(context.forwardingIndex);
 
-        if (context.commandType === 'attack' && initialPopulationError) {
+        if (
+            hasForwardingEntry &&
+            context.commandType === 'attack' &&
+            initialPopulationError
+        ) {
             rejectForMinimumPopulation(
                 context,
-                context.forwardingTarget ||
-                    context.targets[context.currentIndex],
+                context.forwardingIndex,
                 initialPopulationError
             );
-        } else if (context.forwardingTarget && isConfirmationScreen(doc)) {
-            completeForwardedTarget(context, context.forwardingTarget);
-        } else if (context.forwardingTarget) {
-            context.forwardingTarget = null;
+        } else if (hasForwardingEntry && isConfirmationScreen(doc)) {
+            completeForwardedTarget(context, context.forwardingIndex);
+        } else if (hasForwardingEntry) {
+            context.forwardingIndex = null;
             saveContext(context);
         }
 
@@ -604,27 +677,31 @@
         doc.body.appendChild(panel);
 
         const render = (message = '', messageType = 'info') => {
-            const currentTarget = context.targets[context.currentIndex] || null;
-            const validation = currentTarget
+            const currentEntry = getCurrentEntry(context);
+            const currentTarget = currentEntry?.target || null;
+            const currentCommandKey = currentEntry
+                ? getCommandKey(currentEntry, context.currentIndex)
+                : null;
+            const validation = currentEntry
                 ? validateCurrent(context, targetWindow)
                 : { valid: false, message: 'Todos os alvos foram processados.' };
-            const completed = new Set(context.completedTargets).size;
-            const skipped = new Set(context.skippedTargets).size;
+            const completed = new Set(context.completed).size;
+            const skipped = new Set(context.skipped).size;
             const errors = new Set(
-                context.errorTargets.map((item) => item.target)
+                context.errors.map((item) => item.commandKey)
             ).size;
             const processedTargets = new Set([
-                ...context.completedTargets,
-                ...context.skippedTargets,
-                ...context.errorTargets
+                ...context.completed,
+                ...context.skipped,
+                ...context.errors
                     .filter((item) =>
                         item.reason !== 'minimum-attack-population'
                     )
-                    .map((item) => item.target)
+                    .map((item) => item.commandKey)
             ]);
             const remaining = Math.max(
                 0,
-                context.targets.length - processedTargets.size
+                context.queue.length - processedTargets.size
             );
             const troopLines = Object.entries(context.troopsPerTarget)
                 .filter(([, quantity]) => Number(quantity) > 0)
@@ -636,11 +713,11 @@
             const summary = doc.createElement('div');
             summary.className = 'fake-execution-summary';
             summary.innerHTML = `
-                <div><strong>Aldeia</strong><span>${EAS.Utils.escapeHtml(context.villageName || '-')}<br>${EAS.Utils.escapeHtml(context.villageCoord || '-')}</span></div>
+                <div><strong>Aldeia necessária</strong><span>${EAS.Utils.escapeHtml(currentEntry?.villageName || '-')}<br>${EAS.Utils.escapeHtml(currentEntry?.villageCoord || '-')}</span></div>
                 <div><strong>Preset</strong><span>${EAS.Utils.escapeHtml(PRESET_NAMES[context.preset] || context.preset || '-')}</span></div>
                 <div><strong>Comando</strong><span>${context.commandType === 'support' ? 'Apoio' : 'Ataque'}</span></div>
                 <div><strong>Alvo</strong><span>${EAS.Utils.escapeHtml(currentTarget || 'Concluído')}</span></div>
-                <div><strong>Progresso</strong><span>${Math.min(context.currentIndex + 1, context.targets.length)} de ${context.targets.length}</span></div>
+                <div><strong>Progresso</strong><span>${Math.min(context.currentIndex + 1, context.queue.length)} de ${context.queue.length}</span></div>
                 <div><strong>Restantes</strong><span>${remaining}</span></div>
             `;
 
@@ -651,7 +728,7 @@
             const executionStatus = doc.createElement('div');
             executionStatus.className = 'fake-execution-status-grid';
             executionStatus.innerHTML = `
-                <span>Total: ${context.targets.length}</span>
+                <span>Total: ${context.queue.length}</span>
                 <span>Concluídos: ${completed}</span>
                 <span>Pulados: ${skipped}</span>
                 <span>Erros: ${errors}</span>
@@ -659,17 +736,17 @@
             `;
 
             const targetList = doc.createElement('ol');
-            targetList.className = 'fake-execution-targets';
-            context.targets.forEach((target, index) => {
+            targetList.className = 'fake-execution-targets fake-execution-queue';
+            context.queue.forEach((entry, index) => {
                 const item = doc.createElement('li');
-                const status = getTargetStatus(context, target, index);
+                const status = getTargetStatus(context, entry, index);
                 item.className = `fake-execution-${status
                     .normalize('NFD')
                     .replace(/[\u0300-\u036f]/g, '')
                     .toLowerCase()
                     .replace(/[^a-z0-9]+/g, '-')
                     .replace(/^-|-$/g, '')}`;
-                item.textContent = `${target} — ${status}`;
+                item.textContent = `${entry.villageName} → ${entry.target} — ${status}`;
                 targetList.appendChild(item);
             });
 
@@ -695,6 +772,15 @@
                 actions.appendChild(button);
             };
 
+            if (validation.wrongVillage && currentEntry) {
+                addButton({
+                    text: 'Abrir aldeia e Praça',
+                    onClick: () => {
+                        EAS.FakesExecution.openCurrentVillage(context);
+                    }
+                });
+            }
+
             addButton({
                 text: 'Preparar',
                 disabled: !validation.valid,
@@ -712,7 +798,7 @@
                 text: 'Atacar',
                 disabled: !validation.valid ||
                     context.commandType !== 'attack' ||
-                    Boolean(context.forwardingTarget),
+                    Number.isInteger(context.forwardingIndex),
                 onClick: () => {
                     const result = prepareCurrent(context, targetWindow);
                     const commandButton = result.valid
@@ -729,8 +815,9 @@
                         return;
                     }
 
-                    context.forwardingTarget = result.target;
+                    context.forwardingIndex = context.currentIndex;
                     context.forwardingStartedAt = Date.now();
+                    result.entry.status = 'forwarding';
                     saveContext(context);
                     render(
                         'Encaminhando ataque. Aguardando resposta do jogo...',
@@ -738,7 +825,7 @@
                     );
                     stopResultWatcher = watchCommandResult({
                         context,
-                        target: result.target,
+                        entryIndex: context.currentIndex,
                         targetWindow,
                         onRejected: (detected) => render(
                             `Regra do mundo detectada. Este mundo exige no mínimo ${detected.minimumPopulation} de população por ataque. A composição atual possui ${detected.attemptedPopulation}. Reanalise a operação ou ajuste as tropas.`,
@@ -760,7 +847,7 @@
                 text: 'Apoiar',
                 disabled: !validation.valid ||
                     context.commandType !== 'support' ||
-                    Boolean(context.forwardingTarget),
+                    Number.isInteger(context.forwardingIndex),
                 onClick: () => {
                     const result = prepareCurrent(context, targetWindow);
                     const commandButton = result.valid
@@ -777,8 +864,9 @@
                         return;
                     }
 
-                    context.forwardingTarget = result.target;
+                    context.forwardingIndex = context.currentIndex;
                     context.forwardingStartedAt = Date.now();
+                    result.entry.status = 'forwarding';
                     saveContext(context);
                     render(
                         'Encaminhando apoio. Aguardando resposta do jogo...',
@@ -786,7 +874,7 @@
                     );
                     stopResultWatcher = watchCommandResult({
                         context,
-                        target: result.target,
+                        entryIndex: context.currentIndex,
                         targetWindow,
                         onRejected: () => render(
                             'O apoio foi rejeitado pelo jogo. O alvo atual foi mantido.',
@@ -812,7 +900,11 @@
                             ['eas_tw_fakes_selected_preset', context.preset],
                             ['eas_tw_fakes_command_type', context.commandType],
                             ['eas_tw_fakes_troops', context.troopsPerTarget],
-                            ['eas_tw_fakes_coordinates', context.targets.join('\n')]
+                            ['eas_tw_fakes_coordinates', [...new Set(
+                                context.queue.map((entry) => entry.target)
+                            )].join('\n')],
+                            ['eas_tw_fakes_per_target', context.fakesPerTarget || 1],
+                            ['eas_tw_fakes_selected_villages', context.selectedVillageIds || []]
                         ];
 
                         saved.forEach(([key, value]) => {
@@ -827,11 +919,12 @@
             }
             addButton({
                 text: 'Pular alvo',
-                disabled: !currentTarget,
+                disabled: !currentEntry || Number.isInteger(context.forwardingIndex),
                 className: 'eas-button--secondary',
                 onClick: () => {
-                    clearOtherTargetStatuses(context, currentTarget, 'skipped');
-                    uniquePush(context.skippedTargets, currentTarget);
+                    clearOtherTargetStatuses(context, currentCommandKey, 'skipped');
+                    uniquePush(context.skipped, currentCommandKey);
+                    currentEntry.status = 'skipped';
                     context.currentIndex += 1;
                     saveContext(context);
                     render('Alvo pulado.', 'info');
@@ -839,20 +932,23 @@
             });
             addButton({
                 text: 'Marcar erro e pular',
-                disabled: !currentTarget,
+                disabled: !currentEntry || Number.isInteger(context.forwardingIndex),
                 className: 'eas-button--secondary',
                 onClick: () => {
-                    clearOtherTargetStatuses(context, currentTarget, 'error');
-                    if (!context.errorTargets.some(
-                        (item) => item.target === currentTarget
+                    clearOtherTargetStatuses(context, currentCommandKey, 'error');
+                    if (!context.errors.some(
+                        (item) => item.commandKey === currentCommandKey
                     )) {
-                        context.errorTargets.push({
+                        context.errors.push({
+                            commandKey: currentCommandKey,
                             target: currentTarget,
+                            villageId: currentEntry.villageId,
                             reason: validation.valid
                                 ? 'manual-error'
                                 : 'invalid-target'
                         });
                     }
+                    currentEntry.status = 'error';
                     context.currentIndex += 1;
                     saveContext(context);
                     render('Alvo marcado como erro.', 'error');
@@ -890,22 +986,10 @@
         return true;
     };
 
-    EAS.FakesExecution.start = (context) => {
-        const execution = normalizeContext({
-            ...context,
-            currentIndex: 0,
-            preparedTargets: [],
-            skippedTargets: [],
-            completedTargets: [],
-            errorTargets: [],
-            createdAt: Date.now()
-        });
-
-        if (!saveContext(execution)) {
-            return Promise.resolve(false);
-        }
-
-        const childWindow = EAS.Place.openVillagePlace(execution.villageId);
+    const openCurrentVillage = (providedContext = null) => {
+        const execution = normalizeContext(providedContext || readContext());
+        const entry = getCurrentEntry(execution);
+        const childWindow = EAS.Place.openVillagePlace(entry?.villageId);
 
         if (!childWindow) {
             return Promise.resolve(false);
@@ -940,6 +1024,26 @@
             }, POLL_INTERVAL_MS);
         });
     };
+
+    EAS.FakesExecution.start = (context) => {
+        const execution = normalizeContext({
+            ...context,
+            currentIndex: 0,
+            prepared: [],
+            skipped: [],
+            completed: [],
+            errors: [],
+            createdAt: Date.now()
+        });
+
+        if (!saveContext(execution)) {
+            return Promise.resolve(false);
+        }
+
+        return openCurrentVillage(execution);
+    };
+
+    EAS.FakesExecution.openCurrentVillage = openCurrentVillage;
 
     EAS.FakesExecution.initialize = () => {
         const context = readContext();

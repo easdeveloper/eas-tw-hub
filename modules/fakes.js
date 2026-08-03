@@ -9,6 +9,8 @@
         commandType: 'eas_tw_fakes_command_type',
         troops: 'eas_tw_fakes_troops',
         coordinates: 'eas_tw_fakes_coordinates',
+        fakesPerTarget: 'eas_tw_fakes_per_target',
+        selectedVillages: 'eas_tw_fakes_selected_villages',
         analysis: 'eas_tw_fakes_analysis'
     };
 
@@ -197,9 +199,70 @@
         });
     };
 
+    const distributeTargetsRoundRobin = (
+        villageAnalyses,
+        targets,
+        fakesPerTarget
+    ) => {
+        const eligible = villageAnalyses.filter((analysis) =>
+            analysis.selected && analysis.sufficient && analysis.capacity > 0
+        );
+        const remainingCapacity = new Map(
+            eligible.map((analysis) => [
+                Number(analysis.village.id),
+                analysis.capacity
+            ])
+        );
+        let cursor = 0;
+
+        const assignments = targets.map((target) => {
+            const sources = [];
+            let checked = 0;
+
+            while (
+                sources.length < fakesPerTarget &&
+                checked < eligible.length
+            ) {
+                const analysis = eligible[cursor % eligible.length];
+                const villageId = Number(analysis.village.id);
+                cursor += 1;
+                checked += 1;
+
+                if ((remainingCapacity.get(villageId) || 0) < 1) {
+                    continue;
+                }
+
+                sources.push({
+                    villageId,
+                    villageName: analysis.village.name,
+                    villageCoord: analysis.village.coordinate,
+                    commandIndex: sources.length + 1
+                });
+                remainingCapacity.set(
+                    villageId,
+                    remainingCapacity.get(villageId) - 1
+                );
+            }
+
+            return { target, sources };
+        });
+        const executionQueue = assignments.flatMap((assignment) =>
+            assignment.sources.map((source) => ({
+                target: assignment.target,
+                villageId: source.villageId,
+                villageName: source.villageName,
+                villageCoord: source.villageCoord,
+                status: 'pending'
+            }))
+        );
+
+        return { assignments, executionQueue, remainingCapacity };
+    };
+
     EAS.Modules.Fakes.extractCoordinates = extractCoordinates;
     EAS.Modules.Fakes.calculateFakeCapacity = calculateFakeCapacity;
     EAS.Modules.Fakes.distributeTargets = distributeTargets;
+    EAS.Modules.Fakes.distributeTargetsRoundRobin = distributeTargetsRoundRobin;
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
     EAS.Modules.Fakes.open = ({ autoAnalyze = false } = {}) => {
@@ -211,6 +274,13 @@
         );
         const savedTroops = readStorage(STORAGE_KEYS.troops, selectedPreset.troops);
         const savedCoordinates = readStorage(STORAGE_KEYS.coordinates, '');
+        const savedFakesPerTarget = normalizeQuantity(
+            readStorage(STORAGE_KEYS.fakesPerTarget, 1)
+        ) || 1;
+        const savedSelectedVillageIds = readStorage(
+            STORAGE_KEYS.selectedVillages,
+            null
+        );
         const availableUnits = getAvailableUnits();
         let worldRule = EAS.WorldRules.get();
 
@@ -256,6 +326,17 @@
         presetsForm.appendChild(EAS.UI.createField({
             label: 'Tipo de comando',
             input: commandTypeSelect
+        }));
+        const fakesPerTargetInput = EAS.UI.createInput({
+            type: 'number',
+            value: savedFakesPerTarget,
+            name: 'fakes-per-target',
+            min: 1
+        });
+        fakesPerTargetInput.step = '1';
+        presetsForm.appendChild(EAS.UI.createField({
+            label: 'Fakes por alvo',
+            input: fakesPerTargetInput
         }));
 
         const troopsSection = document.createElement('section');
@@ -316,7 +397,7 @@
         coordinatesInput.placeholder = '605|485\n617|473\n618|484';
         coordinatesInput.value = String(savedCoordinates || '');
         const targetCount = document.createElement('small');
-        targetCount.className = 'fake-manager-target-count';
+        targetCount.className = 'fake-manager-target-count fake-target-count';
         targetsSection.appendChild(targetsTitle);
         targetsSection.appendChild(coordinatesInput);
         targetsSection.appendChild(targetCount);
@@ -336,15 +417,25 @@
         analysisTitle.textContent = 'Análise das aldeias';
         const analysisSummary = document.createElement('div');
         analysisSummary.className = 'fake-analysis-summary';
+        const villageSelection = document.createElement('div');
+        villageSelection.className = 'fake-village-selection';
         const analysisTable = document.createElement('div');
         analysisTable.className = 'fake-analysis-table eas-table-wrapper';
+        const targetDistribution = document.createElement('div');
+        targetDistribution.className = 'fake-distribution-grid';
+        const prepareOperationContainer = document.createElement('div');
+        prepareOperationContainer.className = 'fake-analysis-prepare';
         analysisSection.appendChild(analysisTitle);
         analysisSection.appendChild(analysisSummary);
+        analysisSection.appendChild(villageSelection);
         analysisSection.appendChild(analysisTable);
+        analysisSection.appendChild(targetDistribution);
+        analysisSection.appendChild(prepareOperationContainer);
 
         const status = document.createElement('div');
         status.className = 'eas-status eas-status--info';
         status.textContent = 'Revise os dados da operação.';
+        let currentAnalysis = null;
 
         const getTroops = () => availableUnits.reduce((troops, unit) => {
             troops[unit.id] = normalizeQuantity(troopInputs[unit.id].value);
@@ -417,6 +508,7 @@
                 <p><strong>${escape(preset.name)}</strong><br>
                 Comando: ${commandTypeSelect.value === 'support' ? 'Apoio' : 'Ataque'}<br>
                 Alvos: ${coordinates.length}<br>
+                Fakes por alvo: ${Math.max(1, normalizeQuantity(fakesPerTargetInput.value))}<br>
                 População por comando: ${population.commandPopulation}</p>
                 <div class="fake-manager-summary__grid">
                     <div class="fake-manager-summary__block">
@@ -439,6 +531,10 @@
             analysisSection.hidden = true;
             analysisSummary.innerHTML = '';
             analysisTable.innerHTML = '';
+            villageSelection.innerHTML = '';
+            targetDistribution.innerHTML = '';
+            prepareOperationContainer.innerHTML = '';
+            currentAnalysis = null;
         };
 
         const getVillageStatus = (analysis, troopsStale, populationValid) => {
@@ -672,6 +768,367 @@
             analysisSection.hidden = false;
         };
 
+        const renderMultiVillageAnalysis = () => {
+            const state = currentAnalysis;
+
+            if (!state) {
+                return;
+            }
+
+            const {
+                operation,
+                villageAnalyses,
+                troopsInfo
+            } = state;
+            const fakesPerTarget = Math.max(
+                1,
+                normalizeQuantity(fakesPerTargetInput.value)
+            );
+            const eligible = villageAnalyses.filter((analysis) =>
+                analysis.sufficient && analysis.capacity > 0 && !troopsInfo.stale
+            );
+            const selectedEligible = eligible.filter((analysis) =>
+                analysis.selected
+            );
+
+            if (!state.distribution) {
+                state.distribution = distributeTargetsRoundRobin(
+                    villageAnalyses,
+                    operation.coordinates,
+                    fakesPerTarget
+                );
+            }
+
+            const rebuildQueue = () => {
+                state.distribution.executionQueue =
+                    state.distribution.assignments.flatMap((assignment) =>
+                        assignment.sources.map((source) => ({
+                            target: assignment.target,
+                            villageId: source.villageId,
+                            villageName: source.villageName,
+                            villageCoord: source.villageCoord,
+                            status: 'pending'
+                        }))
+                    );
+            };
+            rebuildQueue();
+
+            const selected = villageAnalyses.filter((analysis) =>
+                analysis.selected
+            );
+            const desiredCommands = operation.coordinates.length *
+                fakesPerTarget;
+            const distributedCommands = state.distribution.executionQueue.length;
+            const completeTargets = state.distribution.assignments.filter(
+                (assignment) => assignment.sources.length === fakesPerTarget
+            ).length;
+            const partialTargets = state.distribution.assignments.filter(
+                (assignment) => assignment.sources.length > 0 &&
+                    assignment.sources.length < fakesPerTarget
+            ).length;
+            const emptyTargets = state.distribution.assignments.filter(
+                (assignment) => assignment.sources.length === 0
+            ).length;
+            const selectedCapacity = selected.reduce(
+                (total, analysis) => total + analysis.capacity,
+                0
+            );
+            const summaryItems = [
+                `Alvos: ${operation.coordinates.length}`,
+                `Fakes por alvo: ${fakesPerTarget}`,
+                `Comandos desejados: ${desiredCommands}`,
+                `Comandos distribuídos: ${distributedCommands}`,
+                `Aldeias selecionadas: ${selected.length}`,
+                `Capacidade selecionada: ${selectedCapacity}`,
+                `Alvos completos: ${completeTargets}`,
+                `Alvos parciais: ${partialTargets}`,
+                `Sem atribuição: ${emptyTargets}`
+            ];
+            analysisSummary.innerHTML = `
+                <div class="fake-analysis-summary__grid">
+                    ${summaryItems.map((item) => `<span>${EAS.Utils.escapeHtml(item)}</span>`).join('')}
+                </div>
+                ${distributedCommands < desiredCommands
+                    ? `<div class="fake-analysis-warning">Capacidade insuficiente: faltam ${desiredCommands - distributedCommands} comandos.</div>`
+                    : ''}
+                ${!operation.valid
+                    ? `<div class="fake-analysis-warning">Composição abaixo da população mínima. Atual: ${operation.commandPopulation}. Mínimo: ${operation.minimumPopulation}.</div>`
+                    : ''}
+            `;
+
+            villageSelection.innerHTML = '';
+            const selectionButtons = [
+                {
+                    text: 'Selecionar todas as aldeias prontas',
+                    action: () => villageAnalyses.forEach((analysis) => {
+                        analysis.selected = eligible.includes(analysis);
+                    })
+                },
+                {
+                    text: 'Desmarcar todas',
+                    action: () => villageAnalyses.forEach((analysis) => {
+                        analysis.selected = false;
+                    })
+                },
+                {
+                    text: 'Selecionar somente com capacidade',
+                    action: () => villageAnalyses.forEach((analysis) => {
+                        analysis.selected = eligible.includes(analysis);
+                    })
+                }
+            ];
+            selectionButtons.forEach(({ text, action }) => {
+                villageSelection.appendChild(EAS.UI.createButton({
+                    text,
+                    className: 'eas-button--secondary',
+                    onClick: () => {
+                        action();
+                        state.distribution = null;
+                        writeStorage(
+                            STORAGE_KEYS.selectedVillages,
+                            villageAnalyses
+                                .filter((analysis) => analysis.selected)
+                                .map((analysis) => analysis.village.id)
+                        );
+                        renderMultiVillageAnalysis();
+                    }
+                }));
+            });
+            const firstNInput = EAS.UI.createInput({
+                type: 'number',
+                value: Math.min(1, eligible.length),
+                min: 1,
+                name: 'select-first-villages'
+            });
+            firstNInput.step = '1';
+            villageSelection.appendChild(firstNInput);
+            villageSelection.appendChild(EAS.UI.createButton({
+                text: 'Selecionar primeiras N aldeias',
+                className: 'eas-button--secondary',
+                onClick: () => {
+                    const limit = normalizeQuantity(firstNInput.value);
+                    villageAnalyses.forEach((analysis) => {
+                        analysis.selected = false;
+                    });
+                    eligible.slice(0, limit).forEach((analysis) => {
+                        analysis.selected = true;
+                    });
+                    state.distribution = null;
+                    writeStorage(
+                        STORAGE_KEYS.selectedVillages,
+                        eligible.slice(0, limit).map((analysis) =>
+                            analysis.village.id
+                        )
+                    );
+                    renderMultiVillageAnalysis();
+                }
+            }));
+
+            const table = document.createElement('table');
+            table.className = 'eas-table';
+            table.innerHTML = `
+                <thead><tr>
+                    <th>Selecionar</th><th>Aldeia</th><th>Coordenada</th>
+                    <th>Tropas disponíveis</th><th>Capacidade</th>
+                    <th>Comandos atribuídos</th><th>Status</th>
+                </tr></thead>
+            `;
+            const tbody = document.createElement('tbody');
+            const usage = new Map();
+            state.distribution.executionQueue.forEach((entry) => {
+                usage.set(
+                    Number(entry.villageId),
+                    (usage.get(Number(entry.villageId)) || 0) + 1
+                );
+            });
+
+            villageAnalyses.forEach((analysis) => {
+                const tr = document.createElement('tr');
+                const canSelect = eligible.includes(analysis);
+                const checkboxCell = document.createElement('td');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = analysis.selected;
+                checkbox.disabled = !canSelect;
+                checkbox.addEventListener('change', () => {
+                    analysis.selected = checkbox.checked;
+                    state.distribution = null;
+                    writeStorage(
+                        STORAGE_KEYS.selectedVillages,
+                        villageAnalyses
+                            .filter((item) => item.selected)
+                            .map((item) => item.village.id)
+                    );
+                    renderMultiVillageAnalysis();
+                });
+                checkboxCell.appendChild(checkbox);
+                tr.appendChild(checkboxCell);
+
+                const usedUnits = availableUnits.filter(
+                    (unit) => normalizeQuantity(operation.troops[unit.id]) > 0
+                );
+                const statusText = !operation.valid
+                    ? 'População mínima não atingida'
+                    : troopsInfo.stale
+                        ? 'Dados desatualizados'
+                        : !analysis.hasTroopData
+                            ? 'Sem dados'
+                            : !analysis.sufficient
+                                ? 'Tropas insuficientes'
+                                : analysis.selected
+                                    ? (usage.get(Number(analysis.village.id)) || 0) >= analysis.capacity
+                                        ? 'Capacidade esgotada'
+                                        : 'Selecionada'
+                                    : 'Não selecionada';
+                const values = [
+                    analysis.village.name,
+                    analysis.village.coordinate,
+                    analysis.hasTroopData
+                        ? usedUnits.map((unit) =>
+                            `${unit.plural}: ${normalizeQuantity(analysis.availableTroops[unit.id])}`
+                        ).join(' / ')
+                        : '-',
+                    analysis.capacity,
+                    usage.get(Number(analysis.village.id)) || 0,
+                    statusText
+                ];
+                values.forEach((value) => {
+                    const td = document.createElement('td');
+                    td.textContent = String(value);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            analysisTable.innerHTML = '';
+            analysisTable.appendChild(table);
+
+            targetDistribution.innerHTML = '<h3>Distribuição por alvo</h3>';
+            state.distribution.assignments.forEach((assignment, targetIndex) => {
+                const details = document.createElement('details');
+                details.className = `fake-target-assignment ${assignment.sources.length === fakesPerTarget
+                    ? 'fake-assignment-complete'
+                    : 'fake-assignment-partial'}`;
+                const summary = document.createElement('summary');
+                summary.textContent = `${assignment.target} — ${assignment.sources.length} de ${fakesPerTarget} fakes`;
+                details.appendChild(summary);
+
+                assignment.sources.forEach((source, sourceIndex) => {
+                    const row = document.createElement('div');
+                    row.className = 'fake-target-assignment__source';
+                    const activeCheckbox = document.createElement('input');
+                    activeCheckbox.type = 'checkbox';
+                    activeCheckbox.checked = true;
+                    activeCheckbox.title = 'Combinação ativa';
+                    activeCheckbox.addEventListener('change', () => {
+                        if (!activeCheckbox.checked) {
+                            assignment.sources.splice(sourceIndex, 1);
+                            renderMultiVillageAnalysis();
+                        }
+                    });
+                    const select = document.createElement('select');
+                    select.className = 'eas-input';
+                    const duplicatedIds = new Set(
+                        assignment.sources.map((item) => Number(item.villageId))
+                    );
+                    selectedEligible.forEach((candidate) => {
+                        const candidateId = Number(candidate.village.id);
+                        const isCurrent = candidateId === Number(source.villageId);
+                        const hasCapacity = (usage.get(candidateId) || 0) <
+                            candidate.capacity;
+
+                        if (!isCurrent && (duplicatedIds.has(candidateId) || !hasCapacity)) {
+                            return;
+                        }
+
+                        const option = document.createElement('option');
+                        option.value = candidateId;
+                        option.textContent = `${candidate.village.name} — ${candidate.village.coordinate}`;
+                        select.appendChild(option);
+                    });
+                    select.value = source.villageId;
+                    select.addEventListener('change', () => {
+                        const replacement = selectedEligible.find((candidate) =>
+                            Number(candidate.village.id) === Number(select.value)
+                        );
+
+                        if (!replacement || assignment.sources.some(
+                            (item, index) => index !== sourceIndex &&
+                                Number(item.villageId) === Number(select.value)
+                        )) {
+                            return;
+                        }
+
+                        assignment.sources[sourceIndex] = {
+                            villageId: replacement.village.id,
+                            villageName: replacement.village.name,
+                            villageCoord: replacement.village.coordinate,
+                            commandIndex: sourceIndex + 1
+                        };
+                        renderMultiVillageAnalysis();
+                    });
+                    const removeButton = EAS.UI.createButton({
+                        text: 'Remover',
+                        className: 'eas-button--secondary',
+                        onClick: () => {
+                            assignment.sources.splice(sourceIndex, 1);
+                            renderMultiVillageAnalysis();
+                        }
+                    });
+                    row.appendChild(activeCheckbox);
+                    row.appendChild(select);
+                    row.appendChild(removeButton);
+                    details.appendChild(row);
+                });
+
+                if (assignment.sources.length < fakesPerTarget) {
+                    const missing = document.createElement('div');
+                    missing.className = 'fake-assignment-missing';
+                    missing.textContent = `Faltam ${fakesPerTarget - assignment.sources.length} aldeias.`;
+                    details.appendChild(missing);
+                }
+                targetDistribution.appendChild(details);
+            });
+
+            prepareOperationContainer.innerHTML = '';
+            const prepareButton = EAS.UI.createButton({
+                text: 'Preparar operação',
+                disabled: !operation.valid || !distributedCommands,
+                onClick: () => {
+                    rebuildQueue();
+                    const execution = {
+                        preset: presetSelect.value,
+                        commandType: commandTypeSelect.value,
+                        troopsPerTarget: { ...operation.troops },
+                        fakesPerTarget,
+                        selectedVillageIds: selected.map((analysis) =>
+                            analysis.village.id
+                        ),
+                        queue: state.distribution.executionQueue.map(
+                            (entry) => ({ ...entry })
+                        ),
+                        currentIndex: 0,
+                        completed: [],
+                        skipped: [],
+                        errors: [],
+                        createdAt: Date.now()
+                    };
+
+                    EAS.FakesExecution.start(execution).then((opened) => {
+                        if (!opened) {
+                            EAS.UI.showStatus({
+                                target: status,
+                                message: 'Não foi possível abrir a primeira aldeia da fila.',
+                                type: 'error'
+                            });
+                        }
+                    });
+                }
+            });
+            prepareOperationContainer.appendChild(prepareButton);
+            analysisSection.hidden = false;
+        };
+
         const analyzeOperation = async ({ forceRefresh = false } = {}) => {
             const operation = updateSummary();
             const hasTroops = Object.values(operation.troops).some(
@@ -743,29 +1200,60 @@
                     sufficient: capacity.sufficient && operation.valid
                 };
             });
-            const assignments = distributeTargets(
-                villageAnalyses,
-                operation.coordinates
+            const storedSelection = readStorage(
+                STORAGE_KEYS.selectedVillages,
+                savedSelectedVillageIds
             );
-            const context = createAnalysisContext({
-                operation,
-                assignments,
-                troopsInfo
+            const selectedIds = Array.isArray(storedSelection)
+                ? new Set(storedSelection.map(Number))
+                : null;
+            villageAnalyses.forEach((analysis) => {
+                analysis.selected = selectedIds
+                    ? selectedIds.has(Number(analysis.village.id)) &&
+                        analysis.sufficient && !troopsInfo.stale
+                    : analysis.sufficient && !troopsInfo.stale;
             });
-
-            writeStorage(STORAGE_KEYS.analysis, context);
-            renderAnalysis({ operation, assignments, troopsInfo });
-
-            const distributed = assignments.reduce(
-                (total, analysis) => total + analysis.assignedTargets.length,
-                0
+            currentAnalysis = {
+                operation,
+                villageAnalyses,
+                troopsInfo,
+                distribution: null
+            };
+            renderMultiVillageAnalysis();
+            const distribution = currentAnalysis.distribution;
+            const distributed = distribution.executionQueue.length;
+            const desired = operation.coordinates.length * Math.max(
+                1,
+                normalizeQuantity(fakesPerTargetInput.value)
             );
+
+            writeStorage(STORAGE_KEYS.analysis, {
+                preset: presetSelect.value,
+                commandType: commandTypeSelect.value,
+                troopsPerTarget: { ...operation.troops },
+                targets: [...operation.coordinates],
+                fakesPerTarget: Math.max(
+                    1,
+                    normalizeQuantity(fakesPerTargetInput.value)
+                ),
+                selectedVillageIds: villageAnalyses
+                    .filter((analysis) => analysis.selected)
+                    .map((analysis) => analysis.village.id),
+                assignments: distribution.assignments.map((assignment) => ({
+                    target: assignment.target,
+                    sources: assignment.sources.map((source) => ({ ...source }))
+                })),
+                executionQueue: distribution.executionQueue.map(
+                    (entry) => ({ ...entry })
+                ),
+                createdAt: Date.now()
+            });
             EAS.UI.showStatus({
                 target: status,
                 message: operation.valid
-                    ? `Análise concluída: ${distributed} de ${operation.coordinates.length} alvo${operation.coordinates.length === 1 ? '' : 's'} distribuído${distributed === 1 ? '' : 's'}. Nenhum comando foi enviado.`
+                    ? `Análise concluída: ${distributed} de ${desired} comandos distribuídos. Nenhum comando foi enviado.`
                     : `Composição inválida para ataques neste mundo. População atual: ${operation.commandPopulation}. Mínima: ${operation.minimumPopulation}. Faltam: ${operation.deficit}.`,
-                type: operation.valid && distributed === operation.coordinates.length
+                type: operation.valid && distributed === desired
                     ? 'success'
                     : 'error'
             });
@@ -777,14 +1265,31 @@
             availableUnits.forEach((unit) => {
                 troopInputs[unit.id].value = normalizeQuantity(preset.troops[unit.id]);
             });
+            invalidateAndMaybeReanalyze();
+        };
+
+        let reanalysisTimer = null;
+        const invalidateAndMaybeReanalyze = () => {
+            const shouldReanalyze = Boolean(currentAnalysis);
             invalidateAnalysis();
             updateSummary();
+
+            if (shouldReanalyze) {
+                clearTimeout(reanalysisTimer);
+                reanalysisTimer = setTimeout(() => analyzeOperation(), 250);
+            }
         };
 
         presetSelect.addEventListener('change', applyPreset);
         commandTypeSelect.addEventListener('change', () => {
-            invalidateAnalysis();
-            updateSummary();
+            invalidateAndMaybeReanalyze();
+        });
+        fakesPerTargetInput.addEventListener('input', () => {
+            fakesPerTargetInput.value = Math.max(
+                1,
+                normalizeQuantity(fakesPerTargetInput.value)
+            );
+            invalidateAndMaybeReanalyze();
         });
         completionUnitSelect.addEventListener('change', renderPopulationRule);
         coordinatesInput.addEventListener('input', () => {
@@ -793,8 +1298,7 @@
         });
         Object.values(troopInputs).forEach((input) => {
             input.addEventListener('input', () => {
-                invalidateAnalysis();
-                updateSummary();
+                invalidateAndMaybeReanalyze();
             });
         });
 
@@ -897,7 +1401,11 @@
                     writeStorage(STORAGE_KEYS.preset, presetSelect.value),
                     writeStorage(STORAGE_KEYS.commandType, commandTypeSelect.value),
                     writeStorage(STORAGE_KEYS.troops, operation.troops),
-                    writeStorage(STORAGE_KEYS.coordinates, coordinatesInput.value)
+                    writeStorage(STORAGE_KEYS.coordinates, coordinatesInput.value),
+                    writeStorage(
+                        STORAGE_KEYS.fakesPerTarget,
+                        Math.max(1, normalizeQuantity(fakesPerTargetInput.value))
+                    )
                 ].every(Boolean);
 
                 EAS.UI.showStatus({
