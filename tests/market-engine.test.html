@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>Market Engine tests</title><pre id="result">running</pre>
+<script>window.EAS={MarketEngine:{},Modules:{},World:{getGameData:()=>({config:{merchant_capacity:1000}})},Villages:{list:()=>[]},Utils:{formatDateTime:()=>''}};</script>
+<script src="../services/market-engine.js"></script>
+<script src="../modules/market-smart-offers.js"></script><script src="../modules/market-balance.js"></script><script src="../modules/market-target-supply.js"></script>
+<script>
+(() => {
+ const failures=[]; const equal=(a,b,label)=>{if(JSON.stringify(a)!==JSON.stringify(b))failures.push(`${label}: esperado ${JSON.stringify(b)}, recebido ${JSON.stringify(a)}`)}; const engine=EAS.MarketEngine;
+ const imbalance=engine.calculateResourceImbalance({wood:140000,stone:90000,iron:70000});
+ equal(imbalance.target,{wood:100000,stone:100000,iron:100000},'meta 33/33/33');
+ equal(imbalance.surplus,{wood:40000,stone:0,iron:0},'excedente');
+ equal(imbalance.deficit,{wood:0,stone:10000,iron:30000},'déficit');
+ equal(engine.calculateBalancedResourceTarget(100001),{wood:33334,stone:33334,iron:33333},'resto determinístico');
+ equal(engine.calculateMerchantsRequired({wood:10000,stone:5000},1000),15,'comerciantes');
+ const target={id:2,storage:200000,resources:{wood:190000,stone:0,iron:0},merchants:{available:0,total:0}};
+ equal(engine.getProjectedStorageSpace(target).wood,10000,'capacidade por recurso');
+ const source={id:1,resources:{wood:50000,stone:0,iron:0},storage:200000,merchants:{available:0,total:10}};
+ equal(engine.validateTransport({source,target,resources:{wood:1000}}).reasons.includes('insufficient-merchants'),true,'sem comerciantes');
+ equal(engine.validateTransport({source:{...source,id:2,merchants:{available:10,total:10}},target,resources:{wood:1000}}).reasons.includes('same-village'),true,'mesma aldeia');
+ const committed=engine.getAvailableResources({id:3,resources:{wood:20000,stone:0,iron:0},activeOffers:{wood:10000,requested:{iron:10000}},merchants:{available:10,total:10}});
+ equal(committed.wood,10000,'oferta ativa comprometida');
+ const supplied=engine.distributeTargetNeed({need:{wood:90000},origins:[1,2,3].map(id=>({id,resources:{wood:60000,stone:0,iron:0},storage:200000,merchants:{available:100,total:100}})),merchantCapacity:1000});
+ equal(supplied.plans.map(plan=>plan.resources.wood),[30000,30000,30000],'abastecimento equilibrado');
+ const moved=engine.applyInternalTransport({sourceResources:{wood:100,stone:50,iron:20},targetResources:{wood:10,stone:20,iron:30},resources:{wood:40,stone:10,iron:0}});
+ equal(['wood','stone','iron'].map(resource=>moved.source[resource]+moved.target[resource]),[110,70,50],'totais internos invariantes');
+ equal(typeof EAS.Modules.MarketSmartOffers.open,'function','módulo ofertas registrado');
+ equal(typeof EAS.Modules.MarketBalance.open,'function','módulo balanceamento registrado');
+ equal(typeof EAS.Modules.MarketTargetSupply.open,'function','módulo abastecimento registrado');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 14 assertions';document.title=failures.length?'FAIL':'PASS';
+})();
+</script>

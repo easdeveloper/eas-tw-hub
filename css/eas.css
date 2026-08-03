@@ -326,6 +326,22 @@
     gap: 6px;
 }
 
+.market-section {
+    margin-top: 16px;
+}
+
+.market-diagnostic {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 8px;
+}
+
+.market-diagnostic span {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
 .fake-nt-target-tools {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));

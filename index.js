@@ -67,6 +67,9 @@
                 if (!window.EAS.SupportExecution?.initialize) {
                     await loadScript('services/support-execution.js');
                 }
+                if (!window.EAS.MarketEngine?.calculateResourceImbalance) {
+                    await loadScript('services/market-engine.js');
+                }
 
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
@@ -90,6 +93,7 @@
             await loadScript('services/public-map.js');
             await loadScript('services/fakes-execution.js');
             await loadScript('services/support-execution.js');
+            await loadScript('services/market-engine.js');
 
             window.EAS.start();
             window.EAS.Place.fillTargetFromUrl();

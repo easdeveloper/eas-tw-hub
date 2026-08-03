@@ -17,6 +17,7 @@
         FakesExecution: {},
         SupportExecution: {},
         PublicMap: {},
+        MarketEngine: {},
         Modules: {},
 
         start() {

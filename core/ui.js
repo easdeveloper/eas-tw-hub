@@ -258,7 +258,10 @@
             support: 'Support',
             antisnipe: 'Antisnipe',
             noble: 'Noble',
-            resources: 'Resources'
+            resources: 'Resources',
+            'market-smart-offers': 'MarketSmartOffers',
+            'market-balance': 'MarketBalance',
+            'market-target-supply': 'MarketTargetSupply'
         };
         const moduleName = moduleNames[moduleId];
 
@@ -337,11 +340,6 @@
                 id: 'noble',
                 icon: '👑',
                 text: 'Planejador de Nobres'
-            },
-            {
-                id: 'resources',
-                icon: '📦',
-                text: 'Distribuição de Recursos'
             }
         ];
 
@@ -372,6 +370,24 @@
         operationsSection.appendChild(operationsTools);
         menu.appendChild(operationsSection);
 
+        const marketSection = document.createElement('section');
+        marketSection.className = 'market-section';
+        const marketTitle = document.createElement('h2');
+        marketTitle.className = 'operations-section__title';
+        marketTitle.textContent = '🏪 Mercado';
+        const marketTools = document.createElement('div');
+        marketTools.className = 'operations-tools';
+        [
+            { id: 'market-smart-offers', icon: '🔄', text: 'Ofertas Inteligentes' },
+            { id: 'market-balance', icon: '⚖️', text: 'Balanceamento entre Aldeias' },
+            { id: 'market-target-supply', icon: '🎯', text: 'Abastecimento de Aldeia' }
+        ].forEach((module) => marketTools.appendChild(EAS.UI.createButton({
+            text: module.text, icon: module.icon, className: 'eas-menu__button',
+            onClick: () => EAS.UI.openModuleTest(module)
+        })));
+        marketSection.append(marketTitle, marketTools);
+        menu.appendChild(marketSection);
+
         modules.forEach((module) => {
             const button = EAS.UI.createButton({
                 text: module.text,
@@ -400,7 +416,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support') {
+        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
