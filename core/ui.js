@@ -254,6 +254,7 @@
     EAS.UI.loadModule = async (moduleId) => {
         const moduleNames = {
             attack: 'Attack',
+            fakes: 'Fakes',
             support: 'Support',
             antisnipe: 'Antisnipe',
             noble: 'Noble',
@@ -303,16 +304,24 @@
         const menu = document.createElement('div');
         menu.className = 'eas-menu';
 
+        const operations = [
+            {
+                id: 'attack',
+                icon: '⚔️',
+                text: 'Planejador de Ataques'
+            },
+            {
+                id: 'fakes',
+                icon: '🎭',
+                text: 'Gerenciador de Fakes'
+            }
+        ];
+
         const modules = [
             {
                 id: 'diagnostic',
                 icon: '🔍',
                 text: 'Diagnóstico do jogo'
-            },
-            {
-                id: 'attack',
-                icon: '⚔️',
-                text: 'Planejador de Ataques'
             },
             {
                 id: 'support',
@@ -335,6 +344,33 @@
                 text: 'Distribuição de Recursos'
             }
         ];
+
+        const operationsSection = document.createElement('section');
+        operationsSection.className = 'operations-section';
+
+        const operationsTitle = document.createElement('h2');
+        operationsTitle.className = 'operations-section__title';
+        operationsTitle.textContent = '⚔️ Operações';
+
+        const operationsTools = document.createElement('div');
+        operationsTools.className = 'operations-tools';
+
+        operations.forEach((module) => {
+            const button = EAS.UI.createButton({
+                text: module.text,
+                icon: module.icon,
+                className: 'eas-menu__button',
+                onClick: () => {
+                    EAS.UI.openModuleTest(module);
+                }
+            });
+
+            operationsTools.appendChild(button);
+        });
+
+        operationsSection.appendChild(operationsTitle);
+        operationsSection.appendChild(operationsTools);
+        menu.appendChild(operationsSection);
 
         modules.forEach((module) => {
             const button = EAS.UI.createButton({
@@ -364,11 +400,11 @@
             return;
         }
 
-        if (module.id === 'attack') {
-            EAS.UI.loadModule('attack')
-                .then((attackModule) => {
+        if (module.id === 'attack' || module.id === 'fakes') {
+            EAS.UI.loadModule(module.id)
+                .then((loadedModule) => {
                     EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
-                    attackModule.open();
+                    loadedModule.open();
                 })
                 .catch((error) => {
                     alert(`EAS TW Hub: ${error.message}`);

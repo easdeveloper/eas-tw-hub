@@ -109,6 +109,26 @@
     text-align: left;
 }
 
+.operations-section {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid #b98b43;
+    border-radius: 3px;
+    background: rgba(255, 248, 223, 0.55);
+}
+
+.operations-section__title {
+    margin: 0;
+    color: #4f2f09;
+    font-size: 14px;
+}
+
+.operations-tools {
+    display: grid;
+    gap: 8px;
+}
+
 .eas-form {
     display: grid;
     gap: 13px;
@@ -233,6 +253,76 @@
     white-space: nowrap;
 }
 
+.fake-manager {
+    display: grid;
+    gap: 15px;
+}
+
+.fake-manager__description {
+    margin: 0;
+    color: #5d3c12;
+}
+
+.fake-manager-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fake-manager-troops,
+.fake-manager-targets,
+.fake-manager-summary {
+    padding: 12px;
+    border: 1px solid #b98b43;
+    border-radius: 3px;
+    background: #fff8df;
+}
+
+.fake-manager h3 {
+    margin: 0 0 10px;
+    color: #4f2f09;
+    font-size: 14px;
+}
+
+.fake-manager-troops__grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.fake-manager-targets textarea {
+    min-height: 110px;
+    resize: vertical;
+}
+
+.fake-manager-target-count {
+    display: block;
+    margin-top: 6px;
+    color: #76501d;
+    font-size: 11px;
+}
+
+.fake-manager-summary__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.fake-manager-summary__block {
+    padding: 9px;
+    border: 1px solid #d2b272;
+    background: #fffdf5;
+}
+
+.fake-manager-summary__block strong {
+    display: block;
+    margin-bottom: 6px;
+    color: #76501d;
+}
+
+.fake-manager-summary__block ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
 .eas-attack-row--horario-ja-passou td {
     background: #f8deda;
 }
@@ -277,6 +367,15 @@
 
     .eas-attack-form {
         grid-template-columns: 1fr;
+    }
+
+    .fake-manager-presets,
+    .fake-manager-summary__grid {
+        grid-template-columns: 1fr;
+    }
+
+    .fake-manager-troops__grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .eas-actions {
