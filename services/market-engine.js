@@ -55,6 +55,17 @@
         document.querySelector?.('[data-merchant-capacity]')?.dataset?.merchantCapacity ?? 1000
     ) || 1000;
     const calculateMerchantsRequired = (resources, capacity = getMerchantCapacity()) => Math.ceil(RESOURCES.reduce((sum, resource) => sum + amount(resources?.[resource]), 0) / Math.max(1, amount(capacity)));
+    const calculateOfferRepeatCount = ({ totalOfferAmount, amountPerOffer, merchantsAvailable }) => {
+        const total = amount(totalOfferAmount); const unit = amount(amountPerOffer); const available = amount(merchantsAvailable);
+        if (!total || !unit || !available) return 0;
+        return Math.min(Math.floor(total / unit), available);
+    };
+    const calculateOfferQuantity = ({ totalOfferAmount, amountPerOffer, requestAmountPerOffer = amountPerOffer, merchantsAvailable }) => {
+        const plannedTotal = amount(totalOfferAmount); const unit = amount(amountPerOffer); const requestUnit = amount(requestAmountPerOffer);
+        const repeatCount = calculateOfferRepeatCount({ totalOfferAmount: plannedTotal, amountPerOffer: unit, merchantsAvailable });
+        const totalOfferAmountPrepared = unit * repeatCount; const totalRequestAmountPrepared = requestUnit * repeatCount; const pendingAmount = Math.max(0, plannedTotal - totalOfferAmountPrepared);
+        return { valid: repeatCount > 0 && totalOfferAmountPrepared > 0 && totalRequestAmountPrepared > 0, amountPerOffer: unit, requestAmountPerOffer: requestUnit, repeatCount, totalOfferAmount: totalOfferAmountPrepared, totalRequestAmount: totalRequestAmountPrepared, plannedTotalOfferAmount: plannedTotal, pendingAmount, merchantsRequired: repeatCount, status: pendingAmount > 0 ? 'Parcial' : 'Pronta' };
+    };
     const splitOfferAmount = (total, { maximum = 10000, minimum = 100, roundToHundreds = false } = {}) => {
         let remaining = amount(total); const blocks = []; const max = Math.max(1, amount(maximum)); const min = Math.max(1, amount(minimum));
         while (remaining >= min) {
@@ -195,13 +206,13 @@
                 const village = candidates[cursor % candidates.length]; cursor += 1;
                 const used = merchantUsage.get(village.villageId); const merchantsLeft = village.merchants.available - used; const available = availableByVillage.get(village.villageId)[offered];
                 const raw = Math.min(required, options.maximum, merchantsLeft * merchantCapacity, available);
-                const split = splitOfferAmount(raw, options); const offerAmount = split.blocks[0] || 0;
-                const duplicate = config.avoidDuplicates !== false && village.activeOfferList.some((offer) => offer.offerResource === offered && offer.requestResource === requested && Math.abs(offer.offerAmount - offerAmount) < options.minimum);
-                if (!offerAmount || duplicate) { idle += 1; continue; }
-                idle = 0; const merchantsRequired = Math.ceil(offerAmount / merchantCapacity);
-                const before = { ...getAvailableResources(village) }; const afterCreation = { ...before, [offered]: before[offered] - offerAmount }; const afterAcceptance = { ...afterCreation, [requested]: afterCreation[requested] + offerAmount };
-                suggestions.push({ id: `offer-${Date.now()}-${sequence++}`, villageId: village.villageId, villageName: village.villageName, villageCoord: village.villageCoord, offerResource: offered, offerAmount, requestResource: requested, requestAmount: offerAmount, merchantsRequired, ratio: '1:1', resourcesBefore: before, resourcesAfterCreation: afterCreation, resourcesAfterAcceptance: afterAcceptance, status: raw < required ? 'Parcial' : 'Pronta', selected: true });
-                merchantUsage.set(village.villageId, used + merchantsRequired); availableByVillage.get(village.villageId)[offered] -= offerAmount; required -= offerAmount; imbalance.surplus[offered] -= offerAmount; imbalance.deficit[requested] -= offerAmount;
+                const split = splitOfferAmount(raw, options); const plannedAmount = split.blocks[0] || 0; const amountPerOffer = Math.min(merchantCapacity, plannedAmount);
+                const quantity = calculateOfferQuantity({ totalOfferAmount: plannedAmount, amountPerOffer, requestAmountPerOffer: amountPerOffer, merchantsAvailable: merchantsLeft });
+                const duplicate = config.avoidDuplicates !== false && village.activeOfferList.some((offer) => offer.offerResource === offered && offer.requestResource === requested && amount(offer.offerAmount) === quantity.amountPerOffer && amount(offer.requestAmount) === quantity.requestAmountPerOffer);
+                if (!quantity.valid || duplicate) { idle += 1; continue; }
+                idle = 0; const before = { ...getAvailableResources(village) }; const afterCreation = { ...before, [offered]: before[offered] - quantity.totalOfferAmount }; const afterAcceptance = { ...afterCreation, [requested]: afterCreation[requested] + quantity.totalRequestAmount };
+                suggestions.push({ id: `offer-${Date.now()}-${sequence++}`, villageId: village.villageId, villageName: village.villageName, villageCoord: village.villageCoord, offerResource: offered, offerAmount: quantity.amountPerOffer, amountPerOffer: quantity.amountPerOffer, requestResource: requested, requestAmount: quantity.requestAmountPerOffer, requestAmountPerOffer: quantity.requestAmountPerOffer, repeatCount: quantity.repeatCount, plannedTotalOfferAmount: plannedAmount, totalOfferAmount: quantity.totalOfferAmount, totalRequestAmount: quantity.totalRequestAmount, pendingAmount: quantity.pendingAmount, merchantsRequired: quantity.merchantsRequired, ratio: '1:1', resourcesBefore: before, resourcesAfterCreation: afterCreation, resourcesAfterAcceptance: afterAcceptance, status: quantity.status, selected: true });
+                merchantUsage.set(village.villageId, used + quantity.merchantsRequired); availableByVillage.get(village.villageId)[offered] -= quantity.totalOfferAmount; required -= quantity.totalOfferAmount; imbalance.surplus[offered] -= quantity.totalOfferAmount; imbalance.deficit[requested] -= quantity.totalOfferAmount;
             }
             if (required > 0) uncovered[requested] += required;
         }));
@@ -258,5 +269,5 @@
         }; win.body.append(body, status); render();
     };
 
-    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
+    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshAllVillages, applyCreatedOfferToCache, validateTransport, buildOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
 })();

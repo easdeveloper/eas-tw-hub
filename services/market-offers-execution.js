@@ -13,9 +13,9 @@
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
     const addHistory = (item, result, error = null) => { try { const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); history.unshift({ executedAt: Date.now(), villageId: item.villageId, offerResource: item.offerResource, offerAmount: item.offerAmount, requestResource: item.requestResource, requestAmount: item.requestAmount, repeatCount: item.repeatCount, totalOfferAmount: item.totalOfferAmount, totalRequestAmount: item.totalRequestAmount, result, error }); localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 200))); } catch {} };
     const normalizeItem = (item) => {
-        const repeatCount = Math.max(1, amount(item.repeatCount || 1)); const offerAmount = amount(item.offerAmount); const requestAmount = amount(item.requestAmount);
+        const repeatCount = Math.max(1, amount(item.repeatCount || 1)); const offerAmount = amount(item.amountPerOffer || item.offerAmount); const requestAmount = amount(item.requestAmountPerOffer || item.requestAmount);
         const totalOfferAmount = amount(item.totalOfferAmount || offerAmount * repeatCount); const totalRequestAmount = amount(item.totalRequestAmount || requestAmount * repeatCount);
-        return { ...item, id: item.id || `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`, offerAmount, requestAmount, repeatCount, totalOfferAmount, totalRequestAmount, merchantsRequired: amount(item.merchantsRequired || EAS.MarketEngine.calculateMerchantsRequired({ [item.offerResource]: totalOfferAmount })), status: item.status || 'pending', error: item.error || null };
+        return { ...item, id: item.id || `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`, offerAmount, amountPerOffer: offerAmount, requestAmount, requestAmountPerOffer: requestAmount, repeatCount, totalOfferAmount, totalRequestAmount, merchantsRequired: amount(item.merchantsRequired || EAS.MarketEngine.calculateMerchantsRequired({ [item.offerResource]: totalOfferAmount })), status: item.status || 'pending', error: item.error || null };
     };
     const nextPendingIndex = (context, start = 0) => {
         const index = (context.queue || []).findIndex((item, itemIndex) => itemIndex >= start && !TERMINAL.has(item.status));
@@ -32,6 +32,12 @@
     };
     const setValue = (input, value, targetWindow) => { const setter = Object.getOwnPropertyDescriptor(targetWindow.HTMLInputElement.prototype, 'value')?.set; setter ? setter.call(input, String(value)) : input.value = String(value); input.dispatchEvent(new targetWindow.Event('input', { bubbles: true })); input.dispatchEvent(new targetWindow.Event('change', { bubbles: true })); };
     const findField = (doc, names) => names.map((name) => doc.querySelector(`[name="${name}"], #${name}, [data-field="${name}"]`)).find(Boolean) || null;
+    const findRepeatField = (doc) => {
+        const direct = findField(doc, ['multi', 'count', 'offer_count', 'repeat_count', 'times', 'quantity']); if (direct) return direct;
+        const label = [...doc.querySelectorAll('label')].find((entry) => /quantas\s+vezes\s+oferecer/i.test(entry.textContent || ''));
+        if (!label) return null; if (label.htmlFor) return doc.getElementById(label.htmlFor);
+        return label.querySelector('input') || label.parentElement?.querySelector('input');
+    };
     const findSubmit = (doc, form) => form?.querySelector('[name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]') || doc.querySelector('[name="create_offer"], [data-action="create-offer"]');
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
         const names = kind === 'offer' ? ['res_sell', 'sell_resource', 'offer_resource'] : ['res_buy', 'buy_resource', 'request_resource'];
@@ -72,15 +78,18 @@
         if (Date.now() - Number(village?.updatedAt || 0) > 15 * 60 * 1000) reasons.push('Dados alterados ou desatualizados');
         if (!(item.offerAmount > 0) || !(item.requestAmount > 0) || !(item.repeatCount > 0) || item.offerResource === item.requestResource) reasons.push('Oferta inválida');
         if (village && EAS.MarketEngine.getAvailableResources(village)[item.offerResource] < item.totalOfferAmount) reasons.push('Recursos insuficientes');
+        if (!(item.totalRequestAmount > 0)) reasons.push('Total solicitado inválido');
+        if (village && item.repeatCount > village.merchants.available) reasons.push('Repetições acima dos comerciantes livres');
         if (village && village.merchants.available < item.merchantsRequired) reasons.push('Comerciantes insuficientes');
         return { valid: reasons.length === 0, reasons, village };
     };
     const prepareItem = (context, targetWindow) => {
         syncIndex(context); const item = current(context); if (!item || getVillageId(targetWindow) !== String(item.villageId)) return { valid: false, message: 'Abra o Mercado da aldeia correta.' };
         const validation = validateQueueItem(item); if (!validation.valid) { item.status = 'error'; item.error = validation.reasons.join(', '); save(context); return { valid: false, message: item.error }; }
-        const doc = targetWindow.document; const offerAmount = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestAmount = findField(doc, ['buy', 'request_amount', 'amount_buy']); const repeatCount = findField(doc, ['multi', 'count', 'offer_count', 'repeat_count', 'amount']);
+        const doc = targetWindow.document; const offerAmount = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestAmount = findField(doc, ['buy', 'request_amount', 'amount_buy']); const repeatCount = findRepeatField(doc);
         if (!offerAmount || !requestAmount || !chooseResource(doc, 'offer', item.offerResource, targetWindow) || !chooseResource(doc, 'request', item.requestResource, targetWindow)) return { valid: false, message: 'Campos de criação de oferta não encontrados.' };
-        setValue(offerAmount, item.offerAmount, targetWindow); setValue(requestAmount, item.requestAmount, targetWindow); if (repeatCount && repeatCount !== offerAmount && repeatCount !== requestAmount) setValue(repeatCount, item.repeatCount, targetWindow);
+        if (!repeatCount) return { valid: false, message: 'Campo “Quantas vezes oferecer” não encontrado com segurança.' };
+        setValue(offerAmount, item.amountPerOffer, targetWindow); setValue(requestAmount, item.requestAmountPerOffer, targetWindow); setValue(repeatCount, item.repeatCount, targetWindow);
         item.status = 'prepared'; item.error = null; item.previousSnapshot = snapshotOffers(doc, item); save(context);
         const form = offerAmount.closest('form') || requestAmount.closest('form'); return { valid: true, item, form, submit: findSubmit(doc, form), message: `Oferta preparada: ${item.repeatCount} × ${item.offerAmount} por ${item.requestAmount}. Clique em Criar no jogo.` };
     };

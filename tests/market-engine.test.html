@@ -25,7 +25,7 @@
  const committed=engine.getAvailableResources({id:3,resources:{wood:20000,stone:0,iron:0},activeOffers:{wood:10000,requested:{iron:10000}},merchants:{available:10,total:10}});
  equal(committed.wood,10000,'oferta ativa comprometida');
  const limited=engine.buildGlobalOfferSuggestions([{id:9,name:'Origem',coordinate:'500|500',resources:{wood:20000,stone:5000,iron:5000},storage:50000,merchants:{available:6,total:6},available:true,status:'ready'}],{maximumPerOffer:10000,minimumPerOffer:100,roundToHundreds:true,reserve:{wood:0}});
- equal(limited.suggestions.reduce((sum,item)=>sum+item.offerAmount,0),6000,'limite de comerciantes');
+ equal(limited.suggestions.reduce((sum,item)=>sum+item.totalOfferAmount,0),6000,'limite de comerciantes');
  const reserved=engine.buildOfferPlan({id:10,resources:{wood:10000,stone:0,iron:0},storage:50000,merchants:{available:20,total:20},available:true},{maximumPerOffer:10000,reserve:{wood:3000}});
  equal(reserved.every(item=>item.offerAmount<=7000),true,'reserva de origem');
  const marketDoc=new DOMParser().parseFromString('<span id="wood">50.000</span><span id="stone">20.000</span><span id="iron">10.000</span><span id="storage">100.000</span><span id="market_merchant_available_count">8</span><span id="market_merchant_total_count">10</span><table id="own_offers_table"><tr data-offer-id="o1" data-offer-resource="wood" data-offer-amount="5000" data-request-resource="iron" data-request-amount="5000"></tr></table><form action="game.php?screen=market"></form>','text/html');
@@ -58,6 +58,15 @@
  equal(engine.buildGlobalOfferSuggestions([optimistic],{maximumPerOffer:10000,minimumPerOffer:100,avoidDuplicates:true}).suggestions.some(item=>item.offerResource==='wood'&&item.requestResource==='stone'),false,'E: oferta criada não reaparece');
  const queueContext={currentIndex:0,queue:[{status:'created'},{status:'skipped'},{status:'pending'}]}; EAS.MarketOffersExecution.syncIndex(queueContext);
  equal(queueContext.currentIndex,2,'G: índice aponta para próximo pendente');
- document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 31 assertions';document.title=failures.length?'FAIL':'PASS';
+ const quantityA=engine.calculateOfferQuantity({totalOfferAmount:5000,amountPerOffer:1000,merchantsAvailable:8});
+ equal([quantityA.repeatCount,quantityA.totalOfferAmount],[5,5000],'repeat A: usa somente cinco de oito comerciantes');
+ const quantityB=engine.calculateOfferQuantity({totalOfferAmount:10000,amountPerOffer:1000,merchantsAvailable:8});
+ equal([quantityB.repeatCount,quantityB.totalOfferAmount,quantityB.pendingAmount,quantityB.status],[8,8000,2000,'Parcial'],'repeat B: limita e preserva saldo');
+ const quantityC=engine.calculateOfferQuantity({totalOfferAmount:5500,amountPerOffer:1000,merchantsAvailable:10});
+ equal([quantityC.repeatCount,quantityC.totalOfferAmount,quantityC.pendingAmount],[5,5000,500],'repeat C: arredonda para baixo');
+ const quantityD=engine.calculateOfferQuantity({totalOfferAmount:1000,amountPerOffer:1000,merchantsAvailable:0});
+ equal([quantityD.valid,quantityD.repeatCount],[false,0],'repeat D: zero comerciantes é inválido');
+ equal(engine.calculateOfferRepeatCount({totalOfferAmount:50000,amountPerOffer:1000,merchantsAvailable:8})<=8,true,'repeat E: nunca ultrapassa comerciantes livres');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 36 assertions';document.title=failures.length?'FAIL':'PASS';
 })();
 </script>
