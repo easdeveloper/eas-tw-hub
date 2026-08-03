@@ -52,7 +52,12 @@
                     await loadScript('services/place.js');
                 }
 
+                if (!window.EAS.FakesExecution?.initialize) {
+                    await loadScript('services/fakes-execution.js');
+                }
+
                 window.EAS.Place.fillTargetFromUrl();
+                window.EAS.FakesExecution.initialize();
                 window.EAS.UI.toggle();
                 return;
             }
@@ -67,9 +72,11 @@
             await loadScript('core/villages.js');
             await loadScript('core/troops.js');
             await loadScript('services/place.js');
+            await loadScript('services/fakes-execution.js');
 
             window.EAS.start();
             window.EAS.Place.fillTargetFromUrl();
+            window.EAS.FakesExecution.initialize();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
             alert(`EAS TW Hub: ${error.message}`);

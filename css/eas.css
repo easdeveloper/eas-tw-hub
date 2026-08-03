@@ -381,6 +381,143 @@
     padding-left: 20px;
 }
 
+.fake-execution-panel {
+    position: fixed;
+    top: 90px;
+    right: 14px;
+    z-index: 999998;
+    width: 360px;
+    max-width: calc(100vw - 28px);
+    max-height: calc(100vh - 110px);
+    overflow: hidden;
+    border: 2px solid #7d510f;
+    border-radius: 4px;
+    background: #f4e4bc;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    color: #2b1a08;
+    font-family: Verdana, Arial, sans-serif;
+}
+
+.fake-execution-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid #aa7d35;
+    background: linear-gradient(#f8e9bd, #e6c67e);
+    font-size: 15px;
+}
+
+.fake-execution-close {
+    width: 26px;
+    height: 24px;
+    padding: 0;
+    cursor: pointer;
+    border: 1px solid #76501d;
+    border-radius: 3px;
+    background: #f6e6bd;
+    color: #2b1a08;
+    font-size: 18px;
+}
+
+.fake-execution-content {
+    max-height: calc(100vh - 160px);
+    padding: 11px;
+    overflow-y: auto;
+}
+
+.fake-execution-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+}
+
+.fake-execution-summary > div,
+.fake-execution-troops,
+.fake-execution-status-grid {
+    padding: 7px;
+    border: 1px solid #d2b272;
+    background: #fff8df;
+}
+
+.fake-execution-summary strong,
+.fake-execution-summary span {
+    display: block;
+}
+
+.fake-execution-summary strong,
+.fake-execution-troops > strong {
+    margin-bottom: 4px;
+    color: #76501d;
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.fake-execution-troops,
+.fake-execution-status-grid,
+.fake-execution-targets {
+    margin-top: 9px;
+}
+
+.fake-execution-troops ul,
+.fake-execution-targets {
+    margin-bottom: 0;
+    padding-left: 22px;
+}
+
+.fake-execution-status-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.fake-execution-targets {
+    max-height: 145px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    overflow-y: auto;
+    border: 1px solid #d2b272;
+    background: #fffdf5;
+}
+
+.fake-execution-targets li {
+    margin: 3px 0;
+}
+
+.fake-execution-atual,
+.fake-execution-preparado {
+    color: #365520;
+    font-weight: 700;
+}
+
+.fake-execution-enviado {
+    color: #245b86;
+}
+
+.fake-execution-pulado {
+    color: #76501d;
+}
+
+.fake-execution-erro {
+    color: #79291e;
+    font-weight: 700;
+}
+
+.fake-execution-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin-top: 9px;
+}
+
+.fake-execution-actions .eas-button {
+    min-height: 34px;
+    padding: 7px;
+    font-size: 11px;
+}
+
 .eas-attack-row--horario-ja-passou td {
     background: #f8deda;
 }
@@ -434,6 +571,17 @@
 
     .fake-manager-troops__grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .fake-execution-panel {
+        top: 60px;
+        right: 7px;
+        max-width: calc(100vw - 14px);
+        max-height: calc(100vh - 70px);
+    }
+
+    .fake-execution-content {
+        max-height: calc(100vh - 120px);
     }
 
     .eas-actions {

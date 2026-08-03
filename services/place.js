@@ -91,6 +91,12 @@
             null;
     };
 
+    const getCommandForm = (targetDocument = document) => {
+        return targetDocument.querySelector(
+            '#command-data-form, form[action*="screen=place"]'
+        );
+    };
+
     const showMessage = (message, type = 'info') => {
         const status = document.createElement('div');
 
@@ -259,6 +265,37 @@
         return true;
     };
 
+    EAS.Place.getCommandForm = getCommandForm;
+
+    EAS.Place.fillCommandTarget = (
+        coordinate,
+        targetWindow = window
+    ) => {
+        const parsed = EAS.Utils.parseCoordinate(coordinate);
+
+        return Boolean(
+            parsed && fillTargetInWindow(targetWindow, parsed.coordinate)
+        );
+    };
+
+    EAS.Place.buildPlaceUrl = (villageId) => {
+        if (!villageId) {
+            return null;
+        }
+
+        const url = new URL('/game.php', location.origin);
+        url.searchParams.set('village', villageId);
+        url.searchParams.set('screen', 'place');
+
+        return url;
+    };
+
+    EAS.Place.openVillagePlace = (villageId) => {
+        const url = EAS.Place.buildPlaceUrl(villageId);
+
+        return url ? window.open(url.toString(), '_blank') : null;
+    };
+
     EAS.Place.waitForTargetInput = (
         childWindow,
         {
@@ -339,9 +376,7 @@
 
         saveTemporaryTarget(villageId, parsed.coordinate);
 
-        const url = new URL('/game.php', location.origin);
-        url.searchParams.set('village', villageId);
-        url.searchParams.set('screen', 'place');
+        const url = EAS.Place.buildPlaceUrl(villageId);
         url.searchParams.set(TARGET_PARAM, parsed.coordinate);
         childWindow.location.href = url.toString();
 

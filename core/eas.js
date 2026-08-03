@@ -11,6 +11,7 @@
         World: {},
         Villages: {},
         Troops: {},
+        FakesExecution: {},
         Modules: {},
 
         start() {

@@ -549,9 +549,22 @@
                                 selectedTargets: [...analysis.assignedTargets],
                                 currentTargetIndex: 0
                             });
-                            EAS.Place.openAndFillTarget({
+                            EAS.FakesExecution.start({
                                 villageId: analysis.village.id,
-                                coordinate: analysis.assignedTargets[0]
+                                villageName: analysis.village.name,
+                                villageCoord: analysis.village.coordinate,
+                                preset: presetSelect.value,
+                                commandType: commandTypeSelect.value,
+                                troopsPerTarget: { ...operation.troops },
+                                targets: [...analysis.assignedTargets]
+                            }).then((opened) => {
+                                if (!opened) {
+                                    EAS.UI.showStatus({
+                                        target: status,
+                                        message: 'Não foi possível abrir o painel de execução. Verifique o bloqueio de popups.',
+                                        type: 'error'
+                                    });
+                                }
                             });
                         }
                     });
