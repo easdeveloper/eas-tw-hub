@@ -333,8 +333,8 @@
     EAS.Modules.Fakes.distributeAntiSnipeRoundRobin = distributeAntiSnipeRoundRobin;
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
-    EAS.Modules.Fakes.open = ({ autoAnalyze = false, preset = null } = {}) => {
-        const rawSavedPresetId = preset || readStorage(STORAGE_KEYS.preset, 'simple');
+    EAS.Modules.Fakes.open = ({ autoAnalyze = false } = {}) => {
+        const rawSavedPresetId = readStorage(STORAGE_KEYS.preset, 'simple');
         const savedPresetId = rawSavedPresetId === 'nt' ? 'fake_nt' : rawSavedPresetId === 'antiSnipe' ? 'anti_snipe' : rawSavedPresetId;
         const selectedPreset = FAKE_PRESETS[savedPresetId] || FAKE_PRESETS.simple;
         const savedCommandType = readStorage(
