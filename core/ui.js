@@ -380,7 +380,7 @@
         [
             { id: 'market-smart-offers', icon: '🔄', text: 'Ofertas Inteligentes' },
             { id: 'market-balance', icon: '⚖️', text: 'Balanceamento entre Aldeias' },
-            { id: 'market-target-supply', icon: '🎯', text: 'Abastecimento de Aldeia' }
+            { id: 'market-target-supply', icon: '🎯', text: 'Envio Coordenado' }
         ].forEach((module) => marketTools.appendChild(EAS.UI.createButton({
             text: module.text, icon: module.icon, className: 'eas-menu__button',
             onClick: () => EAS.UI.openModuleTest(module)
