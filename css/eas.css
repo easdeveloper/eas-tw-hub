@@ -358,6 +358,23 @@
     font-weight: 600;
 }
 
+.scheduled-mission-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.scheduled-mission-card {
+    padding: 14px;
+    border: 1px solid #d3c5a5;
+    border-radius: 6px;
+    background: #f7f3e8;
+}
+
+.scheduled-mission-card h3 { margin-top: 0; }
+.scheduled-mission-panel { z-index: 100000; }
+
 .eas-attack-row--pronto td {
     background: #f7ffe9;
 }

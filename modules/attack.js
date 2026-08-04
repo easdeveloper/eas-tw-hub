@@ -444,7 +444,7 @@
         };
     };
 
-    const renderRows = (tbody, rows, showJapanTimezone) => {
+    const renderRows = (tbody, rows, showJapanTimezone, unitId, arrivalTimestamp) => {
         tbody.innerHTML = '';
 
         rows.forEach((row) => {
@@ -488,6 +488,54 @@
             });
 
             actionCell.appendChild(button);
+            const troops = Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, unit.id === unitId ? 1 : 0]));
+            const missionData = {
+                type: 'attack', operationType: 'attack-planner',
+                world: EAS.World.getWorldName(), playerId: String(EAS.World.getPlayer().id),
+                playerName: EAS.World.getPlayer().name, villageId: String(village.id),
+                villageName: village.name, villageCoord: village.coordinate,
+                targetCoord: row.destination, troops, sendTime: row.sendTimestamp,
+                arrivalTime: arrivalTimestamp, status: 'waiting', sourceModule: 'attack-planner',
+                notes: '', retries: 0, lastError: null
+            };
+            const scheduled = EAS.MissionScheduler?.findDuplicate?.(missionData);
+            const compositionValidation = EAS.CommandRules?.validateCommandComposition?.({
+                world: missionData.world, villageId: missionData.villageId,
+                villageCoord: missionData.villageCoord, commandType: 'attack', troops
+            }) || { valid: true, reasons: [] };
+            const openMission = async (mission) => {
+                const state = EAS.MissionScheduler.load();
+                state.currentMissionId = mission.id;
+                EAS.MissionScheduler.persist(state);
+                const module = await EAS.UI.loadModule('scheduled-missions');
+                module.open();
+            };
+            const scheduleButton = EAS.UI.createButton({
+                text: scheduled ? 'Agendado ✓' : 'Agendar',
+                disabled: scheduled?.status === 'sent' || !compositionValidation.valid,
+                onClick: async () => {
+                    if (!EAS.MissionScheduler?.createMission) await window.EASLoader.loadScript('services/mission-scheduler.js');
+                    const duplicate = EAS.MissionScheduler.findDuplicate(missionData);
+                    if (duplicate) {
+                        if (confirm('Esta missão já está agendada. Abrir missão existente?')) { await openMission(duplicate); return; }
+                        if (!confirm('Deseja substituir a missão existente? Cancelar mantém a missão atual.')) return;
+                        EAS.MissionScheduler.createMission(missionData, { replaceDuplicate: true });
+                    } else {
+                        const unit = getUnitById(unitId);
+                        const japan = showJapanTimezone ? `\nEnvio no Japão: ${formatDateTimeInTimeZone(row.sendTimestamp, JAPAN_TIME_ZONE)}\nChegada no Japão: ${formatDateTimeInTimeZone(arrivalTimestamp, JAPAN_TIME_ZONE)}` : '';
+                        const summary = `Agendar ataque?\n\nOrigem:\n${village.name}\n${village.coordinate}\n\nDestino:\n${row.destination}\n\nTropas:\n1 ${unit.name}\n\nEnvio:\n${formatDateTimeInTimeZone(row.sendTimestamp, SERVER_TIME_ZONE)}\n\nChegada:\n${formatDateTimeInTimeZone(arrivalTimestamp, SERVER_TIME_ZONE)}${japan}`;
+                        if (!confirm(summary)) return;
+                        EAS.MissionScheduler.createMission(missionData);
+                    }
+                    renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp);
+                }
+            });
+            if (!compositionValidation.valid) scheduleButton.title = 'A composição viola uma regra conhecida deste mundo.';
+            actionCell.appendChild(scheduleButton);
+            if (scheduled) {
+                actionCell.appendChild(EAS.UI.createButton({ text: 'Ver missão', onClick: () => openMission(scheduled) }));
+                actionCell.appendChild(EAS.UI.createButton({ text: 'Cancelar agendamento', onClick: () => { EAS.MissionScheduler.cancelMission(scheduled.id); renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp); } }));
+            }
             tr.appendChild(actionCell);
             tbody.appendChild(tr);
         });
@@ -767,13 +815,17 @@
         });
         table.element.hidden = true;
         let renderedRows = [];
+        let renderedArrivalTimestamp = null;
+        let renderedUnitId = unitSelect.value;
 
         timezoneJapanInput.addEventListener('change', () => {
             saveShowJapanTimezone(timezoneJapanInput.checked);
             renderRows(
                 table.tbody,
                 renderedRows,
-                timezoneJapanInput.checked
+                timezoneJapanInput.checked,
+                renderedUnitId,
+                renderedArrivalTimestamp
             );
         });
 
@@ -861,10 +913,14 @@
                 const sourceInfo = EAS.Troops.getSourceInfo();
 
                 renderedRows = rows;
+                renderedArrivalTimestamp = arrivalTimestamp;
+                renderedUnitId = unitSelect.value;
                 renderRows(
                     table.tbody,
                     renderedRows,
-                    timezoneJapanInput.checked
+                    timezoneJapanInput.checked,
+                    renderedUnitId,
+                    renderedArrivalTimestamp
                 );
                 renderExclusions(exclusionsContainer, exclusions);
                 renderDiagnostics(diagnosticsContainer, unitSelect.value);

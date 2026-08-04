@@ -295,7 +295,7 @@
 
     EAS.UI.getDashboardIndicator = (toolId) => {
         const read = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
-        if (toolId === 'scheduled-missions') { const waiting=(read('eas_tw_scheduler')?.missions||[]).filter((mission)=>['created','prepared','waiting','paused'].includes(mission.status)).length; return waiting ? `${waiting} aguardando` : ''; }
+        if (toolId === 'scheduled-missions') { const waiting=(EAS.MissionScheduler?.load?.().missions||read('eas_tw_scheduler')?.missions||[]).filter((mission)=>['created','prepared','waiting','upcoming','ready-soon','ready','paused'].includes(mission.status)).length; return waiting ? `${waiting} aguardando` : ''; }
         if (toolId === 'market-smart-offers') { const execution=read('eas_tw_market_offers_execution'); const pending=(execution?.queue||[]).filter((item)=>!['created','skipped','cancelled'].includes(item.status)).length; return pending ? `Execução ativa · ${pending} pendentes` : ''; }
         if (toolId === 'market-balance') { const execution=read('eas_tw_market_balance_execution'); const pending=(execution?.queue||[]).filter((item)=>!['sent','skipped','cancelled'].includes(item.status)).length; return pending ? `${pending} transportes pendentes` : ''; }
         if (toolId === 'fakes') { const execution=read('eas_tw_fakes_execution'); const pending=(execution?.queue||[]).filter((item)=>!['sent','skipped','cancelled','completed'].includes(item.status)).length; return pending ? `Operação em andamento · ${pending}` : ''; }
