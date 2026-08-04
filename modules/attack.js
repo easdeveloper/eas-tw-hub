@@ -444,7 +444,7 @@
         };
     };
 
-    const renderRows = (tbody, rows, showJapanTimezone, unitId, arrivalTimestamp) => {
+    const renderRows = (tbody, rows, showJapanTimezone, unitId, arrivalTimestamp, troopMode = 'fixed', fullConfig = null) => {
         tbody.innerHTML = '';
 
         rows.forEach((row) => {
@@ -488,7 +488,7 @@
             });
 
             actionCell.appendChild(button);
-            const troops = Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, unit.id === unitId ? 1 : 0]));
+            const troops = Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, troopMode === 'fixed' && unit.id === unitId ? 1 : 0]));
             const missionData = {
                 type: 'attack', operationType: 'attack-planner',
                 world: EAS.World.getWorldName(), playerId: String(EAS.World.getPlayer().id),
@@ -496,10 +496,12 @@
                 villageName: village.name, villageCoord: village.coordinate,
                 targetCoord: row.destination, troops, sendTime: row.sendTimestamp,
                 arrivalTime: arrivalTimestamp, status: 'waiting', sourceModule: 'attack-planner',
+                executionMode: 'single', attackProcess: 1, troopMode,
+                fullConfig: troopMode === 'full' ? fullConfig : null,
                 notes: '', retries: 0, lastError: null
             };
             const scheduled = EAS.MissionScheduler?.findDuplicate?.(missionData);
-            const compositionValidation = EAS.CommandRules?.validateCommandComposition?.({
+            const compositionValidation = troopMode === 'full' ? { valid: true, reasons: [] } : EAS.CommandRules?.validateCommandComposition?.({
                 world: missionData.world, villageId: missionData.villageId,
                 villageCoord: missionData.villageCoord, commandType: 'attack', troops
             }) || { valid: true, reasons: [] };
@@ -523,18 +525,19 @@
                     } else {
                         const unit = getUnitById(unitId);
                         const japan = showJapanTimezone ? `\nEnvio no Japão: ${formatDateTimeInTimeZone(row.sendTimestamp, JAPAN_TIME_ZONE)}\nChegada no Japão: ${formatDateTimeInTimeZone(arrivalTimestamp, JAPAN_TIME_ZONE)}` : '';
-                        const summary = `Agendar ataque?\n\nOrigem:\n${village.name}\n${village.coordinate}\n\nDestino:\n${row.destination}\n\nTropas:\n1 ${unit.name}\n\nEnvio:\n${formatDateTimeInTimeZone(row.sendTimestamp, SERVER_TIME_ZONE)}\n\nChegada:\n${formatDateTimeInTimeZone(arrivalTimestamp, SERVER_TIME_ZONE)}${japan}`;
+                        const troopSummary = troopMode === 'full' ? 'FULL — quantidades reais serão lidas na Praça' : `1 ${unit.name}`;
+                        const summary = `Agendar ataque?\n\nOrigem:\n${village.name}\n${village.coordinate}\n\nDestino:\n${row.destination}\n\nTropas:\n${troopSummary}\n\nEnvio:\n${formatDateTimeInTimeZone(row.sendTimestamp, SERVER_TIME_ZONE)}\n\nChegada:\n${formatDateTimeInTimeZone(arrivalTimestamp, SERVER_TIME_ZONE)}${japan}`;
                         if (!confirm(summary)) return;
                         EAS.MissionScheduler.createMission(missionData);
                     }
-                    renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp);
+                    renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp, troopMode, fullConfig);
                 }
             });
             if (!compositionValidation.valid) scheduleButton.title = 'A composição viola uma regra conhecida deste mundo.';
             actionCell.appendChild(scheduleButton);
             if (scheduled) {
                 actionCell.appendChild(EAS.UI.createButton({ text: 'Ver missão', onClick: () => openMission(scheduled) }));
-                actionCell.appendChild(EAS.UI.createButton({ text: 'Cancelar agendamento', onClick: () => { EAS.MissionScheduler.cancelMission(scheduled.id); renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp); } }));
+                actionCell.appendChild(EAS.UI.createButton({ text: 'Cancelar agendamento', onClick: () => { EAS.MissionScheduler.cancelMission(scheduled.id); renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp, troopMode, fullConfig); } }));
             }
             tr.appendChild(actionCell);
             tbody.appendChild(tr);
@@ -738,6 +741,21 @@
         timeInput.maxLength = 8;
 
         const unitSelect = createSelect(savedSettings.unit);
+        const troopModeSelect = document.createElement('select');
+        troopModeSelect.className = 'eas-input';
+        troopModeSelect.innerHTML = '<option value="fixed">Ataque com composição fixa</option><option value="full">Ataque FULL</option>';
+        troopModeSelect.value = savedSettings.troopMode === 'full' ? 'full' : 'fixed';
+        const savedFullConfig = savedSettings.fullConfig || { include: {}, reserve: {} };
+        const fullConfigPanel = document.createElement('div');
+        fullConfigPanel.className = 'attack-full-config';
+        fullConfigPanel.innerHTML = `<strong>Reserva na aldeia</strong><div class="attack-full-config-grid">${UNIT_SPEEDS.map((unit) => `<label><input type="checkbox" data-full-include="${unit.id}" ${unit.id !== 'snob' && savedFullConfig.include?.[unit.id] !== false ? 'checked' : ''}> ${unit.name}<input class="eas-input" type="number" min="0" data-full-reserve="${unit.id}" value="${Math.max(0, Number(savedFullConfig.reserve?.[unit.id]) || 0)}" title="Quantidade que permanecerá na aldeia"></label>`).join('')}</div><small>O nobre permanece desativado no FULL comum.</small>`;
+        const getFullConfig = () => ({
+            include: Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, unit.id !== 'snob' && fullConfigPanel.querySelector(`[data-full-include="${unit.id}"]`).checked])),
+            reserve: Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, Math.max(0, Number(fullConfigPanel.querySelector(`[data-full-reserve="${unit.id}"]`).value) || 0)]))
+        });
+        const updateFullVisibility = () => { fullConfigPanel.hidden = troopModeSelect.value !== 'full'; };
+        troopModeSelect.addEventListener('change', updateFullVisibility);
+        updateFullVisibility();
         const timezoneJapanOption = document.createElement('label');
         timezoneJapanOption.className = 'attack-timezone-option';
 
@@ -778,6 +796,13 @@
                 input: unitSelect
             })
         );
+        form.appendChild(
+            EAS.UI.createField({
+                label: 'Modo de tropas',
+                input: troopModeSelect
+            })
+        );
+        form.appendChild(fullConfigPanel);
         form.appendChild(timezoneJapanOption);
 
         const actions = document.createElement('div');
@@ -817,6 +842,8 @@
         let renderedRows = [];
         let renderedArrivalTimestamp = null;
         let renderedUnitId = unitSelect.value;
+        let renderedTroopMode = troopModeSelect.value;
+        let renderedFullConfig = getFullConfig();
 
         timezoneJapanInput.addEventListener('change', () => {
             saveShowJapanTimezone(timezoneJapanInput.checked);
@@ -825,7 +852,9 @@
                 renderedRows,
                 timezoneJapanInput.checked,
                 renderedUnitId,
-                renderedArrivalTimestamp
+                renderedArrivalTimestamp,
+                renderedTroopMode,
+                renderedFullConfig
             );
         });
 
@@ -896,17 +925,25 @@
                     return;
                 }
 
+                const fullConfig = getFullConfig();
+                const planningUnitId = troopModeSelect.value === 'full'
+                    ? UNIT_SPEEDS.filter((unit) => fullConfig.include[unit.id])
+                        .sort((a, b) => getUnitById(b.id).minutesPerField - getUnitById(a.id).minutesPerField)[0]?.id || unitSelect.value
+                    : unitSelect.value;
+
                 saveSettings({
                     destination,
                     arrivalDate: dateInput.value.trim(),
                     arrivalTime: timeInput.value.trim(),
-                    unit: unitSelect.value
+                    unit: unitSelect.value,
+                    troopMode: troopModeSelect.value,
+                    fullConfig
                 });
 
                 const calculation = calculateRows({
                     destination,
                     arrivalTimestamp,
-                    unitId: unitSelect.value
+                    unitId: planningUnitId
                 });
                 const { rows, summary, exclusions } = calculation;
                 const unit = getUnitById(unitSelect.value);
@@ -914,13 +951,17 @@
 
                 renderedRows = rows;
                 renderedArrivalTimestamp = arrivalTimestamp;
-                renderedUnitId = unitSelect.value;
+                renderedUnitId = planningUnitId;
+                renderedTroopMode = troopModeSelect.value;
+                renderedFullConfig = fullConfig;
                 renderRows(
                     table.tbody,
                     renderedRows,
                     timezoneJapanInput.checked,
                     renderedUnitId,
-                    renderedArrivalTimestamp
+                    renderedArrivalTimestamp,
+                    renderedTroopMode,
+                    renderedFullConfig
                 );
                 renderExclusions(exclusionsContainer, exclusions);
                 renderDiagnostics(diagnosticsContainer, unitSelect.value);

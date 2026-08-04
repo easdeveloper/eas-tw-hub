@@ -359,6 +359,28 @@
     font-weight: 600;
 }
 
+.attack-full-config {
+    grid-column: 1 / -1;
+    padding: 10px;
+    border: 1px solid #b98b43;
+    border-radius: 5px;
+    background: rgba(255, 248, 223, 0.65);
+}
+
+.attack-full-config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.attack-full-config-grid label {
+    display: grid;
+    grid-template-columns: auto 1fr 78px;
+    align-items: center;
+    gap: 6px;
+}
+
 .scheduled-mission-list {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
