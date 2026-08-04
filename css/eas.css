@@ -109,6 +109,122 @@
     text-align: left;
 }
 
+.hub-dashboard {
+    display: grid;
+    gap: 14px;
+}
+
+.hub-dashboard-subtitle {
+    margin: 0;
+    color: #76501d;
+}
+
+.hub-category {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid #b98b43;
+    border-radius: 5px;
+    background: rgba(255, 248, 223, 0.55);
+}
+
+.hub-category-header {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.hub-category-icon {
+    font-size: 22px;
+}
+
+.hub-category-title {
+    margin: 0 0 2px;
+    color: #4f2f09;
+    font-size: 15px;
+}
+
+.hub-category-tools {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 9px;
+}
+
+.hub-tool-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    min-width: 0;
+    padding: 11px;
+    cursor: pointer;
+    border: 1px solid #a97932;
+    border-radius: 5px;
+    background: linear-gradient(#fff8df, #ead08f);
+    color: #321e08;
+    text-align: left;
+}
+
+.hub-tool-card:hover {
+    background: linear-gradient(#fffdf2, #dfbd70);
+}
+
+.hub-tool-card-icon {
+    flex: 0 0 auto;
+    font-size: 20px;
+}
+
+.hub-tool-card-content {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+}
+
+.hub-tool-card-title {
+    font-size: 13px;
+}
+
+.hub-tool-card-description {
+    color: #68471e;
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.hub-tool-card-status,
+.hub-tool-card-badge {
+    width: fit-content;
+    padding: 2px 6px;
+    border-radius: 9px;
+    background: #d9efce;
+    color: #315d20;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.hub-tool-card-status--beta {
+    background: #dce8fa;
+    color: #294f83;
+}
+
+.hub-tool-card-status--em-desenvolvimento {
+    background: #eee;
+    color: #666;
+}
+
+.hub-tool-card-badge {
+    background: #fff0bd;
+    color: #79520c;
+}
+
+.hub-tool-card-disabled {
+    opacity: 0.78;
+}
+
+@media (max-width: 560px) {
+    .hub-category-tools {
+        grid-template-columns: 1fr;
+    }
+}
+
 .operations-section {
     display: grid;
     gap: 8px;

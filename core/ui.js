@@ -287,6 +287,48 @@
         return EAS.Modules[moduleName];
     };
 
+    EAS.UI.openDevelopmentPlaceholder = (tool) => {
+        const win = EAS.UI.createWindow({ id: `eas-placeholder-${tool.id}`, title: tool.title, icon: tool.icon, width: 520 });
+        win.body.innerHTML = '<div class="eas-status eas-status--info">🚧 Funcionalidade em desenvolvimento.</div>';
+        win.body.appendChild(EAS.UI.createButton({ text: '← Voltar ao painel', onClick: () => { win.close(); EAS.UI.openMainWindow(); } }));
+    };
+
+    EAS.UI.getDashboardIndicator = (toolId) => {
+        const read = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
+        if (toolId === 'scheduled-missions') { const waiting=(read('eas_tw_scheduler')?.missions||[]).filter((mission)=>['created','prepared','waiting','paused'].includes(mission.status)).length; return waiting ? `${waiting} aguardando` : ''; }
+        if (toolId === 'market-smart-offers') { const execution=read('eas_tw_market_offers_execution'); const pending=(execution?.queue||[]).filter((item)=>!['created','skipped','cancelled'].includes(item.status)).length; return pending ? `Execução ativa · ${pending} pendentes` : ''; }
+        if (toolId === 'market-balance') { const execution=read('eas_tw_market_balance_execution'); const pending=(execution?.queue||[]).filter((item)=>!['sent','skipped','cancelled'].includes(item.status)).length; return pending ? `${pending} transportes pendentes` : ''; }
+        if (toolId === 'fakes' || toolId === 'fake-anti-snipe') { const execution=read('eas_tw_fakes_execution'); const pending=(execution?.queue||[]).filter((item)=>!['sent','skipped','cancelled','completed'].includes(item.status)).length; return pending ? `Operação em andamento · ${pending}` : ''; }
+        return '';
+    };
+
+    EAS.UI.renderHubDashboard = (win, version) => {
+        const categories = [
+            { icon:'⚔️', title:'Operações', description:'Planejamento e coordenação de comandos.', tools:[
+                {id:'attack',icon:'🎯',title:'Planejador de Ataques',description:'Calcule origens, tropas e horários de envio.',status:'Disponível'},
+                {id:'scheduled-missions',icon:'⏱️',title:'Missões Agendadas',description:'Gerencie operações preparadas para horários futuros.',status:'Beta'},
+                {id:'fake-anti-snipe',icon:'🛡️',title:'Fake Anti-Snipe',description:'Planeje comandos falsos em janelas precisas de chegada.',status:'Beta'},
+                {id:'support',icon:'🛡️',title:'Planejador de Apoios',description:'Distribua e programe apoios entre aldeias.',status:'Disponível'},
+                {id:'fakes',icon:'🎭',title:'Gerenciador de Fakes',description:'Crie e analise operações de fake.',status:'Disponível'} ] },
+            { icon:'🏪', title:'Mercado', description:'Economia e distribuição de recursos.', tools:[
+                {id:'market-smart-offers',icon:'🔄',title:'Ofertas Inteligentes',description:'Equilibre os recursos de cada aldeia por ofertas.',status:'Disponível'},
+                {id:'market-balance',icon:'⚖️',title:'Balanceamento',description:'Redistribua recursos entre suas aldeias.',status:'Disponível'},
+                {id:'market-target-supply',icon:'🎯',title:'Envio Coordenado',description:'Abasteça uma aldeia-alvo usando várias origens.',status:'Disponível'} ] },
+            { icon:'🧠', title:'Inteligência', description:'Dados, relatórios e auditoria.', tools:[
+                {id:'statistics',icon:'📊',title:'Estatísticas',description:'Visualize dados consolidados da conta.',status:'Em desenvolvimento',disabled:true},
+                {id:'reports',icon:'📋',title:'Relatórios',description:'Gere análises de operações e economia.',status:'Em desenvolvimento',disabled:true},
+                {id:'history',icon:'📜',title:'Histórico',description:'Consulte operações e ações anteriores.',status:'Em desenvolvimento',disabled:true},
+                {id:'diagnostic',icon:'🔍',title:'Diagnóstico',description:'Verifique caches, regras e erros do Hub.',status:'Disponível'} ] },
+            { icon:'⚙️', title:'Sistema', description:'Preferências e informações do Hub.', tools:[
+                {id:'settings',icon:'⚙️',title:'Configurações',description:'Personalize o comportamento do EAS TW Hub.',status:'Em desenvolvimento',disabled:true},
+                {id:'license',icon:'🔑',title:'Licença',description:'Consulte o status e os dados da licença.',status:'Em desenvolvimento',disabled:true},
+                {id:'updates',icon:'⬆️',title:'Atualizações',description:'Veja versão, novidades e atualizações disponíveis.',status:'Em desenvolvimento',disabled:true} ] }
+        ];
+        const dashboard=document.createElement('div');dashboard.className='hub-dashboard';const subtitle=document.createElement('p');subtitle.className='hub-dashboard-subtitle';subtitle.textContent='Central de operações, economia e inteligência.';dashboard.appendChild(subtitle);
+        categories.forEach((category)=>{const section=document.createElement('section');section.className='hub-category';section.innerHTML=`<div class="hub-category-header"><span class="hub-category-icon">${category.icon}</span><div><h2 class="hub-category-title">${category.title}</h2><small>${category.description}</small></div></div><div class="hub-category-tools"></div>`;const tools=section.querySelector('.hub-category-tools');category.tools.forEach((tool)=>{const card=document.createElement('button');card.type='button';card.className=`hub-tool-card${tool.disabled?' hub-tool-card-disabled':''}`;const badge=EAS.UI.getDashboardIndicator(tool.id);card.innerHTML=`<span class="hub-tool-card-icon">${tool.icon}</span><span class="hub-tool-card-content"><strong class="hub-tool-card-title">${tool.title}</strong><span class="hub-tool-card-description">${tool.description}</span><span class="hub-tool-card-status hub-tool-card-status--${tool.status.toLowerCase().replaceAll(' ','-')}">${tool.status}</span>${badge?`<span class="hub-tool-card-badge">${badge}</span>`:''}</span>`;card.onclick=()=>{if(tool.disabled){EAS.UI.openDevelopmentPlaceholder(tool);return;}if(tool.id==='fake-anti-snipe'){EAS.UI.loadModule('fakes').then((module)=>{EAS.UI.closeWindow(DEFAULT_WINDOW_ID);module.open({preset:'anti_snipe'});}).catch((error)=>alert(`EAS TW Hub: ${error.message}`));return;}EAS.UI.openModuleTest({id:tool.id,icon:tool.icon,text:tool.title});};tools.appendChild(card);});dashboard.appendChild(section);});
+        win.body.append(version,dashboard);
+    };
+
     EAS.UI.openMainWindow = () => {
         const existing = document.getElementById(DEFAULT_WINDOW_ID);
 
@@ -298,7 +340,7 @@
         const win = EAS.UI.createWindow({
             title: EAS.name,
             icon: '⚔️',
-            width: 470
+            width: 960
         });
 
         const version = document.createElement('div');
@@ -307,6 +349,9 @@
 
         const menu = document.createElement('div');
         menu.className = 'eas-menu';
+
+        EAS.UI.renderHubDashboard(win, version);
+        return;
 
         const operations = [
             {
@@ -432,7 +477,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id.startsWith('market-')) {
+        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
