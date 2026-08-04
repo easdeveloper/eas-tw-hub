@@ -4,6 +4,14 @@
     const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
     const loadedScripts = new Set();
+    const isMobile = () => Boolean(
+        ((navigator.maxTouchPoints || 0) > 0 && Math.min(screen.width || innerWidth, innerWidth) <= 900) ||
+        window.matchMedia?.('(pointer: coarse)')?.matches ||
+        innerWidth <= 640
+    );
+    const notifyReady = () => window.dispatchEvent(new CustomEvent('eas-tw-hub-ready', {
+        detail: { version: window.EAS?.version || '', mobile: isMobile(), timestamp: Date.now() }
+    }));
 
     const loadScript = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`script[data-eas-script="${src}"]`);
@@ -52,6 +60,11 @@
     };
 
     window.initializeMarketOfferExecutionIfNeeded = initializeMarketOfferExecutionIfNeeded;
+    const initializeScheduledMissionIfNeeded = async () => {
+        if (!window.EAS?.MissionScheduler?.load || !window.EAS?.ScheduledMissionExecution?.initialize) return false;
+        return Boolean(await window.EAS.ScheduledMissionExecution.initialize(window));
+    };
+    window.initializeScheduledMissionIfNeeded = initializeScheduledMissionIfNeeded;
 
     const loadStyle = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`link[data-eas-style="${src}"]`);
@@ -74,7 +87,7 @@
         try {
             if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
-                const executionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
+                const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
                 if (!window.EAS.Place?.fillTargetFromUrl) {
                     await loadScript('services/place.js');
                 }
@@ -112,8 +125,9 @@
                 window.EAS.MarketBalanceExecution.initialize();
                 window.EAS.MarketTargetExecution.initialize();
                 window.EAS.MissionScheduler.initialize();
-                window.EAS.ScheduledMissionExecution.initialize();
-                if (!executionOnly) window.EAS.UI.toggle();
+                const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
+                if (!marketExecutionOnly && !scheduledMissionActive) window.EAS.UI.toggle();
+                notifyReady();
                 return;
             }
 
@@ -139,8 +153,7 @@
             await loadScript('services/mission-scheduler.js');
             await loadScript('services/scheduled-mission-execution.js');
 
-            const executionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
-            if (!executionOnly) window.EAS.start();
+            const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.Place.fillTargetFromUrl();
             window.EAS.FakesExecution.initialize();
             window.EAS.SupportExecution.initialize();
@@ -148,10 +161,15 @@
             window.EAS.MarketBalanceExecution.initialize();
             window.EAS.MarketTargetExecution.initialize();
             window.EAS.MissionScheduler.initialize();
-            window.EAS.ScheduledMissionExecution.initialize();
+            const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
+            if (!marketExecutionOnly && !scheduledMissionActive) window.EAS.start();
+            notifyReady();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
-            alert(`EAS TW Hub: ${error.message}`);
+            window.dispatchEvent(new CustomEvent('eas-tw-hub-error', { detail: {
+                code: 'HUB_INIT_ERROR', message: error.message, stack: error.stack || '', timestamp: Date.now()
+            }}));
+            if (!window.EASTWHubLoaderRuntime) alert(`EAS TW Hub: ${error.message}`);
         }
     };
 

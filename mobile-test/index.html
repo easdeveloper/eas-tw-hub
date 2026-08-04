@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Teste móvel — EAS TW Hub</title>
+    <style>body{max-width:620px;margin:0 auto;padding:20px;background:#f7f3e8;color:#2b1a08;font:17px/1.5 Arial,sans-serif}button{width:100%;min-height:52px;padding:12px;border:1px solid #7d510f;border-radius:7px;background:#ead08f;font-size:17px;font-weight:700}pre{overflow:auto;padding:12px;background:#fff;border:1px solid #ccc;white-space:pre-wrap}</style>
+</head>
+<body>
+    <h1>Teste de compatibilidade</h1>
+    <ol><li>Abra esta página no mesmo navegador usado no jogo.</li><li>Toque em “Testar compatibilidade”.</li><li>Veja o resultado.</li><li>Copie o diagnóstico se precisar de suporte.</li></ol>
+    <p>Este teste não acessa sua conta e não executa operações do jogo.</p>
+    <button id="test">Testar compatibilidade</button>
+    <pre id="result" hidden></pre>
+    <script>
+    document.getElementById('test').onclick=()=>{const result=document.getElementById('result');result.hidden=false;result.textContent='Testando JavaScript, armazenamento e carregamento...';let storage=true;try{localStorage.setItem('eas_mobile_test','ok');localStorage.removeItem('eas_mobile_test');}catch{storage=false;}window.EAS_TW_LOADER_AUTOSTART=false;const script=document.createElement('script');script.src='../loader.js?v='+Date.now();script.onload=async()=>{const data={javascript:true,storage,mobile:EASTWHubLoader.isMobile(),viewport:`${innerWidth}x${innerHeight}`,browser:EASTWHubLoader.context().browser,operatingSystem:EASTWHubLoader.context().operatingSystem,timestamp:new Date().toISOString()};try{const hub=await EASTWHubLoader.start();data.indexLoaded=true;data.handshake=hub;}catch(error){data.indexLoaded=false;data.code=window.EASTWHubLoaderRuntime?.diagnostic?.code||error.code;data.message=error.message;}result.textContent='Teste concluído.\n\n'+JSON.stringify(data,null,2);};script.onerror=()=>result.textContent='Não foi possível carregar o teste. Código: NETWORK-004';document.head.appendChild(script);};
+    </script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+#eas-tw-hub-root,
 #eas-tw-hub-window,
 .eas-window {
     box-sizing: border-box;
@@ -374,6 +375,36 @@
 
 .scheduled-mission-card h3 { margin-top: 0; }
 .scheduled-mission-panel { z-index: 100000; }
+
+@media (max-width: 640px), (pointer: coarse) {
+    .eas-window {
+        top: 8px;
+        left: 8px;
+        width: calc(100vw - 16px) !important;
+        max-width: none;
+        max-height: calc(100dvh - 16px);
+        transform: none;
+        border-radius: 7px;
+    }
+
+    .eas-window__body {
+        max-height: calc(100dvh - 70px);
+        padding: 12px;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .hub-category-tools { grid-template-columns: 1fr; }
+
+    .eas-button,
+    .hub-tool-card,
+    .eas-window__close {
+        min-height: 44px;
+        touch-action: manipulation;
+    }
+
+    .eas-actions { flex-wrap: wrap; }
+}
 
 .eas-attack-row--pronto td {
     background: #f7ffe9;

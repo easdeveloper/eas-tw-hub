@@ -1,7 +1,7 @@
 (() => {
     'use strict';
 
-    const DEFAULT_WINDOW_ID = 'eas-tw-hub-window';
+    const DEFAULT_WINDOW_ID = 'eas-tw-hub-root';
 
     const getElement = (target) => {
         if (typeof target === 'string') {
@@ -29,6 +29,7 @@
         const windowElement = document.createElement('div');
 
         windowElement.id = id;
+        windowElement.setAttribute('data-eas-tw-hub', 'window');
         windowElement.className = `eas-window ${className}`.trim();
         windowElement.style.width = `${width}px`;
 
@@ -60,7 +61,15 @@
             </div>
         `;
 
-        document.body.appendChild(windowElement);
+        const mountTarget = document.body || document.querySelector('#contentContainer, #content_value, main') || document.documentElement;
+
+        if (!mountTarget) {
+            throw Object.assign(new Error('A página do jogo está diferente do esperado.'), {
+                code: 'MOBILE_DOM_ERROR', selector: 'body, #contentContainer, #content_value, main'
+            });
+        }
+
+        mountTarget.appendChild(windowElement);
 
         const body = windowElement.querySelector('.eas-window__body');
 
@@ -324,7 +333,7 @@
                 {id:'updates',icon:'⬆️',title:'Atualizações',description:'Veja versão, novidades e atualizações disponíveis.',status:'Em desenvolvimento',disabled:true} ] }
         ];
         const dashboard=document.createElement('div');dashboard.className='hub-dashboard';const subtitle=document.createElement('p');subtitle.className='hub-dashboard-subtitle';subtitle.textContent='Central de operações, economia e inteligência.';dashboard.appendChild(subtitle);
-        categories.forEach((category)=>{const section=document.createElement('section');section.className='hub-category';section.innerHTML=`<div class="hub-category-header"><span class="hub-category-icon">${category.icon}</span><div><h2 class="hub-category-title">${category.title}</h2><small>${category.description}</small></div></div><div class="hub-category-tools"></div>`;const tools=section.querySelector('.hub-category-tools');category.tools.forEach((tool)=>{const card=document.createElement('button');card.type='button';card.className=`hub-tool-card${tool.disabled?' hub-tool-card-disabled':''}`;const badge=EAS.UI.getDashboardIndicator(tool.id);card.innerHTML=`<span class="hub-tool-card-icon">${tool.icon}</span><span class="hub-tool-card-content"><strong class="hub-tool-card-title">${tool.title}</strong><span class="hub-tool-card-description">${tool.description}</span><span class="hub-tool-card-status hub-tool-card-status--${tool.status.toLowerCase().replaceAll(' ','-')}">${tool.status}</span>${badge?`<span class="hub-tool-card-badge">${badge}</span>`:''}</span>`;card.onclick=()=>{if(tool.disabled){EAS.UI.openDevelopmentPlaceholder(tool);return;}EAS.UI.openModuleTest({id:tool.id,icon:tool.icon,text:tool.title});};tools.appendChild(card);});dashboard.appendChild(section);});
+        categories.forEach((category)=>{const section=document.createElement('section');section.className='hub-category';section.innerHTML=`<div class="hub-category-header"><span class="hub-category-icon">${category.icon}</span><div><h2 class="hub-category-title">${category.title}</h2><small>${category.description}</small></div></div><div class="hub-category-tools"></div>`;const tools=section.querySelector('.hub-category-tools');category.tools.forEach((tool)=>{const card=document.createElement('button');card.type='button';card.dataset.easModule=tool.id;card.className=`hub-tool-card${tool.disabled?' hub-tool-card-disabled':''}`;const badge=EAS.UI.getDashboardIndicator(tool.id);card.innerHTML=`<span class="hub-tool-card-icon">${tool.icon}</span><span class="hub-tool-card-content"><strong class="hub-tool-card-title">${tool.title}</strong><span class="hub-tool-card-description">${tool.description}</span><span class="hub-tool-card-status hub-tool-card-status--${tool.status.toLowerCase().replaceAll(' ','-')}">${tool.status}</span>${badge?`<span class="hub-tool-card-badge">${badge}</span>`:''}</span>`;card.onclick=()=>{if(tool.disabled){EAS.UI.openDevelopmentPlaceholder(tool);return;}EAS.UI.openModuleTest({id:tool.id,icon:tool.icon,text:tool.title});};tools.appendChild(card);});dashboard.appendChild(section);});
         win.body.append(version,dashboard);
     };
 
