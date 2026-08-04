@@ -102,6 +102,7 @@
                 }
                 if (!window.EAS.MarketBalanceExecution?.initialize) await loadScript('services/market-balance-execution.js');
                 if (!window.EAS.MarketTargetExecution?.initialize) await loadScript('services/market-target-execution.js');
+                if (!window.EAS.MissionScheduler?.initialize) await loadScript('services/mission-scheduler.js');
 
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
@@ -109,6 +110,7 @@
                 window.EAS.MarketOffersExecution.initialize();
                 window.EAS.MarketBalanceExecution.initialize();
                 window.EAS.MarketTargetExecution.initialize();
+                window.EAS.MissionScheduler.initialize();
                 if (!executionOnly) window.EAS.UI.toggle();
                 return;
             }
@@ -132,6 +134,7 @@
             await loadScript('services/market-offers-execution.js');
             await loadScript('services/market-balance-execution.js');
             await loadScript('services/market-target-execution.js');
+            await loadScript('services/mission-scheduler.js');
 
             const executionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             if (!executionOnly) window.EAS.start();
@@ -141,6 +144,7 @@
             window.EAS.MarketOffersExecution.initialize();
             window.EAS.MarketBalanceExecution.initialize();
             window.EAS.MarketTargetExecution.initialize();
+            window.EAS.MissionScheduler.initialize();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
             alert(`EAS TW Hub: ${error.message}`);

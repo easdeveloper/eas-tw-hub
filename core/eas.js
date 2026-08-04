@@ -19,6 +19,7 @@
         PublicMap: {},
         MarketEngine: {},
         MarketOffersExecution: {},
+        MissionScheduler: {},
         Modules: {},
 
         start() {

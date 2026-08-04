@@ -261,7 +261,8 @@
             resources: 'Resources',
             'market-smart-offers': 'MarketSmartOffers',
             'market-balance': 'MarketBalance',
-            'market-target-supply': 'MarketTargetSupply'
+            'market-target-supply': 'MarketTargetSupply',
+            'scheduled-missions': 'ScheduledMissions'
         };
         const moduleName = moduleNames[moduleId];
 
@@ -322,6 +323,23 @@
                 id: 'support',
                 icon: '🛡️',
                 text: 'Planejador de Apoios'
+            },
+            {
+                id: 'scheduled-missions',
+                icon: '⚔️',
+                text: 'Missões Agendadas'
+            },
+            {
+                id: 'scheduler-history',
+                icon: '📜',
+                text: 'Histórico',
+                comingSoon: true
+            },
+            {
+                id: 'scheduler-settings',
+                icon: '⚙️',
+                text: 'Configurações',
+                comingSoon: true
             }
         ];
 
@@ -358,9 +376,7 @@
                 text: module.text,
                 icon: module.icon,
                 className: 'eas-menu__button',
-                onClick: () => {
-                    EAS.UI.openModuleTest(module);
-                }
+                onClick: () => module.comingSoon ? alert(`${module.text}: estrutura reservada para uma próxima etapa.`) : EAS.UI.openModuleTest(module)
             });
 
             operationsTools.appendChild(button);
