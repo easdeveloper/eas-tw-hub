@@ -68,18 +68,25 @@
     const initializeScheduledMissionConfirmationIfNeeded = async () => {
         const url = new URL(location.href);
         if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') !== 'confirm') return false;
+        const state = window.EAS?.MissionScheduler?.load?.();
+        const scheduledContext = state?.sourceFlow === 'scheduled-mission' && Number(state?.attackProcess) === 2 && state?.activeMissionId;
+        if (!url.searchParams.get('eas_mission') && !scheduledContext) return false;
         return initializeScheduledMissionIfNeeded();
     };
     const initializeScheduledMissionPreparationIfNeeded = async () => {
         const url = new URL(location.href);
         if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') === 'confirm') return false;
-        if (!url.searchParams.get('eas_mission') && !window.EAS?.MissionScheduler?.load?.().activeMissionId) return false;
+        if (!url.searchParams.get('eas_mission')) return false;
         return initializeScheduledMissionIfNeeded();
     };
     const initializeAttackPreparationIfNeeded = () => {
         try {
             const url = new URL(location.href);
             if (url.searchParams.get('screen') !== 'place' || !window.EAS?.AttackPreparation?.initialize) return false;
+            if (url.searchParams.get('eas_mission')) {
+                window.EAS?.MissionScheduler?.log?.('scheduled-mission-generic-preparer-suppressed', { missionId: url.searchParams.get('eas_mission') });
+                return false;
+            }
             const contextId = url.searchParams.get('eas_attack_preparation');
             if (!contextId && !window.EAS.AttackPreparation.read?.()) return false;
             return Boolean(window.EAS.AttackPreparation.initialize(window));
