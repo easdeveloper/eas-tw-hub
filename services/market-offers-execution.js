@@ -7,6 +7,8 @@
     const PANEL_ID = 'eas-market-offer-execution-panel';
     const EXECUTION_VERSION = 3;
     const DEBUG_LOG_KEY = 'eas_tw_market_offers_debug_log';
+    const EXECUTION_WINDOW_KEY = 'eas_tw_market_execution_window';
+    const RETURN_MESSAGE_SOURCE = 'eas-tw-market-offers';
     const TERMINAL = new Set(['created', 'skipped', 'cancelled', 'canceled']);
     const amount = (value) => Math.max(0, Math.floor(Number(value) || 0));
     const getDebugLogs = () => { try { return JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]'); } catch { return []; } };
@@ -17,6 +19,55 @@
     const save = (context) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(context)); return true; } catch { return false; } };
     const remove = (reason = 'explicit-remove') => { const execution = read(); logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); try { localStorage.removeItem(STORAGE_KEY); } catch {} };
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
+    const isExecutionFinished = (execution) => Boolean(execution && (execution.finishedAt || execution.endedAt || (execution.queue || []).every((item) => TERMINAL.has(item.status))));
+    const getMenuRuntime = (targetWindow = window) => targetWindow.EASMarketOfferMenuRuntime ||= { listenerInitialized: false, executionWindows: new Map(), handledExecutions: new Set(), channel: null };
+    const completionSummary = (execution) => ({ created: (execution?.queue || []).filter((item) => item.status === 'created').length, errors: (execution?.queue || []).filter((item) => ['error', 'verification-required'].includes(item.status)).length, skipped: (execution?.queue || []).filter((item) => ['skipped', 'cancelled', 'canceled'].includes(item.status)).length });
+    const openMarketMenu = (targetWindow = window, execution = read()) => {
+        const doc = targetWindow.document; const existing = doc?.getElementById('eas-tw-hub-root');
+        if (existing && !existing.querySelector('.hub-dashboard')) existing.remove();
+        if (!doc?.querySelector('#eas-tw-hub-root .hub-dashboard')) targetWindow.EAS?.UI?.openMainWindow?.();
+        const card = doc?.querySelector('[data-eas-module="market-smart-offers"]'); const summary = completionSummary(execution);
+        if (card) { card.classList.add('hub-tool-card--return-highlight'); card.scrollIntoView?.({ block: 'center', behavior: 'smooth' }); targetWindow.setTimeout?.(() => card.classList.remove('hub-tool-card--return-highlight'), 5000); }
+        const dashboard = doc?.querySelector('#eas-tw-hub-root .hub-dashboard');
+        if (dashboard) { let status = dashboard.querySelector('[data-market-return-status]'); if (!status) { status = doc.createElement('div'); status.dataset.marketReturnStatus = 'true'; status.className = 'eas-status eas-status--success'; dashboard.prepend(status); } status.textContent = `Execução de ofertas concluída. Ofertas concluídas: ${summary.created} · Erros: ${summary.errors} · Puladas: ${summary.skipped}`; }
+        return Boolean(dashboard);
+    };
+    const handleReturnMessage = (data, targetWindow = window, sourceWindow = null, viaBroadcast = false) => {
+        if (!data || data.source !== RETURN_MESSAGE_SOURCE || !['market-offers-execution-finished', 'execution-finished'].includes(data.type) || !data.executionId) return false;
+        const execution = read(); if (!execution || execution.executionId !== data.executionId) return false;
+        const runtime = getMenuRuntime(targetWindow); const expected = runtime.executionWindows.get(data.executionId);
+        if (!viaBroadcast && (!sourceWindow || !expected || sourceWindow !== expected)) return false;
+        if (runtime.handledExecutions.has(data.executionId)) return true;
+        runtime.handledExecutions.add(data.executionId); openMarketMenu(targetWindow, execution); return true;
+    };
+    const registerMarketOfferMenuListener = (targetWindow = window) => {
+        const runtime = getMenuRuntime(targetWindow); if (runtime.listenerInitialized) return runtime; runtime.listenerInitialized = true;
+        targetWindow.addEventListener?.('message', (event) => { if (event.origin !== targetWindow.location.origin) return; handleReturnMessage(event.data, targetWindow, event.source, false); });
+        try { runtime.channel = new targetWindow.BroadcastChannel(CHANNEL_NAME); runtime.channel.onmessage = (event) => handleReturnMessage(event.data, targetWindow, null, true); } catch {}
+        return runtime;
+    };
+    const renderReturnFallback = (targetWindow, execution, reason) => {
+        const doc = targetWindow.document; const panel = doc?.getElementById(PANEL_ID); if (!panel) return false;
+        let fallback = panel.querySelector('[data-market-return-fallback]'); if (!fallback) { fallback = doc.createElement('div'); fallback.dataset.marketReturnFallback = 'true'; fallback.className = 'eas-status eas-status--warning market-return-fallback'; panel.appendChild(fallback); }
+        fallback.innerHTML = `<strong>Não foi possível fechar esta aba automaticamente.</strong><span>${EAS.Utils.escapeHtml(reason)}</span><div class="fake-execution-actions"><button data-open-hub>Abrir Hub aqui</button><button data-retry-close>Tentar fechar novamente</button><button data-copy-return>Copiar diagnóstico</button></div>`;
+        fallback.querySelector('[data-open-hub]').onclick = () => openMarketMenu(targetWindow, execution);
+        fallback.querySelector('[data-retry-close]').onclick = () => { if (targetWindow.sessionStorage?.getItem(EXECUTION_WINDOW_KEY) === execution.executionId) targetWindow.close(); };
+        fallback.querySelector('[data-copy-return]').onclick = async () => { const diagnostic = JSON.stringify({ reason, executionId: execution.executionId, openerAvailable: Boolean(targetWindow.opener && !targetWindow.opener.closed), marker: targetWindow.sessionStorage?.getItem(EXECUTION_WINDOW_KEY), summary: completionSummary(execution) }, null, 2); try { await targetWindow.navigator.clipboard.writeText(diagnostic); } catch { targetWindow.prompt?.('Copie o diagnóstico:', diagnostic); } };
+        return true;
+    };
+    const returnToMarketMenu = ({ targetWindow = window, context = read(), render = () => {} } = {}) => {
+        if (!context) return { state: 'missing' }; const runtime = getRuntime(targetWindow);
+        if (runtime.returning) return { state: 'returning' };
+        if (!isExecutionFinished(context)) { render('Ainda existem ofertas pendentes. O Hub será aberto nesta aba sem encerrar a execução.', 'warning'); openMarketMenu(targetWindow, context); return { state: 'pending' }; }
+        runtime.returning = true; context.finishedAt ||= Date.now(); context.returnTarget ||= 'market-offers-menu'; save(context);
+        const message = { source: RETURN_MESSAGE_SOURCE, type: 'market-offers-execution-finished', executionId: context.executionId, returnTarget: context.returnTarget, summary: completionSummary(context) };
+        if (runtime.returnNotifiedExecutionId !== context.executionId) { runtime.returnNotifiedExecutionId = context.executionId; emit({ ...message, type: 'execution-finished' }); }
+        const opener = targetWindow.opener; const openerAvailable = Boolean(opener && !opener.closed); if (openerAvailable) { try { opener.postMessage(message, targetWindow.location.origin); opener.focus?.(); } catch {} }
+        const markerMatches = targetWindow.sessionStorage?.getItem(EXECUTION_WINDOW_KEY) === context.executionId;
+        if (!openerAvailable || !markerMatches) { runtime.returning = false; renderReturnFallback(targetWindow, context, !openerAvailable ? 'A aba principal não está disponível.' : 'Esta aba não corresponde à janela registrada para a execução.'); return { state: 'fallback' }; }
+        targetWindow.setTimeout(() => { targetWindow.close(); targetWindow.setTimeout(() => { if (!targetWindow.closed) { runtime.returning = false; renderReturnFallback(targetWindow, context, 'O navegador bloqueou o fechamento automático.'); } }, 250); }, 100);
+        return { state: 'closing' };
+    };
     const getRuntime = (targetWindow = window) => targetWindow.EASMarketOfferRuntime ||= { initialized: false, preparing: false, preparedItemId: null, paused: false, observer: null, timers: new Set(), prepareAttempts: new Map() };
     const cleanupMarketOfferRuntime = (targetWindow = window) => { const runtime = getRuntime(targetWindow); logMarketOfferExecution('runtime-cleanup', { initialized: runtime.initialized, preparedItemId: runtime.preparedItemId, timers: runtime.timers.size }); runtime.observer?.disconnect?.(); runtime.observer = null; runtime.timers.forEach((timer) => { targetWindow.clearTimeout(timer); targetWindow.clearInterval(timer); }); runtime.timers.clear(); runtime.preparing = false; return runtime; };
     const exportDiagnostic = (targetWindow = window) => { const execution = read(); const runtime = getRuntime(targetWindow); return { exportedAt: Date.now(), url: targetWindow.location?.href || location.href, villageId: targetWindow.game_data?.village?.id ?? null, summary: summarizeOfferExecution(execution), currentItem: execution ? current(execution) : null, nextItem: execution?.queue?.slice((execution.currentIndex || 0) + 1).find((item) => !TERMINAL.has(item.status)) || null, runtime: { initialized: runtime.initialized, preparing: runtime.preparing, preparedItemId: runtime.preparedItemId, paused: runtime.paused, timerCount: runtime.timers.size, observerActive: Boolean(runtime.observer) }, logs: getDebugLogs().slice(-50) }; };
@@ -48,8 +99,10 @@
         syncIndex(context); const item = current(context); logMarketOfferExecution(item ? 'current-item-found' : 'current-item-missing', summarizeOfferExecution(context)); if (!item) return false;
         item.status = item.status === 'error' || item.status === 'verification-required' ? item.status : 'opening'; context.popupName = `eas-market-offer-${context.executionId}`; save(context);
         const targetUrl = String(marketUrl(item.villageId)); logMarketOfferExecution('navigation-target', { targetUrl, itemId: item.id, villageId: item.villageId });
-        if (window.name === context.popupName) { logMarketOfferExecution('navigation-start', { currentVillageId: window.game_data?.village?.id, nextVillageId: item.villageId, nextItemId: item.id, targetUrl }); window.location.assign(targetUrl); return true; }
+        if (window.name === context.popupName) { try { window.sessionStorage.setItem(EXECUTION_WINDOW_KEY, context.executionId); } catch {} logMarketOfferExecution('navigation-start', { currentVillageId: window.game_data?.village?.id, nextVillageId: item.villageId, nextItemId: item.id, targetUrl }); window.location.assign(targetUrl); return true; }
         const popup = window.open(targetUrl, context.popupName); if (!popup) return false;
+        try { popup.sessionStorage.setItem(EXECUTION_WINDOW_KEY, context.executionId); } catch {}
+        getMenuRuntime(window).executionWindows.set(context.executionId, popup);
         try { popup.addEventListener('load', () => injectLoader(popup)); } catch {}
         watchExecutionWindow(popup, window);
         return true;
@@ -188,8 +241,8 @@
             add('Copiar diagnóstico', async () => { const text = JSON.stringify(exportDiagnostic(targetWindow), null, 2); try { await targetWindow.navigator.clipboard.writeText(text); render('Diagnóstico copiado.', 'success'); } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'copy-diagnostic', message: error.message }); targetWindow.prompt('Copie o diagnóstico:', text); } });
             add('Limpar diagnóstico', () => { clearDebugLogs(); render('Diagnóstico limpo. A fila foi preservada.', 'info'); });
             if (finished) add('Atualizar todos os dados', () => EAS.MarketEngine.refreshAllVillages().then(() => render('', 'success')));
-            add('Voltar ao menu', () => EAS.UI?.toggle?.());
-            add('Encerrar execução', () => { if (confirm('Encerrar a execução de ofertas?')) { stop(); cleanupMarketOfferRuntime(targetWindow); context.endedAt = Date.now(); context.queue.forEach((entry) => { if (!TERMINAL.has(entry.status)) entry.status = 'cancelled'; }); syncIndex(context); save(context); emit({ type: 'offer-execution-finished', executionId: context.executionId }); render('Execução encerrada.', 'info'); } });
+            add('Voltar ao menu', () => returnToMarketMenu({ targetWindow, context, render }));
+            add('Encerrar execução', () => { if (targetWindow.confirm('Encerrar a execução? As ofertas restantes serão canceladas.')) { stop(); cleanupMarketOfferRuntime(targetWindow); context.endedAt = Date.now(); context.queue.forEach((entry) => { if (!TERMINAL.has(entry.status)) entry.status = 'cancelled'; }); syncIndex(context); save(context); render('Execução encerrada. Use “Voltar ao menu” para retornar e fechar esta aba, ou permaneça aqui.', 'info'); } });
         };
         const verify = () => {
             const active = current(context); if (!active || active.status !== 'submitting') return;
@@ -236,10 +289,11 @@
         else if (['pending', 'opening', 'prepared'].includes(item.status)) arm();
         return true;
     };
-    EAS.MarketOffersExecution.start = (context) => { const queue = (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })); const normalized = { ...context, calculationMode: context.calculationMode || 'per-village', version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; if (localStorage.getItem('eas_tw_market_offers_debug') === 'true') queue.forEach((queueItem, index) => console.debug('[EAS Offer Flow]', { suggestion: context.queue[index], queue: { repeatCount: queueItem.repeatCount, merchantsRequired: queueItem.merchantsRequired, merchantsAvailable: queueItem.merchantsAvailable } })); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
+    EAS.MarketOffersExecution.start = (context) => { const queue = (context.queue || []).map((item) => normalizeItem({ ...item, status: 'pending', error: null })); const normalized = { ...context, calculationMode: context.calculationMode || 'per-village', version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, openerExpected: true, returnTarget: 'market-offers-menu', world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; if (localStorage.getItem('eas_tw_market_offers_debug') === 'true') queue.forEach((queueItem, index) => console.debug('[EAS Offer Flow]', { suggestion: context.queue[index], queue: { repeatCount: queueItem.repeatCount, merchantsRequired: queueItem.merchantsRequired, merchantsAvailable: queueItem.merchantsAvailable } })); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
     const initializeMarketOfferExecutionIfNeeded = (targetWindow = window) => { logMarketOfferExecution('page-loaded', { url: targetWindow.location.href, villageId: targetWindow.game_data?.village?.id }); logMarketOfferExecution('auto-init-start'); const execution = read(); if (!execution) { logMarketOfferExecution('execution-missing'); logMarketOfferExecution('auto-init-skipped', { reason: 'no-active-execution' }); return false; } logMarketOfferExecution('execution-found', summarizeOfferExecution(execution)); const item = getCurrentPendingOfferItem(execution); logMarketOfferExecution(item ? 'current-item-found' : 'current-item-missing', summarizeOfferExecution(execution)); if (!item && !execution.queue?.length) { logMarketOfferExecution('auto-init-skipped', { reason: 'no-current-item' }); return false; } const url = new URL(targetWindow.location.href); if (url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer') { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-screen', screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode') }); return false; } if (item && getVillageId(targetWindow) !== String(item.villageId)) { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-village', currentVillageId: getVillageId(targetWindow), expectedVillageId: item.villageId }); return false; } return mount(targetWindow); };
     EAS.MarketOffersExecution.initialize = () => initializeMarketOfferExecutionIfNeeded(window);
     window.EASMarketOffersDebug = { getLogs: getDebugLogs, clearLogs: clearDebugLogs, getExecution: read, getRuntime: () => getRuntime(window), exportDiagnostic: () => exportDiagnostic(window) };
     if (localStorage.getItem('eas_tw_market_offers_debug') === 'true' && !window.__easMarketOffersErrorLogging) { window.__easMarketOffersErrorLogging = true; window.addEventListener('error', (event) => logMarketOfferExecution('unexpected-error', { message: event.message, stack: event.error?.stack, file: event.filename, line: event.lineno, item: current(read()), url: location.href })); window.addEventListener('unhandledrejection', (event) => logMarketOfferExecution('unexpected-error', { message: event.reason?.message || String(event.reason), stack: event.reason?.stack, item: current(read()), url: location.href })); }
-    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, DEBUG_LOG_KEY, CHANNEL_NAME, EXECUTION_VERSION, PANEL_ID, read, save, remove, current, getCurrentPendingOfferItem, getNextPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, getRuntime, cleanupMarketOfferRuntime, registerPrepareAttempt, getDebugLogs, clearDebugLogs, logMarketOfferExecution, summarizeOfferExecution, exportDiagnostic, injectLoader, watchExecutionWindow, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishSuccess, advanceMarketOfferExecution, finishError });
+    registerMarketOfferMenuListener(window);
+    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, DEBUG_LOG_KEY, CHANNEL_NAME, EXECUTION_WINDOW_KEY, RETURN_MESSAGE_SOURCE, EXECUTION_VERSION, PANEL_ID, read, save, remove, current, getCurrentPendingOfferItem, getNextPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, getRuntime, getMenuRuntime, cleanupMarketOfferRuntime, registerPrepareAttempt, getDebugLogs, clearDebugLogs, logMarketOfferExecution, summarizeOfferExecution, completionSummary, isExecutionFinished, openMarketMenu, handleReturnMessage, registerMarketOfferMenuListener, renderReturnFallback, returnToMarketMenu, exportDiagnostic, injectLoader, watchExecutionWindow, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, snapshotOffers, detectOfferCreationSuccess, classifyOfferResult, errorMessage, finishSuccess, advanceMarketOfferExecution, finishError });
 })();

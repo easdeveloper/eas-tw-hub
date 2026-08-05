@@ -169,6 +169,17 @@
     background: linear-gradient(#fffdf2, #dfbd70);
 }
 
+.hub-tool-card--return-highlight {
+    outline: 3px solid #f0c36a;
+    box-shadow: 0 0 0 5px rgb(240 195 106 / 24%);
+}
+
+.market-return-fallback {
+    display: grid;
+    gap: 8px;
+    margin: 10px;
+}
+
 .hub-tool-card-icon {
     flex: 0 0 auto;
     font-size: 20px;
