@@ -65,6 +65,16 @@
         return Boolean(await window.EAS.ScheduledMissionExecution.initialize(window));
     };
     window.initializeScheduledMissionIfNeeded = initializeScheduledMissionIfNeeded;
+    const initializeAttackPreparationIfNeeded = () => {
+        try {
+            const url = new URL(location.href);
+            if (url.searchParams.get('screen') !== 'place' || !window.EAS?.AttackPreparation?.initialize) return false;
+            const contextId = url.searchParams.get('eas_attack_preparation');
+            if (!contextId && !window.EAS.AttackPreparation.read?.()) return false;
+            return Boolean(window.EAS.AttackPreparation.initialize(window));
+        } catch { return false; }
+    };
+    window.initializeAttackPreparationIfNeeded = initializeAttackPreparationIfNeeded;
 
     const loadStyle = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`link[data-eas-style="${src}"]`);
@@ -127,7 +137,7 @@
                 window.EAS.MarketTargetExecution.initialize();
                 window.EAS.MissionScheduler.initialize();
                 const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
-                const attackPreparationActive = window.EAS.AttackPreparation.initialize();
+                const attackPreparationActive = initializeAttackPreparationIfNeeded();
                 if (!marketExecutionOnly && !scheduledMissionActive && !attackPreparationActive) window.EAS.UI.toggle();
                 notifyReady();
                 return;
@@ -165,7 +175,7 @@
             window.EAS.MarketTargetExecution.initialize();
             window.EAS.MissionScheduler.initialize();
             const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
-            const attackPreparationActive = window.EAS.AttackPreparation.initialize();
+            const attackPreparationActive = initializeAttackPreparationIfNeeded();
             if (!marketExecutionOnly && !scheduledMissionActive && !attackPreparationActive) window.EAS.start();
             notifyReady();
         } catch (error) {
