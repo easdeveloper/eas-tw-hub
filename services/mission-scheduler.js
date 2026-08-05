@@ -5,8 +5,8 @@
     const LEGACY_STORAGE_KEY = 'eas_tw_scheduler';
     const VERSION = 2;
     const TYPES = Object.freeze(['attack','support','fake','fake_nt','fake_anti_snipe','custom']);
-    const STATUSES = Object.freeze(['created','waiting','upcoming','ready-soon','ready','opening','preparing','prepared','opening-confirmation','confirmation-ready','submitting','executing','verification-required','sent','late','completed','cancelled','error','paused']);
-    const ACTIVE = new Set(['created','waiting','upcoming','ready-soon','ready','opening','preparing','prepared','opening-confirmation','confirmation-ready','submitting','executing','verification-required','paused']);
+    const STATUSES = Object.freeze(['created','waiting','upcoming','ready-soon','ready','opening','preparing','prepared','opening-confirmation','confirmation-ready','READY_CONFIRMATION','submitting','executing','verification-required','sent','late','completed','cancelled','error','paused']);
+    const ACTIVE = new Set(['created','waiting','upcoming','ready-soon','ready','opening','preparing','prepared','opening-confirmation','confirmation-ready','READY_CONFIRMATION','submitting','executing','verification-required','paused']);
     const DEFAULT_SETTINGS = Object.freeze({ updateInterval:1000, upcomingMs:300000, readySoonMs:30000, readyBeforeMs:5000, attackEnableBeforeMs:10000, lateToleranceMs:30000, preciseCountdownMs:10000, conflictWindowMs:15000, attackConfirmationMode:'manual', alerts:[600000,300000,60000,30000,0], visualAlerts:true, soundAlerts:false, browserNotifications:false });
     const contextKey = () => `${EAS.World?.getWorldName?.() || window.game_data?.world || location.hostname}:${String(EAS.World?.getPlayer?.()?.id || window.game_data?.player?.id || 0)}`;
     const emptyRoot = () => ({ version:VERSION, contexts:{} });
