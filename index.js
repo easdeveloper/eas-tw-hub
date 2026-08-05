@@ -117,6 +117,7 @@
                 if (!window.EAS.MarketTargetExecution?.initialize) await loadScript('services/market-target-execution.js');
                 if (!window.EAS.MissionScheduler?.initialize) await loadScript('services/mission-scheduler.js');
                 if (!window.EAS.ScheduledMissionExecution?.initialize) await loadScript('services/scheduled-mission-execution.js');
+                if (!window.EAS.AttackPreparation?.initialize) await loadScript('services/attack-preparation.js');
 
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
@@ -126,7 +127,8 @@
                 window.EAS.MarketTargetExecution.initialize();
                 window.EAS.MissionScheduler.initialize();
                 const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
-                if (!marketExecutionOnly && !scheduledMissionActive) window.EAS.UI.toggle();
+                const attackPreparationActive = window.EAS.AttackPreparation.initialize();
+                if (!marketExecutionOnly && !scheduledMissionActive && !attackPreparationActive) window.EAS.UI.toggle();
                 notifyReady();
                 return;
             }
@@ -152,6 +154,7 @@
             await loadScript('services/market-target-execution.js');
             await loadScript('services/mission-scheduler.js');
             await loadScript('services/scheduled-mission-execution.js');
+            await loadScript('services/attack-preparation.js');
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.Place.fillTargetFromUrl();
@@ -162,7 +165,8 @@
             window.EAS.MarketTargetExecution.initialize();
             window.EAS.MissionScheduler.initialize();
             const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
-            if (!marketExecutionOnly && !scheduledMissionActive) window.EAS.start();
+            const attackPreparationActive = window.EAS.AttackPreparation.initialize();
+            if (!marketExecutionOnly && !scheduledMissionActive && !attackPreparationActive) window.EAS.start();
             notifyReady();
         } catch (error) {
             console.error('[EAS TW Hub]', error);

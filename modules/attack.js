@@ -479,66 +479,19 @@
                 text: 'Abrir Praça',
                 icon: '🏛️',
                 disabled: !village.id,
-                onClick: () => {
-                    EAS.Place.openAndFillTarget({
-                        villageId: village.id,
-                        coordinate: row.destination
+                onClick: async () => {
+                    if (!EAS.AttackPreparation?.start) await window.EASLoader.loadScript('services/attack-preparation.js');
+                    EAS.AttackPreparation.start({
+                        sourceModule: 'attack-planner', sourceVillageId: String(village.id),
+                        sourceVillageName: village.name, sourceVillageCoord: village.coordinate,
+                        targetCoord: row.destination, arrivalTime: arrivalTimestamp,
+                        calculatedSendTime: row.sendTimestamp, durationSeconds: Math.round(row.durationMs / 1000),
+                        referenceUnit: unitId, japanTimezoneEnabled: showJapanTimezone
                     });
                 }
             });
 
             actionCell.appendChild(button);
-            const troops = Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, troopMode === 'fixed' && unit.id === unitId ? 1 : 0]));
-            const missionData = {
-                type: 'attack', operationType: 'attack-planner',
-                world: EAS.World.getWorldName(), playerId: String(EAS.World.getPlayer().id),
-                playerName: EAS.World.getPlayer().name, villageId: String(village.id),
-                villageName: village.name, villageCoord: village.coordinate,
-                targetCoord: row.destination, troops, sendTime: row.sendTimestamp,
-                arrivalTime: arrivalTimestamp, status: 'waiting', sourceModule: 'attack-planner',
-                executionMode: 'single', attackProcess: 1, troopMode,
-                fullConfig: troopMode === 'full' ? fullConfig : null,
-                notes: '', retries: 0, lastError: null
-            };
-            const scheduled = EAS.MissionScheduler?.findDuplicate?.(missionData);
-            const compositionValidation = troopMode === 'full' ? { valid: true, reasons: [] } : EAS.CommandRules?.validateCommandComposition?.({
-                world: missionData.world, villageId: missionData.villageId,
-                villageCoord: missionData.villageCoord, commandType: 'attack', troops
-            }) || { valid: true, reasons: [] };
-            const openMission = async (mission) => {
-                const state = EAS.MissionScheduler.load();
-                state.currentMissionId = mission.id;
-                EAS.MissionScheduler.persist(state);
-                const module = await EAS.UI.loadModule('scheduled-missions');
-                module.open();
-            };
-            const scheduleButton = EAS.UI.createButton({
-                text: scheduled ? 'Agendado ✓' : 'Agendar',
-                disabled: scheduled?.status === 'sent' || !compositionValidation.valid,
-                onClick: async () => {
-                    if (!EAS.MissionScheduler?.createMission) await window.EASLoader.loadScript('services/mission-scheduler.js');
-                    const duplicate = EAS.MissionScheduler.findDuplicate(missionData);
-                    if (duplicate) {
-                        if (confirm('Esta missão já está agendada. Abrir missão existente?')) { await openMission(duplicate); return; }
-                        if (!confirm('Deseja substituir a missão existente? Cancelar mantém a missão atual.')) return;
-                        EAS.MissionScheduler.createMission(missionData, { replaceDuplicate: true });
-                    } else {
-                        const unit = getUnitById(unitId);
-                        const japan = showJapanTimezone ? `\nEnvio no Japão: ${formatDateTimeInTimeZone(row.sendTimestamp, JAPAN_TIME_ZONE)}\nChegada no Japão: ${formatDateTimeInTimeZone(arrivalTimestamp, JAPAN_TIME_ZONE)}` : '';
-                        const troopSummary = troopMode === 'full' ? 'FULL — quantidades reais serão lidas na Praça' : `1 ${unit.name}`;
-                        const summary = `Agendar ataque?\n\nOrigem:\n${village.name}\n${village.coordinate}\n\nDestino:\n${row.destination}\n\nTropas:\n${troopSummary}\n\nEnvio:\n${formatDateTimeInTimeZone(row.sendTimestamp, SERVER_TIME_ZONE)}\n\nChegada:\n${formatDateTimeInTimeZone(arrivalTimestamp, SERVER_TIME_ZONE)}${japan}`;
-                        if (!confirm(summary)) return;
-                        EAS.MissionScheduler.createMission(missionData);
-                    }
-                    renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp, troopMode, fullConfig);
-                }
-            });
-            if (!compositionValidation.valid) scheduleButton.title = 'A composição viola uma regra conhecida deste mundo.';
-            actionCell.appendChild(scheduleButton);
-            if (scheduled) {
-                actionCell.appendChild(EAS.UI.createButton({ text: 'Ver missão', onClick: () => openMission(scheduled) }));
-                actionCell.appendChild(EAS.UI.createButton({ text: 'Cancelar agendamento', onClick: () => { EAS.MissionScheduler.cancelMission(scheduled.id); renderRows(tbody, rows, showJapanTimezone, unitId, arrivalTimestamp, troopMode, fullConfig); } }));
-            }
             tr.appendChild(actionCell);
             tbody.appendChild(tr);
         });
@@ -1065,5 +1018,10 @@
         win.body.appendChild(table.element);
         win.body.appendChild(exclusionsContainer);
         win.body.appendChild(diagnosticsContainer);
+        const preparationContext = EAS.AttackPreparation?.read?.();
+        if (preparationContext?.returnRequestedAt) {
+            EAS.AttackPreparation.save({ ...preparationContext, returnRequestedAt: null });
+            calculateButton.click();
+        }
     };
 })();

@@ -180,6 +180,38 @@
     margin: 10px;
 }
 
+.attack-preparation-panel {
+    width: min(720px, calc(100vw - 24px));
+}
+
+.attack-preparation-troops {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 8px;
+    margin: 10px 0;
+}
+
+.attack-preparation-troops label,
+.attack-preparation-time,
+.attack-preparation-time label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.attack-preparation-troops label {
+    flex-wrap: wrap;
+}
+
+.attack-preparation-troops .eas-input {
+    width: 90px;
+}
+
+.attack-preparation-time {
+    flex-wrap: wrap;
+    margin: 10px 0;
+}
+
 .hub-tool-card-icon {
     flex: 0 0 auto;
     font-size: 20px;
