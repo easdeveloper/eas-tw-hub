@@ -459,7 +459,49 @@
 }
 
 .scheduled-mission-card h3 { margin-top: 0; }
-.scheduled-mission-panel { z-index: 100000; }
+.scheduled-mission-panel {
+    z-index: 100000;
+    width: min(420px, calc(100vw - 28px));
+    overflow-x: hidden;
+}
+
+.scheduled-mission-panel * { box-sizing: border-box; }
+.scheduled-mission-panel .fake-execution-content { overflow-x: hidden; overflow-wrap: anywhere; word-break: normal; }
+.scheduled-mission-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.scheduled-mission-summary > div,
+.scheduled-mission-countdown,
+.scheduled-mission-status,
+.scheduled-mission-troops,
+.scheduled-mission-reserves { padding: 9px; border: 1px solid #d2b272; background: #fff8df; min-width: 0; }
+.scheduled-mission-summary strong,
+.scheduled-mission-summary span,
+.scheduled-mission-countdown strong,
+.scheduled-mission-status strong,
+.scheduled-mission-status span,
+.scheduled-mission-troops > strong,
+.scheduled-mission-reserves > strong { display: block; }
+.scheduled-mission-countdown { margin-top: 9px; text-align: center; }
+.scheduled-mission-countdown span { display: block; margin-top: 5px; font-size: 22px; font-weight: 700; }
+.scheduled-mission-status,
+.scheduled-mission-troops,
+.scheduled-mission-reserves { margin-top: 9px; }
+.scheduled-mission-status--waiting { border-color: #c99a24; background: #fff4c7; }
+.scheduled-mission-status--prepared,
+.scheduled-mission-status--ready,
+.scheduled-mission-status--completed { border-color: #5d9d45; background: #e8f5df; }
+.scheduled-mission-status--submitting { border-color: #4684b3; background: #e2f1fb; }
+.scheduled-mission-status--error { border-color: #b94b3e; background: #fbe4e1; }
+.scheduled-mission-troops ul,
+.scheduled-mission-reserves ul { display: grid; gap: 4px; margin: 7px 0 0; padding: 0; list-style: none; }
+.scheduled-mission-troops li,
+.scheduled-mission-reserves li { display: flex; justify-content: space-between; gap: 10px; min-width: 0; }
+.scheduled-mission-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.scheduled-mission-actions button { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+    .scheduled-mission-summary,
+    .scheduled-mission-actions { grid-template-columns: 1fr; }
+}
 
 @media (max-width: 640px), (pointer: coarse) {
     .eas-window {
