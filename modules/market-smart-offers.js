@@ -84,7 +84,8 @@
             await EAS.MarketEngine.refreshAllVillages({ shouldCancel: () => cancelling, onProgress: ({ index, total, village, status: itemStatus }) => { const bar = progress.querySelector('progress'); bar.max = total; bar.value = index; progress.querySelector('span').textContent = `Atualizando aldeia ${index} de ${total}: ${village.name} — ${itemStatus}`; } }); progress.hidden = true; renderDiagnosis(); recalculate(); };
         controls.append(EAS.UI.createButton({ text: 'Atualizar dados do Mercado', onClick: refresh }), EAS.UI.createButton({ text: 'Recalcular sugestões', onClick: () => recalculate({ resetExecution: true }) }), EAS.UI.createButton({ text: 'Voltar ao menu', className: 'eas-button--secondary', onClick: () => { win.close(); EAS.UI.openMainWindow(); } }));
         const handleExecutionUpdate = (message = {}) => { if (message.queueItemId) suggestions = suggestions.filter((item) => item.id !== message.queueItemId); renderDiagnosis(); renderSuggestions(); renderExecution(); renderHistory(); };
-        let channel = null; try { channel = new BroadcastChannel(EAS.MarketOffersExecution.CHANNEL_NAME); channel.onmessage = (event) => handleExecutionUpdate(event.data); } catch {}
+        win.element.addEventListener('eas-market-offers-execution-finished', (event) => handleExecutionUpdate(event.detail));
+        let channel = null; try { channel = new BroadcastChannel(EAS.MarketOffersExecution.CHANNEL_NAME); channel.onmessage = (event) => { if (event.data?.type !== 'execution-finished') handleExecutionUpdate(event.data); }; } catch {}
         window.addEventListener('storage', (event) => { if (event.key === EAS.MarketOffersExecution.STORAGE_KEY || event.key === EAS.MarketEngine.CACHE_KEY) handleExecutionUpdate(); });
         renderDiagnosis(); recalculate(); renderHistory(); renderExecution();
     } };
