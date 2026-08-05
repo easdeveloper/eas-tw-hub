@@ -484,9 +484,11 @@
                     EAS.AttackPreparation.start({
                         sourceModule: 'attack-planner', sourceVillageId: String(village.id),
                         sourceVillageName: village.name, sourceVillageCoord: village.coordinate,
-                        targetCoord: row.destination, arrivalTime: arrivalTimestamp,
-                        calculatedSendTime: row.sendTimestamp, durationSeconds: Math.round(row.durationMs / 1000),
-                        referenceUnit: unitId, japanTimezoneEnabled: showJapanTimezone
+                        targetCoord: row.destination, arrivalTimestamp: Number(arrivalTimestamp),
+                        sendTimestamp: Number(row.sendTimestamp), durationSeconds: row.durationMs / 1000,
+                        referenceUnit: unitId, serverTimezone: SERVER_TIME_ZONE,
+                        displayTimezone: showJapanTimezone ? JAPAN_TIME_ZONE : SERVER_TIME_ZONE,
+                        displayJapanTimezone: showJapanTimezone, japanTimezoneEnabled: showJapanTimezone
                     });
                 }
             });
