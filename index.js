@@ -65,6 +65,17 @@
         return Boolean(await window.EAS.ScheduledMissionExecution.initialize(window));
     };
     window.initializeScheduledMissionIfNeeded = initializeScheduledMissionIfNeeded;
+    const initializeScheduledMissionConfirmationIfNeeded = async () => {
+        const url = new URL(location.href);
+        if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') !== 'confirm') return false;
+        return initializeScheduledMissionIfNeeded();
+    };
+    const initializeScheduledMissionPreparationIfNeeded = async () => {
+        const url = new URL(location.href);
+        if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') === 'confirm') return false;
+        if (!url.searchParams.get('eas_mission') && !window.EAS?.MissionScheduler?.load?.().activeMissionId) return false;
+        return initializeScheduledMissionIfNeeded();
+    };
     const initializeAttackPreparationIfNeeded = () => {
         try {
             const url = new URL(location.href);
@@ -129,16 +140,22 @@
                 if (!window.EAS.ScheduledMissionExecution?.initialize) await loadScript('services/scheduled-mission-execution.js');
                 if (!window.EAS.AttackPreparation?.initialize) await loadScript('services/attack-preparation.js');
 
+                window.EAS.MissionScheduler.initialize();
+                const scheduledConfirmationActive = await initializeScheduledMissionConfirmationIfNeeded();
+                const scheduledPreparationActive = scheduledConfirmationActive ? false : await initializeScheduledMissionPreparationIfNeeded();
+                if (scheduledConfirmationActive || scheduledPreparationActive) {
+                    window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: scheduledConfirmationActive ? 'confirmation' : 'preparation' });
+                    notifyReady();
+                    return;
+                }
                 window.EAS.Place.fillTargetFromUrl();
                 window.EAS.FakesExecution.initialize();
                 window.EAS.SupportExecution.initialize();
                 window.EAS.MarketOffersExecution.initialize();
                 window.EAS.MarketBalanceExecution.initialize();
                 window.EAS.MarketTargetExecution.initialize();
-                window.EAS.MissionScheduler.initialize();
-                const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
                 const attackPreparationActive = initializeAttackPreparationIfNeeded();
-                if (!marketExecutionOnly && !scheduledMissionActive && !attackPreparationActive) window.EAS.UI.toggle();
+                if (!marketExecutionOnly && !attackPreparationActive) window.EAS.UI.toggle();
                 notifyReady();
                 return;
             }
@@ -167,16 +184,22 @@
             await loadScript('services/attack-preparation.js');
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
+            window.EAS.MissionScheduler.initialize();
+            const scheduledConfirmationActive = await initializeScheduledMissionConfirmationIfNeeded();
+            const scheduledPreparationActive = scheduledConfirmationActive ? false : await initializeScheduledMissionPreparationIfNeeded();
+            if (scheduledConfirmationActive || scheduledPreparationActive) {
+                window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: scheduledConfirmationActive ? 'confirmation' : 'preparation' });
+                notifyReady();
+                return;
+            }
             window.EAS.Place.fillTargetFromUrl();
             window.EAS.FakesExecution.initialize();
             window.EAS.SupportExecution.initialize();
             window.EAS.MarketOffersExecution.initialize();
             window.EAS.MarketBalanceExecution.initialize();
             window.EAS.MarketTargetExecution.initialize();
-            window.EAS.MissionScheduler.initialize();
-            const scheduledMissionActive = await initializeScheduledMissionIfNeeded();
             const attackPreparationActive = initializeAttackPreparationIfNeeded();
-            if (!marketExecutionOnly && !scheduledMissionActive && !attackPreparationActive) window.EAS.start();
+            if (!marketExecutionOnly && !attackPreparationActive) window.EAS.start();
             notifyReady();
         } catch (error) {
             console.error('[EAS TW Hub]', error);
