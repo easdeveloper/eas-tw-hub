@@ -212,6 +212,26 @@
     margin: 10px 0;
 }
 
+.market-target-execution-panel {
+    width: min(760px, calc(100vw - 24px));
+}
+
+.market-target-resource-summary > span {
+    display: grid;
+    gap: 2px;
+    white-space: nowrap;
+}
+
+.market-strategy-description {
+    display: block;
+    margin: -4px 0 10px;
+    color: #666;
+}
+
+.market-strategy-banner {
+    margin: 10px 0;
+}
+
 .hub-tool-card-icon {
     flex: 0 0 auto;
     font-size: 20px;
