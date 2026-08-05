@@ -2,7 +2,7 @@
     'use strict';
     EAS.Modules ||= {};
     const LABELS={attack:'Ataque',support:'Apoio',fake:'Fake',fake_nt:'Fake NT',fake_anti_snipe:'Fake Anti-Snipe',custom:'Personalizada'};
-    const STATUS_LABELS={upcoming:'Aguardando preparação',opening:'Abrindo Praça',preparing:'Preparando ataque',prepared:'Ataque preparado','opening-confirmation':'Abrindo confirmação','confirmation-ready':'Confirmação pronta',READY_CONFIRMATION:'Confirmação pronta',ready:'Pronta para envio',submitting:'Enviando ataque',sent:'Enviada',error:'Erro',cancelled:'Cancelada'};
+    const STATUS_LABELS={upcoming:'Aguardando preparação',opening:'Abrindo Praça',preparing:'Preparando ataque',prepared:'Ataque preparado','opening-confirmation':'Abrindo confirmação','confirmation-ready':'Confirmação pronta',READY_CONFIRMATION:'Confirmação pronta',ready:'Pronta para envio',sending:'Enviando ataque',submitting:'Enviando ataque',sent:'Enviada',error:'Erro',cancelled:'Cancelada'};
     const friendlyStatus=(status)=>STATUS_LABELS[status]||status;
     const FILTERS={all:()=>true,waiting:(m)=>!['sent','completed','cancelled','error'].includes(m.status),completed:(m)=>['sent','completed'].includes(m.status),error:(m)=>['error','verification-required','late'].includes(m.status),cancelled:(m)=>m.status==='cancelled'};
     const formatDate=(value,ms=false)=>value?EAS.Utils.formatDateTime(Number(value),ms):'-';

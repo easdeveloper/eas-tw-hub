@@ -76,7 +76,10 @@
     const initializeScheduledMissionPreparationIfNeeded = async () => {
         const url = new URL(location.href);
         if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') === 'confirm') return false;
-        if (!url.searchParams.get('eas_mission')) return false;
+        const state = window.EAS?.MissionScheduler?.load?.();
+        const activeMission = state?.missions?.find?.((mission) => mission.id === state.activeMissionId);
+        const returningAfterSend = state?.sourceFlow === 'scheduled-mission' && Number(state?.attackProcess) === 2 && activeMission?.sent === true && activeMission?.status === 'sending';
+        if (!url.searchParams.get('eas_mission') && !returningAfterSend) return false;
         return initializeScheduledMissionIfNeeded();
     };
     const initializeAttackPreparationIfNeeded = () => {
