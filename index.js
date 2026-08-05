@@ -79,7 +79,8 @@
         const state = window.EAS?.MissionScheduler?.load?.();
         const activeMission = state?.missions?.find?.((mission) => mission.id === state.activeMissionId);
         const returningAfterSend = state?.sourceFlow === 'scheduled-mission' && Number(state?.attackProcess) === 2 && activeMission?.finalClickConsumed === true && ['sending', 'submitting'].includes(activeMission?.status);
-        if (!url.searchParams.get('eas_mission') && !returningAfterSend) return false;
+        const returningAfterCompleted = state?.sourceFlow === 'scheduled-mission' && state?.lastCompletedMissionId && state?.lastCompletedAuxWindowName === window.name;
+        if (!url.searchParams.get('eas_mission') && !returningAfterSend && !returningAfterCompleted) return false;
         return initializeScheduledMissionIfNeeded();
     };
     const initializeAttackPreparationIfNeeded = () => {

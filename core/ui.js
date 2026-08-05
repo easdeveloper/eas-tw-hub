@@ -304,11 +304,25 @@
 
     EAS.UI.getDashboardIndicator = (toolId) => {
         const read = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
-        if (toolId === 'scheduled-missions') { const waiting=(EAS.MissionScheduler?.load?.().missions||read('eas_tw_scheduler')?.missions||[]).filter((mission)=>['created','prepared','waiting','upcoming','ready-soon','ready','opening','preparing','opening-confirmation','confirmation-ready','submitting','paused'].includes(mission.status)).length; return waiting ? `${waiting} aguardando` : ''; }
+        if (toolId === 'scheduled-missions') { const waiting=(EAS.MissionScheduler?.load?.().missions||read('eas_tw_scheduler')?.missions||[]).filter((mission)=>['upcoming','opening','preparing','confirmation-ready','ready','submitting'].includes(mission.status)).length; return waiting ? `${waiting} aguardando` : ''; }
         if (toolId === 'market-smart-offers') { const execution=read('eas_tw_market_offers_execution'); const pending=(execution?.queue||[]).filter((item)=>!['created','skipped','cancelled'].includes(item.status)).length; return pending ? `Execução ativa · ${pending} pendentes` : ''; }
         if (toolId === 'market-balance') { const execution=read('eas_tw_market_balance_execution'); const pending=(execution?.queue||[]).filter((item)=>!['sent','skipped','cancelled'].includes(item.status)).length; return pending ? `${pending} transportes pendentes` : ''; }
         if (toolId === 'fakes') { const execution=read('eas_tw_fakes_execution'); const pending=(execution?.queue||[]).filter((item)=>!['sent','skipped','cancelled','completed'].includes(item.status)).length; return pending ? `Operação em andamento · ${pending}` : ''; }
         return '';
+    };
+
+    EAS.UI.refreshDashboardIndicator = (toolId, targetWindow = window) => {
+        const card = targetWindow.document?.querySelector(`[data-eas-module="${toolId}"]`);
+        if (!card) return false;
+        const content = card.querySelector('.hub-tool-card-content');
+        const current = card.querySelector('.hub-tool-card-badge');
+        const indicator = targetWindow.EAS?.UI?.getDashboardIndicator?.(toolId) || '';
+        if (!indicator) { current?.remove(); return true; }
+        const badge = current || targetWindow.document.createElement('span');
+        badge.className = 'hub-tool-card-badge';
+        badge.textContent = indicator;
+        if (!current) content?.appendChild(badge);
+        return true;
     };
 
     EAS.UI.renderHubDashboard = (win, version) => {
