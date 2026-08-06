@@ -36,20 +36,20 @@
         loadScript
     };
 
-    const getPendingMarketExecution = () => {
+    const getActiveMarketExecution = () => {
         try {
             const execution = JSON.parse(localStorage.getItem('eas_tw_market_offers_execution') || 'null');
-            if (!execution || Number(execution.version) < 3 || execution.endedAt) return null;
-            const currentIndex = (execution.queue || []).findIndex((item) => !['created', 'skipped', 'cancelled'].includes(item.status));
-            return currentIndex >= 0 ? { execution, item: execution.queue[currentIndex], currentIndex } : null;
+            if (!execution || Number(execution.version) < 3 || execution.endedAt || execution.finishedAt) return null;
+            const currentIndex = (execution.queue || []).findIndex((item) => !['created', 'skipped', 'cancelled', 'canceled'].includes(item.status));
+            return { execution, item: currentIndex >= 0 ? execution.queue[currentIndex] : null, currentIndex };
         } catch { return null; }
     };
 
     const shouldInitializeMarketOfferExecution = () => {
-        const url = new URL(location.href); const pending = getPendingMarketExecution();
-        if (!pending || url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer') return false;
+        const url = new URL(location.href); const active = getActiveMarketExecution();
+        if (!active || url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer') return false;
         const villageId = String(window.game_data?.village?.id || url.searchParams.get('village') || '');
-        return villageId === String(pending.item.villageId);
+        return !active.item || villageId === String(active.item.villageId);
     };
     const shouldInitializeMarketBalanceExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_balance_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send' && String(window.game_data?.village?.id || url.searchParams.get('village') || '') === String(item.sourceVillageId)); } catch { return false; } };
     const shouldInitializeMarketTargetExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_target_supply_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && !execution.finishedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send'); } catch { return false; } };

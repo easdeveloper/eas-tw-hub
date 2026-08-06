@@ -2,6 +2,13 @@
     'use strict';
 
     const DEFAULT_WINDOW_ID = 'eas-tw-hub-root';
+    const traceHubLifecycle = (action, details = {}) => {
+        try {
+            if (localStorage.getItem('eas_tw_market_offers_debug') === 'true') {
+                console.trace(`[EAS TW Hub] ${action}()`, details);
+            }
+        } catch {}
+    };
 
     const getElement = (target) => {
         if (typeof target === 'string') {
@@ -12,6 +19,9 @@
     };
 
     EAS.UI.closeWindow = (id = DEFAULT_WINDOW_ID) => {
+        if (id === DEFAULT_WINDOW_ID && document.getElementById(id)) {
+            traceHubLifecycle('closeMainHub', { id });
+        }
         document.getElementById(id)?.remove();
     };
 
@@ -352,6 +362,10 @@
     };
 
     EAS.UI.openMainWindow = () => {
+        traceHubLifecycle('openMainHub', {
+            existing: Boolean(document.getElementById(DEFAULT_WINDOW_ID)),
+            url: location.href
+        });
         const existing = document.getElementById(DEFAULT_WINDOW_ID);
 
         if (existing) {
