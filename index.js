@@ -65,11 +65,15 @@
         return Boolean(await window.EAS.ScheduledMissionExecution.initialize(window));
     };
     window.initializeScheduledMissionIfNeeded = initializeScheduledMissionIfNeeded;
+    const getScheduledMissionTabContext = () => {
+        try { return JSON.parse(sessionStorage.getItem('eas_tw_scheduled_mission_tab_context') || 'null'); } catch { return null; }
+    };
     const initializeScheduledMissionConfirmationIfNeeded = async () => {
         const url = new URL(location.href);
         if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') !== 'confirm') return false;
         const state = window.EAS?.MissionScheduler?.load?.();
-        const scheduledContext = state?.sourceFlow === 'scheduled-mission' && Number(state?.attackProcess) === 2 && state?.activeMissionId;
+        const tabContext = getScheduledMissionTabContext();
+        const scheduledContext = tabContext?.tabExecutionId && state?.tabExecutions?.[tabContext.tabExecutionId]?.missionId === tabContext.missionId;
         if (!url.searchParams.get('eas_mission') && !scheduledContext) return false;
         return initializeScheduledMissionIfNeeded();
     };
@@ -77,10 +81,12 @@
         const url = new URL(location.href);
         if (url.searchParams.get('screen') !== 'place' || url.searchParams.get('try') === 'confirm') return false;
         const state = window.EAS?.MissionScheduler?.load?.();
+        const tabContext = getScheduledMissionTabContext();
         const activeMission = state?.missions?.find?.((mission) => mission.id === state.activeMissionId);
-        const returningAfterSend = state?.sourceFlow === 'scheduled-mission' && Number(state?.attackProcess) === 2 && activeMission?.finalClickConsumed === true && ['sending', 'submitting'].includes(activeMission?.status);
+        const boundTab = tabContext?.tabExecutionId && state?.tabExecutions?.[tabContext.tabExecutionId]?.missionId === tabContext.missionId;
+        const returningAfterSend = boundTab && activeMission?.id === tabContext.missionId && activeMission?.tabExecutionId === tabContext.tabExecutionId && activeMission?.finalClickConsumed === true && ['sending', 'submitting'].includes(activeMission?.status);
         const returningAfterCompleted = state?.sourceFlow === 'scheduled-mission' && state?.lastCompletedMissionId && state?.lastCompletedAuxWindowName === window.name;
-        if (!url.searchParams.get('eas_mission') && !returningAfterSend && !returningAfterCompleted) return false;
+        if (!url.searchParams.get('eas_mission') && !boundTab && !returningAfterSend && !returningAfterCompleted) return false;
         return initializeScheduledMissionIfNeeded();
     };
     const initializeAttackPreparationIfNeeded = () => {
