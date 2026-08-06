@@ -103,6 +103,43 @@
         } catch { return false; }
     };
     window.initializeAttackPreparationIfNeeded = initializeAttackPreparationIfNeeded;
+    const loaderLog = (event, details = {}) => console.info(`[EAS TW Loader] ${event}`, details);
+    const resumeEASRuntimeIfNeeded = async () => {
+        if (window.__EAS_TW_RUNTIME_RESUMED__) return Boolean(window.__EAS_TW_RUNTIME_RESUMED__.active);
+        loaderLog('eas-loader-runtime-resume-start', { url: location.href });
+        const url = new URL(location.href);
+        if (url.searchParams.get('screen') === 'place' && (url.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId)) {
+            loaderLog('eas-loader-scheduled-mission-detected', { missionId: url.searchParams.get('eas_mission'), stage: url.searchParams.get('try') === 'confirm' ? 'confirmation' : 'preparation' });
+            const confirmation = await initializeScheduledMissionConfirmationIfNeeded();
+            const preparation = confirmation ? false : await initializeScheduledMissionPreparationIfNeeded();
+            if (confirmation || preparation) {
+                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: confirmation ? 'scheduled-confirmation' : 'scheduled-preparation' };
+                loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+                return true;
+            }
+        }
+        const marketRuntimes = [
+            ['coordinated-market', shouldInitializeMarketTargetExecution, () => window.EAS.MarketTargetExecution?.initialize?.()],
+            ['market-offers', shouldInitializeMarketOfferExecution, () => window.EAS.MarketOffersExecution?.initialize?.()],
+            ['market-balance', shouldInitializeMarketBalanceExecution, () => window.EAS.MarketBalanceExecution?.initialize?.()]
+        ];
+        for (const [type, shouldResume, initialize] of marketRuntimes) {
+            if (!shouldResume()) continue;
+            loaderLog('eas-loader-market-execution-detected', { type, url: location.href });
+            const active = Boolean(await initialize());
+            if (active) {
+                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type };
+                loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+                return true;
+            }
+        }
+        const preparation = initializeAttackPreparationIfNeeded();
+        window.__EAS_TW_RUNTIME_RESUMED__ = { active: Boolean(preparation), type: preparation ? 'attack-preparation' : null };
+        if (preparation) loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+        else loaderLog('eas-loader-no-active-runtime', { url: location.href });
+        return Boolean(preparation);
+    };
+    window.resumeEASRuntimeIfNeeded = resumeEASRuntimeIfNeeded;
 
     const loadStyle = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`link[data-eas-style="${src}"]`);
@@ -158,10 +195,9 @@
                 if (!window.EAS.AttackPreparation?.initialize) await loadScript('services/attack-preparation.js');
 
                 window.EAS.MissionScheduler.initialize();
-                const scheduledConfirmationActive = await initializeScheduledMissionConfirmationIfNeeded();
-                const scheduledPreparationActive = scheduledConfirmationActive ? false : await initializeScheduledMissionPreparationIfNeeded();
-                if (scheduledConfirmationActive || scheduledPreparationActive) {
-                    window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: scheduledConfirmationActive ? 'confirmation' : 'preparation' });
+                const runtimeResumed = await resumeEASRuntimeIfNeeded();
+                if (runtimeResumed || window.__EAS_TW_SILENT_BOOTSTRAP__) {
+                    window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: window.__EAS_TW_RUNTIME_RESUMED__?.type || 'silent-loader' });
                     notifyReady();
                     return;
                 }
@@ -171,8 +207,7 @@
                 window.EAS.MarketOffersExecution.initialize();
                 window.EAS.MarketBalanceExecution.initialize();
                 window.EAS.MarketTargetExecution.initialize();
-                const attackPreparationActive = initializeAttackPreparationIfNeeded();
-                if (!marketExecutionOnly && !attackPreparationActive) window.EAS.UI.toggle();
+                if (!marketExecutionOnly) window.EAS.UI.toggle();
                 notifyReady();
                 return;
             }
@@ -202,10 +237,9 @@
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();
-            const scheduledConfirmationActive = await initializeScheduledMissionConfirmationIfNeeded();
-            const scheduledPreparationActive = scheduledConfirmationActive ? false : await initializeScheduledMissionPreparationIfNeeded();
-            if (scheduledConfirmationActive || scheduledPreparationActive) {
-                window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: scheduledConfirmationActive ? 'confirmation' : 'preparation' });
+            const runtimeResumed = await resumeEASRuntimeIfNeeded();
+            if (runtimeResumed || window.__EAS_TW_SILENT_BOOTSTRAP__) {
+                window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: window.__EAS_TW_RUNTIME_RESUMED__?.type || 'silent-loader' });
                 notifyReady();
                 return;
             }
@@ -215,8 +249,7 @@
             window.EAS.MarketOffersExecution.initialize();
             window.EAS.MarketBalanceExecution.initialize();
             window.EAS.MarketTargetExecution.initialize();
-            const attackPreparationActive = initializeAttackPreparationIfNeeded();
-            if (!marketExecutionOnly && !attackPreparationActive) window.EAS.start();
+            if (!marketExecutionOnly) window.EAS.start();
             notifyReady();
         } catch (error) {
             console.error('[EAS TW Hub]', error);

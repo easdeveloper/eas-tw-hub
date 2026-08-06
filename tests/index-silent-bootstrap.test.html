@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>Index silent bootstrap tests</title><pre id="result">running</pre>
+<script>
+let menuOpens=0,readyEvents=0;window.__EAS_TW_SILENT_BOOTSTRAP__=true;window.game_data={world:'br-test',player:{id:7},village:{id:9}};window.EAS={version:'test',UI:{toggle:()=>menuOpens++,openMainWindow:()=>menuOpens++},Place:{fillTargetFromUrl:()=>{},fillCommandTarget:()=>true},Units:{calculateCommandPopulation:()=>0},WorldRules:{get:()=>({})},FakesExecution:{initialize:()=>false},SupportExecution:{initialize:()=>false},MarketEngine:{calculateResourceImbalance:()=>({})},MarketOffersExecution:{initialize:()=>false},MarketBalanceExecution:{initialize:()=>false},MarketTargetExecution:{initialize:()=>false},MissionScheduler:{load:()=>({missions:[]}),initialize:()=>{},log:()=>{}},ScheduledMissionExecution:{initialize:async()=>false},AttackPreparation:{initialize:()=>false,read:()=>null}};addEventListener('eas-tw-hub-ready',()=>readyEvents++);
+</script>
+<script src="../index.js"></script>
+<script>
+setTimeout(()=>{const failures=[];const equal=(actual,expected,label)=>{if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${label}: esperado ${JSON.stringify(expected)}, recebido ${JSON.stringify(actual)}`);};equal(menuOpens,0,'bootstrap silencioso não abre menu');equal(readyEvents,1,'bundle confirma inicialização');equal(window.__EAS_TW_RUNTIME_RESUMED__?.active,false,'sem processo ativo permanece silencioso');document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:'PASS — 3 assertions';document.title=failures.length?'FAIL':'PASS';},100);
+</script>
