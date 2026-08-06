@@ -444,7 +444,7 @@
         };
     };
 
-    const renderRows = (tbody, rows, showJapanTimezone, unitId, arrivalTimestamp, troopMode = 'fixed', fullConfig = null) => {
+    const renderRows = (tbody, rows, showJapanTimezone, unitId, arrivalTimestamp) => {
         tbody.innerHTML = '';
 
         rows.forEach((row) => {
@@ -482,13 +482,12 @@
                 onClick: async () => {
                     if (!EAS.AttackPreparation?.start) await window.EASLoader.loadScript('services/attack-preparation.js');
                     EAS.AttackPreparation.start({
-                        sourceModule: 'attack-planner', sourceVillageId: String(village.id),
-                        sourceVillageName: village.name, sourceVillageCoord: village.coordinate,
+                        sourceFlow: 'attack-planner', originVillageId: String(village.id),
+                        originVillageName: village.name, originCoord: village.coordinate,
                         targetCoord: row.destination, arrivalTimestamp: Number(arrivalTimestamp),
                         sendTimestamp: Number(row.sendTimestamp), durationSeconds: row.durationMs / 1000,
-                        referenceUnit: unitId, serverTimezone: SERVER_TIME_ZONE,
-                        displayTimezone: showJapanTimezone ? JAPAN_TIME_ZONE : SERVER_TIME_ZONE,
-                        displayJapanTimezone: showJapanTimezone, japanTimezoneEnabled: showJapanTimezone
+                        referenceUnit: unitId,
+                        timezoneMode: showJapanTimezone ? JAPAN_TIME_ZONE : SERVER_TIME_ZONE
                     });
                 }
             });
@@ -696,21 +695,6 @@
         timeInput.maxLength = 8;
 
         const unitSelect = createSelect(savedSettings.unit);
-        const troopModeSelect = document.createElement('select');
-        troopModeSelect.className = 'eas-input';
-        troopModeSelect.innerHTML = '<option value="fixed">Ataque com composição fixa</option><option value="full">Ataque FULL</option>';
-        troopModeSelect.value = savedSettings.troopMode === 'full' ? 'full' : 'fixed';
-        const savedFullConfig = savedSettings.fullConfig || { include: {}, reserve: {} };
-        const fullConfigPanel = document.createElement('div');
-        fullConfigPanel.className = 'attack-full-config';
-        fullConfigPanel.innerHTML = `<strong>Reserva na aldeia</strong><div class="attack-full-config-grid">${UNIT_SPEEDS.map((unit) => `<label><input type="checkbox" data-full-include="${unit.id}" ${unit.id !== 'snob' && savedFullConfig.include?.[unit.id] !== false ? 'checked' : ''}> ${unit.name}<input class="eas-input" type="number" min="0" data-full-reserve="${unit.id}" value="${Math.max(0, Number(savedFullConfig.reserve?.[unit.id]) || 0)}" title="Quantidade que permanecerá na aldeia"></label>`).join('')}</div><small>O nobre permanece desativado no FULL comum.</small>`;
-        const getFullConfig = () => ({
-            include: Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, unit.id !== 'snob' && fullConfigPanel.querySelector(`[data-full-include="${unit.id}"]`).checked])),
-            reserve: Object.fromEntries(UNIT_SPEEDS.map((unit) => [unit.id, Math.max(0, Number(fullConfigPanel.querySelector(`[data-full-reserve="${unit.id}"]`).value) || 0)]))
-        });
-        const updateFullVisibility = () => { fullConfigPanel.hidden = troopModeSelect.value !== 'full'; };
-        troopModeSelect.addEventListener('change', updateFullVisibility);
-        updateFullVisibility();
         const timezoneJapanOption = document.createElement('label');
         timezoneJapanOption.className = 'attack-timezone-option';
 
@@ -751,13 +735,6 @@
                 input: unitSelect
             })
         );
-        form.appendChild(
-            EAS.UI.createField({
-                label: 'Modo de tropas',
-                input: troopModeSelect
-            })
-        );
-        form.appendChild(fullConfigPanel);
         form.appendChild(timezoneJapanOption);
 
         const actions = document.createElement('div');
@@ -797,8 +774,6 @@
         let renderedRows = [];
         let renderedArrivalTimestamp = null;
         let renderedUnitId = unitSelect.value;
-        let renderedTroopMode = troopModeSelect.value;
-        let renderedFullConfig = getFullConfig();
 
         timezoneJapanInput.addEventListener('change', () => {
             saveShowJapanTimezone(timezoneJapanInput.checked);
@@ -807,9 +782,7 @@
                 renderedRows,
                 timezoneJapanInput.checked,
                 renderedUnitId,
-                renderedArrivalTimestamp,
-                renderedTroopMode,
-                renderedFullConfig
+                renderedArrivalTimestamp
             );
         });
 
@@ -880,25 +853,17 @@
                     return;
                 }
 
-                const fullConfig = getFullConfig();
-                const planningUnitId = troopModeSelect.value === 'full'
-                    ? UNIT_SPEEDS.filter((unit) => fullConfig.include[unit.id])
-                        .sort((a, b) => getUnitById(b.id).minutesPerField - getUnitById(a.id).minutesPerField)[0]?.id || unitSelect.value
-                    : unitSelect.value;
-
                 saveSettings({
                     destination,
                     arrivalDate: dateInput.value.trim(),
                     arrivalTime: timeInput.value.trim(),
-                    unit: unitSelect.value,
-                    troopMode: troopModeSelect.value,
-                    fullConfig
+                    unit: unitSelect.value
                 });
 
                 const calculation = calculateRows({
                     destination,
                     arrivalTimestamp,
-                    unitId: planningUnitId
+                    unitId: unitSelect.value
                 });
                 const { rows, summary, exclusions } = calculation;
                 const unit = getUnitById(unitSelect.value);
@@ -906,17 +871,13 @@
 
                 renderedRows = rows;
                 renderedArrivalTimestamp = arrivalTimestamp;
-                renderedUnitId = planningUnitId;
-                renderedTroopMode = troopModeSelect.value;
-                renderedFullConfig = fullConfig;
+                renderedUnitId = unitSelect.value;
                 renderRows(
                     table.tbody,
                     renderedRows,
                     timezoneJapanInput.checked,
                     renderedUnitId,
-                    renderedArrivalTimestamp,
-                    renderedTroopMode,
-                    renderedFullConfig
+                    renderedArrivalTimestamp
                 );
                 renderExclusions(exclusionsContainer, exclusions);
                 renderDiagnostics(diagnosticsContainer, unitSelect.value);
