@@ -516,10 +516,15 @@
         if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
+                    const opened = loadedModule.open();
+                    if (module.id === 'market-smart-offers' && !document.getElementById(loadedModule.PANEL_ID || 'eas-market-offers')) {
+                        throw new Error('O painel de Ofertas Inteligentes não foi montado no DOM.');
+                    }
                     EAS.UI.closeWindow(DEFAULT_WINDOW_ID);
-                    loadedModule.open();
+                    return opened;
                 })
                 .catch((error) => {
+                    console.error('[EAS TW Hub] Falha ao abrir módulo', { moduleId: module.id, error });
                     alert(`EAS TW Hub: ${error.message}`);
                 });
 

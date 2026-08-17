@@ -9,9 +9,18 @@
     const write = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
     const number = (value, fallback = 0) => Math.max(0, Math.floor(Number(value) || fallback));
     const formatResources = (resources) => Object.entries(RESOURCES).map(([key, label]) => `${label}: ${EAS.Utils.formatNumber(resources?.[key] || 0)}`).join(' / ');
+    const PANEL_ID = 'eas-market-offers';
+    const pageDiagnostic = () => { try { const url = new URL(location.href); return { screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), villageId: String(window.game_data?.village?.id || url.searchParams.get('village') || ''), url: url.href }; } catch { return { screen: null, mode: null, villageId: '', url: String(location.href || '') }; } };
+    const isOwnOfferPage = () => EAS.MarketOffersExecution?.isOwnOfferPage?.(window) ?? (pageDiagnostic().screen === 'market' && pageDiagnostic().mode === 'own_offer');
+    const log = (event, data = {}) => { if (EAS.MarketOffersExecution?.logMarketOfferExecution) return EAS.MarketOffersExecution.logMarketOfferExecution(event, data); console.info('[EAS Smart Offers]', event, data); return { event, data, timestamp: Date.now() }; };
 
-    EAS.Modules.MarketSmartOffers = { open: () => {
-        const saved = read(CONFIG_KEY, {}); const win = EAS.UI.createWindow({ id: 'eas-market-offers', title: '🔄 Ofertas Inteligentes', width: 1050, className: 'market-offers-window' });
+    const openSmartOffersPanel = () => {
+        let win = null;
+        const page = pageDiagnostic(); const execution = EAS.MarketOffersExecution?.read?.() || null;
+        log('smart-offer-module-init-start', { ...page, pageDetected: isOwnOfferPage(), executionStateExists: Boolean(execution), activeExecutionId: execution?.executionId || null });
+        log('smart-offer-panel-mount-start', { panelId: PANEL_ID, mountContainerFound: Boolean(document.body || document.documentElement) });
+        try {
+        const saved = read(CONFIG_KEY, {}); win = EAS.UI.createWindow({ id: PANEL_ID, title: '🔄 Ofertas Inteligentes', width: 1050, className: 'market-offers-window' });
         const root = document.createElement('div'); root.className = 'market-offers'; const status = document.createElement('div'); status.className = 'eas-status eas-status--info';
         const progress = document.createElement('div'); progress.className = 'market-progress'; progress.hidden = true; const diagnosis = document.createElement('section'); const executionSection = document.createElement('section'); const suggestionsSection = document.createElement('section'); const historySection = document.createElement('section');
         let cancelling = false; let suggestions = []; let originalSuggestions = [];
@@ -90,5 +99,18 @@
         let channel = null; try { channel = new BroadcastChannel(EAS.MarketOffersExecution.CHANNEL_NAME); channel.onmessage = (event) => { if (event.data?.type !== 'execution-finished') handleExecutionUpdate(event.data); }; } catch {}
         window.addEventListener('storage', (event) => { if (event.key === EAS.MarketOffersExecution.STORAGE_KEY || event.key === EAS.MarketEngine.CACHE_KEY) handleExecutionUpdate(); });
         renderDiagnosis(); recalculate(); renderHistory(); renderExecution();
-    } };
+        const panel = document.getElementById(PANEL_ID); if (!panel) throw new Error(`Painel ${PANEL_ID} não foi encontrado no DOM após a montagem.`);
+        panel.dataset.easSmartOffersMounted = 'true';
+        log('smart-offer-panel-mounted', { panelExists: true, panelId: PANEL_ID, mountContainerFound: true, executionStateExists: Boolean(execution), activeExecutionId: execution?.executionId || null, pageDetected: isOwnOfferPage() });
+        log('smart-offer-module-init-complete', { panelId: PANEL_ID });
+        return win;
+        } catch (error) {
+            const panel = document.getElementById(PANEL_ID); if (panel) panel.removeAttribute('data-eas-smart-offers-mounted');
+            log('smart-offer-panel-mount-failed', { message: error.message, stack: error.stack || '', panelExists: Boolean(panel), panelId: PANEL_ID, mountContainerFound: Boolean(document.body || document.documentElement), executionStateExists: Boolean(execution), activeExecutionId: execution?.executionId || null, pageDetected: isOwnOfferPage() });
+            console.error('Smart Offers panel mount failed', error);
+            if (win?.body) win.body.innerHTML = `<div class="eas-status eas-status--error"><strong>Smart Offers panel mount failed</strong><br>${EAS.Utils.escapeHtml(error.message)}</div>`;
+            throw error;
+        }
+    };
+    EAS.Modules.MarketSmartOffers = { open: openSmartOffersPanel, openSmartOffersPanel, isOwnOfferPage, PANEL_ID };
 })();
