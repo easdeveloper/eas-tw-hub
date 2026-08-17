@@ -185,6 +185,7 @@
                 if (!window.EAS.MarketEngine?.calculateResourceImbalance) {
                     await loadScript('services/market-engine.js');
                 }
+                if (!window.EAS.Market?.ExecutionPanel) await loadScript('services/market-execution-ui.js');
                 if (!window.EAS.MarketOffersExecution?.initialize) {
                     await loadScript('services/market-offers-execution.js');
                 }
@@ -228,6 +229,7 @@
             await loadScript('services/fakes-execution.js');
             await loadScript('services/support-execution.js');
             await loadScript('services/market-engine.js');
+            await loadScript('services/market-execution-ui.js');
             await loadScript('services/market-offers-execution.js');
             await loadScript('services/market-balance-execution.js');
             await loadScript('services/market-target-execution.js');

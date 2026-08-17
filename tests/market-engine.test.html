@@ -1,6 +1,7 @@
 <!doctype html><meta charset="utf-8"><title>Market Engine tests</title><pre id="result">running</pre>
 <script>window.addEventListener('error',(event)=>{document.getElementById('result').textContent=`ERROR\n${event.message}\n${event.filename}:${event.lineno}`;document.title='FAIL'});window.addEventListener('unhandledrejection',(event)=>{document.getElementById('result').textContent=`ERROR\n${event.reason?.stack||event.reason}`;document.title='FAIL'});window.EAS={MarketEngine:{},MarketOffersExecution:{},MarketBalanceExecution:{},MarketTargetExecution:{},Modules:{},World:{getGameData:()=>({config:{merchant_capacity:1000}}),getWorldName:()=>'test'},Villages:{list:()=>[]},Utils:{formatDateTime:()=>'',formatNumber:value=>String(value),escapeHtml:value=>String(value)}};</script>
 <script src="../services/market-engine.js"></script>
+<script src="../services/market-execution-ui.js"></script>
 <script src="../services/market-offers-execution.js"></script>
 <script src="../services/market-balance-execution.js"></script>
 <script src="../services/market-target-execution.js"></script>
