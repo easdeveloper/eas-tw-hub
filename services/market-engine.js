@@ -369,5 +369,39 @@
         }; win.body.append(body, status); render();
     };
 
-    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getConfirmedProjectedResources, getProjectedStorageSpace, transportFingerprint, classifyMarketMovement, deduplicateMarketMovements, createMarketVillageState, createMarketNetworkState, parseMarketTransportDocument, requestMarketTransports, refreshMarketNetworkState, calculateBalancedResourceTarget, calculateResourceImbalance, calculateVillageImbalance, calculateVillageResourceBalance, calculateTargetSupplyNeed, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, requestMarketVillage, refreshMarketVillage, refreshCurrentMarketVillageFromPage, refreshAllVillages, applyCreatedOfferToCache, applyInternalTransportToCache, validateTransport, coordinateDistance, calculateVillageReserve, distributeLimitedResources, buildMarketBalancePlan, buildTargetSupplyPlan, buildOfferPlan, buildVillageOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
+    const normalizeTransportText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('pt-BR');
+    const isHubControl = (element) => Boolean(element?.closest?.('[id^="eas-"],.fake-execution-panel,.market-module'));
+    const hasEditableTransportFields = (container) => Boolean(container?.querySelector?.('input[name="wood"],input[name="stone"],input[name="iron"],input[name="input"],input[name="target"],input[name="target_coord"]'));
+    const transportSubmit = (container) => [...(container?.querySelectorAll?.('input[type="submit"],button[type="submit"]') || [])]
+        .find((button) => !isHubControl(button) && normalizeTransportText(button.value || button.textContent) === 'enviar') || null;
+    const findMarketSendForm = (doc) => [...doc.querySelectorAll('form')].find((form) => !isHubControl(form) && hasEditableTransportFields(form) && transportSubmit(form)) || null;
+    const findMarketSendButton = (doc) => transportSubmit(findMarketSendForm(doc));
+    const findMarketConfirmationContainer = (doc, targetWindow = window) => {
+        const editableForm = findMarketSendForm(doc);
+        const headings = [...doc.querySelectorAll('h1,h2,h3,h4,.title,.head')];
+        const title = headings.find((element) => normalizeTransportText(element.textContent).includes('confirmar transporte'));
+        const urlIsConfirmation = (() => { try { return new URL(targetWindow.location.href).searchParams.get('try') === 'confirm_send'; } catch { return false; } })();
+        const candidates = [...doc.querySelectorAll('form')].filter((form) => !isHubControl(form) && !hasEditableTransportFields(form) && transportSubmit(form));
+        if (!title && !urlIsConfirmation) return null;
+        if (editableForm && !title && !urlIsConfirmation) return null;
+        if (title) {
+            let container = title.parentElement;
+            while (container && container !== doc.documentElement) {
+                if (!hasEditableTransportFields(container) && transportSubmit(container)) return container;
+                container = container.parentElement;
+            }
+        }
+        return candidates[0] || null;
+    };
+    const isMarketTransportConfirmationPage = (doc, targetWindow = window) => Boolean(findMarketConfirmationContainer(doc, targetWindow));
+    const findMarketConfirmationSendButton = (doc, targetWindow = window) => transportSubmit(findMarketConfirmationContainer(doc, targetWindow));
+    const detectMarketTransportSuccess = (doc, targetWindow = window) => {
+        if (isMarketTransportConfirmationPage(doc, targetWindow)) return false;
+        const text = normalizeTransportText(doc.body?.textContent);
+        const explicit = /transporte (?:foi |enviado |realizado )?(?:enviado|realizado|efetuado) com sucesso/.test(text);
+        return explicit || Boolean(findMarketSendForm(doc));
+    };
+    const TransportExecutor = { normalizeTransportText, findMarketSendForm, findMarketSendButton, findMarketConfirmationContainer, isMarketTransportConfirmationPage, findMarketConfirmationSendButton, detectMarketTransportSuccess };
+
+    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, TransportExecutor, normalizeVillage, getAvailableResources, getProjectedResources, getConfirmedProjectedResources, getProjectedStorageSpace, transportFingerprint, classifyMarketMovement, deduplicateMarketMovements, createMarketVillageState, createMarketNetworkState, parseMarketTransportDocument, requestMarketTransports, refreshMarketNetworkState, calculateBalancedResourceTarget, calculateResourceImbalance, calculateVillageImbalance, calculateVillageResourceBalance, calculateTargetSupplyNeed, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, requestMarketVillage, refreshMarketVillage, refreshCurrentMarketVillageFromPage, refreshAllVillages, applyCreatedOfferToCache, applyInternalTransportToCache, validateTransport, coordinateDistance, calculateVillageReserve, distributeLimitedResources, buildMarketBalancePlan, buildTargetSupplyPlan, buildOfferPlan, buildVillageOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
 })();
