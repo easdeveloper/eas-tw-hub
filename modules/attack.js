@@ -662,6 +662,7 @@
     };
 
     EAS.Modules.Attack.open = () => {
+        EAS.Villages?.ensureFresh?.({ maxAgeMs: 5 * 60 * 1000 }).catch?.(() => {});
         const savedSettings = getSettings();
         const showJapanTimezone = getShowJapanTimezone();
         const win = EAS.UI.createWindow({

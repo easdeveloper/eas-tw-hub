@@ -235,6 +235,8 @@
             await loadScript('services/scheduled-mission-execution.js');
             await loadScript('services/attack-preparation.js');
 
+            await window.EAS.Villages.ensureFresh({ maxAgeMs: 5 * 60 * 1000 }).catch((error) => console.warn('[EAS Villages] inicialização usará o último snapshot válido.', error));
+
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();
             const runtimeResumed = await resumeEASRuntimeIfNeeded();

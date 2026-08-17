@@ -197,7 +197,8 @@
     };
 
     const setStateFromCache = (cache, extra = {}) => {
-        villagesById = Object.entries(cache.villages || {}).reduce(
+        const ownedIds = new Set((EAS.Villages?.getAll?.() || []).map((village) => String(village.id)));
+        villagesById = Object.entries(cache.villages || {}).filter(([id]) => !ownedIds.size || ownedIds.has(String(id))).reduce(
             (result, [id, village]) => {
                 result[Number(id)] = {
                     id: Number(village.id || id),
@@ -527,9 +528,7 @@
         return Boolean(villagesById[Number(villageId || 0)]);
     };
 
-    EAS.Troops.getAll = () => {
-        return { ...villagesById };
-    };
+    EAS.Troops.getAll = () => { const entries = Object.values(villagesById); const owned = EAS.Villages?.filterOwned ? EAS.Villages.filterOwned(entries, { sourceModule: 'troops' }) : entries; return Object.fromEntries(owned.map((village) => [village.id, village])); };
 
     EAS.Troops.getSourceInfo = () => {
         return { ...sourceInfo };

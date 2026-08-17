@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>Villages State tests</title><pre id="result">running</pre>
+<script>
+const failures=[];let assertions=0;const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${label}: esperado ${JSON.stringify(expected)}, recebido ${JSON.stringify(actual)}`)};
+window.game_data={world:'br-test',player:{id:7,name:'Tester'},village:{id:1,name:'V1',coord:'500|500'}};
+window.EAS={World:{getInfo:()=>({world:'br-test',player:{id:7}}),getGameData:()=>game_data,getCurrentVillage:()=>({id:1,name:'V1',coordinate:'500|500'}),getWorldName:()=>game_data.world,getPlayer:()=>game_data.player,getServerNowTimestamp:()=>Date.now()},Utils:{parseCoordinate:(value)=>{const match=String(value||'').match(/(\d{1,3})\|(\d{1,3})/);return match?{x:Number(match[1]),y:Number(match[2]),coordinate:`${match[1]}|${match[2]}`}:null},distance:()=>0}};
+const overview=(count)=>`<table id="combined_table">${Array.from({length:count},(_,index)=>{const id=index+1;return `<tr><td><a href="https://example.test/game.php?village=${id}">V${id} ${500+id}|500</a></td><td class="points">${id}.000</td></tr>`}).join('')}</table>`;
+let requestCount=0,responseCount=16;window.fetch=async()=>{requestCount++;return{ok:true,text:async()=>overview(responseCount)}};
+</script>
+<script src="../core/storage.js"></script><script>
+const oldVillages=Object.fromEntries(Array.from({length:18},(_,index)=>{const id=index+1;return[String(id),{id,name:`V${id}`,coordinate:`${500+id}|500`,x:500+id,y:500,owned:true,lastSeenAt:1}]}));
+EAS.Storage.set('villages.state',{version:10,world:'br-test',playerId:'7',updatedAt:1,source:'old-cache',villages:oldVillages,history:[],removedVillages:[]});
+localStorage.setItem('eas_tw_market_cache',JSON.stringify({villages:{...Object.fromEntries(Object.entries(oldVillages).map(([id,village])=>[id,{villageId:id,villageName:village.name}]))}}));
+EAS.Storage.set('troops.available',{schemaVersion:3,world:'br-test',playerId:7,villages:Object.fromEntries(Object.keys(oldVillages).map((id)=>[id,{id,troops:{spear:1}}]))});
+localStorage.setItem('eas_tw_market_offers_analysis',JSON.stringify({suggestions:[]}));
+</script><script src="../core/villages.js"></script><script src="../services/mission-scheduler.js"></script>
+<script>
+(async()=>{
+ const refreshed=await EAS.Villages.refresh({forceRefresh:true});equal([refreshed.length,EAS.Villages.getAll().length],[16,16],'A: cache 18 e servidor 16 resulta em 16');equal(EAS.Villages.getById(18),null,'B: aldeia perdida sai da lista ativa');equal(EAS.Villages.getState().removedSincePrevious.map(v=>v.id),[17,18],'B2: aldeias perdidas entram apenas no histórico');equal(EAS.Villages.getVersion(),11,'versionamento incrementa no refresh');
+ const requestsAfterRefresh=requestCount;await EAS.Villages.ensureFresh({maxAgeMs:60000});equal(requestCount,requestsAfterRefresh,'D: cache recente evita request');await EAS.Villages.ensureFresh({maxAgeMs:60000,forceRefresh:true});equal(requestCount,requestsAfterRefresh+1,'E: forceRefresh consulta servidor');
+ responseCount=17;await EAS.Villages.refresh({forceRefresh:true});equal([EAS.Villages.getAll().length,EAS.Villages.getState().addedSincePrevious.map(v=>v.id)],[17,[17]],'C: nova aldeia é adicionada');
+ const market=JSON.parse(localStorage.getItem('eas_tw_market_cache'));equal([Object.keys(market.villages).length,Boolean(market.villages['18'])],[16,false],'F: MarketState remove referência stale');const troops=EAS.Storage.get('troops.available');equal(Boolean(troops.villages['18']),false,'G: tropas removem aldeia stale');equal(JSON.parse(localStorage.getItem('eas_tw_market_offers_analysis')).staleBecauseVillageSetChanged,true,'J: plano derivado fica stale');
+ const mission=EAS.MissionScheduler.createMission({id:'lost-source',type:'attack',villageId:'18',targetCoord:'501|501',sendTime:Date.now()+60000,status:'waiting'});EAS.MissionScheduler.reconcileOwnedVillages();const preserved=EAS.MissionScheduler.load().missions.find(item=>item.id==='lost-source');equal([Boolean(mission),preserved.status,preserved.lastError],[true,'source-village-lost','A aldeia de origem desta missão não pertence mais ao jogador.'],'I: missão é preservada e bloqueada');
+ const stale=EAS.Villages.filterOwned([{villageId:'17'},{villageId:'18'}],{sourceModule:'test'});equal([stale.length,EAS.Villages.getDiagnostic().staleReferences.at(-1).villageId],[1,'18'],'stale-reference é excluída e diagnosticada');
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:`PASS — ${assertions} assertions`;document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.getElementById('result').textContent=`ERROR\n${error.stack}`;document.title='FAIL'});
+</script>

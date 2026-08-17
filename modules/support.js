@@ -64,6 +64,7 @@
     Object.assign(EAS.Modules.Support, { extractDestinations, calculateSendableTroops, distributeSupportNeeds });
 
     EAS.Modules.Support.open = () => {
+        EAS.Villages?.ensureFresh?.({ maxAgeMs: 5 * 60 * 1000 }).catch?.(() => {});
         const config = read(CONFIG_KEY, {});
         const villages = EAS.Villages.list();
         const win = EAS.UI.createWindow({ id: 'eas-module-support', title: '🛡️ Planejador de Apoios', width: 980, className: 'support-planner-window' });

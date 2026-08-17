@@ -13,7 +13,7 @@
     const subtractResources = (base, ...values) => Object.fromEntries(RESOURCES.map((resource) => [resource, Math.max(0, Number(base?.[resource] || 0) - values.reduce((sum, value) => sum + Number(value?.[resource] || 0), 0))]));
     const readCache = () => { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); } catch { return null; } };
     const saveCache = (cache) => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); return true; } catch { return false; } };
-    const cacheVillages = (cache) => Array.isArray(cache?.villages) ? cache.villages : Object.values(cache?.villages || {});
+    const cacheVillages = (cache) => { const cached = Array.isArray(cache?.villages) ? cache.villages : Object.values(cache?.villages || {}); const owned = EAS.Villages?.getAll?.() || EAS.Villages?.list?.() || []; if (!owned.length) return cached; const ids = new Set(owned.map((village) => String(village.id))); return cached.filter((village) => ids.has(String(village.villageId || village.id))); };
     const requestMarketVillage = (village) => { const key = String(village?.id ?? village?.villageId ?? ''); if (inFlightVillageRequests.has(key)) return inFlightVillageRequests.get(key); const request = (async () => { const perfMark = EAS.Utils.Perf?.start('market.village-request', { villageId: key }); const url = new URL('/game.php', location.origin); url.searchParams.set('village', key); url.searchParams.set('screen', 'market'); url.searchParams.set('mode', 'own_offer'); const response = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); if (!response.ok) throw new Error(`HTTP ${response.status}`); const html = await response.text(); const doc = new DOMParser().parseFromString(html, 'text/html'); const parsed = parseMarketVillageDocument(doc, village); EAS.Utils.Perf?.end(perfMark, { status: parsed.status }); return { parsed, normalized: normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-page' }) }; })().finally(() => inFlightVillageRequests.delete(key)); inFlightVillageRequests.set(key, request); return request; };
 
     const normalizeVillage = (village = {}) => ({
@@ -67,9 +67,9 @@
         return { villageId: item.villageId, coordinate: item.villageCoord, villageName: item.villageName, resources: current, merchants: { ...item.merchants }, incoming, outgoing, projected, warehouseCapacity: item.storage, updatedAt: item.updatedAt, resourcesSource: item.source, transportSource: confirmed.length ? 'market-transport' : 'market-cache', marketCacheAge: Math.max(0, Date.now() - item.updatedAt), movements: confirmed };
     };
     const createMarketNetworkState = ({ villages = [], movements = [] } = {}) => {
-        const unique = deduplicateMarketMovements(movements); const byVillage = new Map();
+        const ownedVillages = EAS.Villages?.filterOwned ? EAS.Villages.filterOwned(villages, { sourceModule: 'market-state', idSelector: (village) => village.villageId || village.id }) : villages; const unique = deduplicateMarketMovements(movements); const byVillage = new Map();
         unique.forEach((entry) => { const type = classifyMarketMovement(entry); if (!['INCOMING_TRANSPORT', 'OUTGOING_TRANSPORT'].includes(type)) return; const villageId = String(type === 'INCOMING_TRANSPORT' ? entry.destinationVillageId || entry.targetVillageId : entry.originVillageId || entry.sourceVillageId); if (!byVillage.has(villageId)) byVillage.set(villageId, []); byVillage.get(villageId).push(entry); });
-        return { generatedAt: Date.now(), villages: villages.map((village) => createMarketVillageState(village, byVillage.get(String(village.villageId || village.id)) || [])), movements: unique, transports: unique.filter((entry) => ['INCOMING_TRANSPORT', 'OUTGOING_TRANSPORT'].includes(classifyMarketMovement(entry))), openOffers: unique.filter((entry) => classifyMarketMovement(entry) === 'OPEN_OFFER') };
+        return { generatedAt: Date.now(), villages: ownedVillages.map((village) => createMarketVillageState(village, byVillage.get(String(village.villageId || village.id)) || [])), movements: unique, transports: unique.filter((entry) => ['INCOMING_TRANSPORT', 'OUTGOING_TRANSPORT'].includes(classifyMarketMovement(entry))), openOffers: unique.filter((entry) => classifyMarketMovement(entry) === 'OPEN_OFFER') };
     };
     const parseMarketTransportDocument = (doc, currentVillageId) => {
         const rows = [...doc.querySelectorAll('[data-transport-id],#market_transports tr,#trades_table tr,.market-transport,.transport-row')]; const currentId = String(currentVillageId || '');
@@ -175,7 +175,7 @@
     };
 
     const refreshAllVillages = async ({ onProgress = () => {}, shouldCancel = () => false, delayMs = 250 } = {}) => {
-        const listed = EAS.Villages?.list?.() || []; const previous = getCache(); const previousMap = Object.fromEntries(cacheVillages(previous).map((village) => [String(village.villageId), village])); const result = {};
+        const listed = await EAS.Villages?.ensureFresh?.({ maxAgeMs: 5 * 60 * 1000 }) || EAS.Villages?.getAll?.() || EAS.Villages?.list?.() || []; const previous = getCache(); const previousMap = Object.fromEntries(cacheVillages(previous).map((village) => [String(village.villageId), village])); const result = {};
         for (let index = 0; index < listed.length; index += 1) {
             const village = listed[index];
             if (shouldCancel()) break;
@@ -193,7 +193,7 @@
             if (index < listed.length - 1 && !shouldCancel()) await wait(Math.max(0, delayMs));
         }
         listed.forEach((village) => { if (!result[String(village.id)]) result[String(village.id)] = previousMap[String(village.id)] || normalizeVillage({ ...village, available: false }); });
-        const cache = { version: 1, world: EAS.World?.getWorldName?.() || location.hostname, playerId: String(EAS.World?.getPlayer?.().id || ''), updatedAt: Date.now(), merchantCapacity: getMerchantCapacity(), villages: result }; saveCache(cache); return cache;
+        const cache = { version: 1, villagesVersion: EAS.Villages?.getVersion?.() || 0, world: EAS.World?.getWorldName?.() || location.hostname, playerId: String(EAS.World?.getPlayer?.().id || ''), updatedAt: Date.now(), merchantCapacity: getMerchantCapacity(), villages: result }; saveCache(cache); return cache;
     };
     const refreshMarketVillage = async (villageId) => {
         const cache = getCache(); const key = String(villageId); const listed = EAS.Villages?.list?.() || [];
@@ -306,7 +306,7 @@
     };
     const calculateVillageImbalance = (resources) => { const balance = calculateResourceImbalance(resources); return RESOURCES.reduce((score, resource) => score + Math.abs(resources[resource] - balance.target[resource]), 0); };
     const buildMarketBalancePlan = ({ villages, reserveConfig = { mode: 'storage-percent', values: { wood: 10, stone: 10, iron: 10 } }, merchantCapacity = getMerchantCapacity(), priority = 'distance', minimumTransport = 1000, allowSmallFinalAdjustments = false } = {}) => {
-        const perfMark = EAS.Utils.Perf?.start('balance.calculate', { villageCount: villages?.length || 0 }); const normalized = (villages || []).map(normalizeVillage).filter((village) => village.available); const global = calculateGlobalResources(normalized, getConfirmedProjectedResources);
+        const candidates = EAS.Villages?.filterOwned ? EAS.Villages.filterOwned(villages || [], { sourceModule: 'market-balance', idSelector: (village) => village.villageId || village.id }) : (villages || []); const perfMark = EAS.Utils.Perf?.start('balance.calculate', { villageCount: candidates.length }); const normalized = candidates.map(normalizeVillage).filter((village) => village.available); const global = calculateGlobalResources(normalized, getConfirmedProjectedResources);
         const states = normalized.map((village) => { const projected = getConfirmedProjectedResources(village); const reserve = calculateVillageReserve(village, reserveConfig); const goal = calculateBalancedResourceTarget(RESOURCES.reduce((sum, resource) => sum + projected[resource], 0)); const deficit = Object.fromEntries(RESOURCES.map((resource) => [resource, Math.min(Math.max(0, goal[resource] - projected[resource]), Math.max(0, village.storage - projected[resource]))])); const surplus = Object.fromEntries(RESOURCES.map((resource) => [resource, Math.max(0, Math.min(projected[resource] - goal[resource], projected[resource] - reserve[resource]))])); return { village, current: resourceMap(village.resources), incoming: resourceMap(village.incomingTransports), outgoing: resourceMap(village.outgoingTransports), before: { ...projected }, projected: { ...projected }, reserve, goal, deficit, surplus, merchantsLeft: village.merchants.available }; });
         const transports = []; const destinations = [...states].sort((a, b) => RESOURCES.reduce((sum, resource) => sum + b.deficit[resource] - a.deficit[resource], 0) || a.village.villageId.localeCompare(b.village.villageId));
         destinations.forEach((destination) => {

@@ -334,6 +334,7 @@
     EAS.Modules.Fakes.presets = FAKE_PRESETS;
 
     EAS.Modules.Fakes.open = ({ autoAnalyze = false } = {}) => {
+        EAS.Villages?.ensureFresh?.({ maxAgeMs: 5 * 60 * 1000 }).catch?.(() => {});
         const rawSavedPresetId = readStorage(STORAGE_KEYS.preset, 'simple');
         const savedPresetId = rawSavedPresetId === 'nt' ? 'fake_nt' : rawSavedPresetId === 'antiSnipe' ? 'anti_snipe' : rawSavedPresetId;
         const selectedPreset = FAKE_PRESETS[savedPresetId] || FAKE_PRESETS.simple;

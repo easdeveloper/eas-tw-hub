@@ -112,5 +112,5 @@
             throw error;
         }
     };
-    EAS.Modules.MarketSmartOffers = { open: openSmartOffersPanel, openSmartOffersPanel, isOwnOfferPage, PANEL_ID };
+    EAS.Modules.MarketSmartOffers = { open: () => { EAS.Villages?.ensureFresh?.({ maxAgeMs: 5 * 60 * 1000 }).catch?.(() => {}); return openSmartOffersPanel(); }, openSmartOffersPanel, isOwnOfferPage, PANEL_ID };
 })();
