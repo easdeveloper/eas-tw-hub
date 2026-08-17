@@ -37,7 +37,7 @@
         outgoingTransports: { ...resourceMap(village.outgoingTransports), alreadyDebited: Boolean(village.outgoingTransports?.alreadyDebited) },
         incomingTransports: resourceMap(village.incomingTransports),
         points: amount(village.points ?? village.villagePoints), production: resourceMap(village.production), farmCapacity: amount(village.farmCapacity ?? village.farm?.capacity), farmUsed: amount(village.farmUsed ?? village.farm?.used),
-        updatedAt: Number(village.updatedAt || Date.now()), source: village.source || 'unknown', available: village.available !== false
+        updatedAt: Number(village.updatedAt || Date.now()), revision: amount(village.revision), lastMutationSource: village.lastMutationSource || village.source || 'unknown', source: village.source || 'unknown', available: village.available !== false
     });
     const getAvailableResources = (village) => {
         return getEconomicState(village).committed;
@@ -219,7 +219,7 @@
     const refreshMarketVillage = async (villageId) => {
         const cache = getCache(); const key = String(villageId); const listed = EAS.Villages?.list?.() || [];
         const village = listed.find((item) => String(item.id) === key) || cacheVillages(cache).find((item) => String(item.villageId) === key) || { id: key };
-        const { parsed, normalized } = await requestMarketVillage(village);
+        const previous = cacheVillages(cache).find((item) => String(item.villageId) === key); const { parsed, normalized } = await requestMarketVillage(village); normalized.revision = amount(previous?.revision) + 1; normalized.lastMutationSource = 'market-remote-refresh';
         if (parsed.sessionExpired || !parsed.marketAvailable) throw new Error(parsed.sessionExpired ? 'Sessão expirada' : 'Mercado indisponível');
         normalized.status = parsed.status;
         cache.villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((item) => [String(item.villageId), item])) : (cache.villages || {});
@@ -229,7 +229,7 @@
         const key = String(villageId || ''); if (!key) throw new Error('Aldeia atual não identificada.');
         const cache = getCache(); const listed = EAS.Villages?.list?.() || []; const village = listed.find((item) => String(item.id) === key) || cacheVillages(cache).find((item) => String(item.villageId) === key) || { id: key };
         const parsed = parseMarketVillageDocument(doc, village); if (parsed.sessionExpired || !parsed.marketAvailable) throw new Error(parsed.sessionExpired ? 'Sessão expirada' : 'Mercado indisponível');
-        const normalized = normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-current-page' }); normalized.status = parsed.status;
+        const previous = cacheVillages(cache).find((item) => String(item.villageId) === key); const normalized = normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-current-page', revision: amount(previous?.revision) + 1, lastMutationSource: 'smart-offers-executor-confirmed' }); normalized.status = parsed.status;
         cache.villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((item) => [String(item.villageId), item])) : (cache.villages || {}); cache.villages[key] = normalized; cache.updatedAt = Date.now(); saveCache(cache); return normalized;
     };
     const applyInternalTransportToCache = (transport) => {
@@ -243,7 +243,7 @@
         const activeOffer = { offerId: item.offerId || `optimistic-${item.id}`, villageId: key, offerResource: item.offerResource, offerAmount: amount(item.offerAmount), requestResource: item.requestResource, requestAmount: amount(item.requestAmount), repeatCount, totalOfferAmount, totalRequestAmount, merchantsUsed: amount(item.merchantsRequired || calculateMerchantsRequired({ [item.offerResource]: totalOfferAmount })), status: 'active', optimistic: true };
         village.resources[item.offerResource] = Math.max(0, village.resources[item.offerResource] - totalOfferAmount);
         village.activeOfferList = [...village.activeOfferList.filter((offer) => offer.offerId !== activeOffer.offerId), activeOffer]; village.activeOffers = { ...aggregateActiveOffers(village.activeOfferList), alreadyDebited: true };
-        village.merchants.available = Math.max(0, village.merchants.available - activeOffer.merchantsUsed); village.updatedAt = Date.now(); village.source = 'optimistic-offer-created';
+        village.merchants.available = Math.max(0, village.merchants.available - activeOffer.merchantsUsed); village.updatedAt = Date.now(); village.revision = amount(village.revision) + 1; village.lastMutationSource = 'smart-offers-executor'; village.source = 'optimistic-offer-created';
         villages[key] = village; cache.villages = villages; cache.updatedAt = Date.now(); saveCache(cache); EAS.Data?.onOfferCreated?.({ villageId: key }); return village;
     };
     const validateTransport = ({ source, target, resources, merchantCapacity = getMerchantCapacity() }) => {
@@ -281,7 +281,7 @@
             let plannedAmount = Math.min(maximum, Math.floor(surplus[offered]), Math.floor(deficit[requested]), merchantsLeft * capacity, Math.max(0, virtual[offered] - reserve[offered])); if (roundToHundreds) plannedAmount = Math.floor(plannedAmount / 100) * 100; if (plannedAmount < minimum) break;
             const amountPerOffer = Math.min(capacity, plannedAmount); const quantity = calculateOfferQuantity({ totalOfferAmount: plannedAmount, amountPerOffer, requestAmountPerOffer: amountPerOffer, merchantsAvailable: merchantsLeft }); if (!quantity.valid) break;
             const before = { ...virtual }; const afterCreation = { ...before, [offered]: before[offered] - quantity.totalOfferAmount }; const afterAcceptance = { ...afterCreation, [requested]: afterCreation[requested] + quantity.totalRequestAmount }; sequence += 1;
-            offers.push({ id: `offer-${Date.now()}-${item.villageId}-${sequence}`, villageId: item.villageId, villageName: item.villageName, villageCoord: item.villageCoord, villageSequence: sequence, offerResource: offered, offerAmount: quantity.amountPerOffer, amountPerOffer: quantity.amountPerOffer, requestResource: requested, requestAmount: quantity.requestAmountPerOffer, requestAmountPerOffer: quantity.requestAmountPerOffer, repeatCount: quantity.repeatCount, plannedTotalOfferAmount: plannedAmount, totalOfferAmount: quantity.totalOfferAmount, totalRequestAmount: quantity.totalRequestAmount, pendingAmount: quantity.pendingAmount, merchantsRequired: quantity.merchantsRequired, merchantsAvailable: item.merchants.available, ratio: '1:1', resourcesBefore: before, resourcesAfterCreation: afterCreation, resourcesAfterAcceptance: afterAcceptance, status: quantity.status, selected: true });
+            offers.push({ id: `offer-${Date.now()}-${item.villageId}-${sequence}`, villageId: item.villageId, villageName: item.villageName, villageCoord: item.villageCoord, villageSequence: sequence, offerResource: offered, offerAmount: quantity.amountPerOffer, amountPerOffer: quantity.amountPerOffer, requestResource: requested, requestAmount: quantity.requestAmountPerOffer, requestAmountPerOffer: quantity.requestAmountPerOffer, repeatCount: quantity.repeatCount, plannedTotalOfferAmount: plannedAmount, totalOfferAmount: quantity.totalOfferAmount, totalRequestAmount: quantity.totalRequestAmount, pendingAmount: quantity.pendingAmount, merchantsRequired: quantity.merchantsRequired, merchantsAvailable: merchantsLeft, expectedRevision: item.revision, expectedLastMutationSource: item.lastMutationSource, ratio: '1:1', resourcesBefore: before, resourcesAfterCreation: afterCreation, resourcesAfterAcceptance: afterAcceptance, status: quantity.status, selected: true });
             Object.assign(virtual, afterAcceptance); merchantsLeft -= quantity.merchantsRequired;
         }
         const beforeBalance = calculateVillageResourceBalance(initial); const afterBalance = calculateVillageResourceBalance(virtual); const withinTolerance = (balance) => RESOURCES.every((resource) => Math.abs(balance.percentages[resource] - 100 / 3) <= tolerancePercent);
