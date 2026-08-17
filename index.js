@@ -163,6 +163,16 @@
             if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
                 const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
+                if (window.__EAS_TW_SILENT_BOOTSTRAP__) {
+                    window.EAS.MissionScheduler?.initialize?.();
+                    await resumeEASRuntimeIfNeeded();
+                    notifyReady();
+                    return;
+                }
+                if (!window.__EAS_TW_SILENT_BOOTSTRAP__) {
+                    if (!window.EAS.Log?.entries) await loadScript('core/observability.js');
+                    if (!window.EAS.Runtime?.create) await loadScript('core/runtime.js');
+                }
                 if (!window.EAS.Place?.fillTargetFromUrl) {
                     await loadScript('services/place.js');
                 }
@@ -184,6 +194,10 @@
                 }
                 if (!window.EAS.MarketEngine?.calculateResourceImbalance) {
                     await loadScript('services/market-engine.js');
+                }
+                if (!window.__EAS_TW_SILENT_BOOTSTRAP__) {
+                    if (!window.EAS.Adapters?.MarketPage) await loadScript('services/game-adapters.js');
+                    if (!window.EAS.Data?.Villages) await loadScript('core/game-data.js');
                 }
                 if (!window.EAS.Market?.ExecutionPanel) await loadScript('services/market-execution-ui.js');
                 if (!window.EAS.MarketOffersExecution?.initialize) {
@@ -208,6 +222,7 @@
                 window.EAS.MarketOffersExecution.initialize();
                 window.EAS.MarketBalanceExecution.initialize();
                 window.EAS.MarketTargetExecution.initialize();
+                window.EAS.Data?.bootstrap?.();
                 if (!marketExecutionOnly) window.EAS.UI.toggle();
                 notifyReady();
                 return;
@@ -218,6 +233,8 @@
             await loadScript('core/eas.js');
             await loadScript('core/utils.js');
             await loadScript('core/storage.js');
+            await loadScript('core/observability.js');
+            await loadScript('core/runtime.js');
             await loadScript('core/ui.js');
             await loadScript('core/world.js');
             await loadScript('core/units.js');
@@ -229,6 +246,8 @@
             await loadScript('services/fakes-execution.js');
             await loadScript('services/support-execution.js');
             await loadScript('services/market-engine.js');
+            await loadScript('services/game-adapters.js');
+            await loadScript('core/game-data.js');
             await loadScript('services/market-execution-ui.js');
             await loadScript('services/market-offers-execution.js');
             await loadScript('services/market-balance-execution.js');
@@ -237,7 +256,7 @@
             await loadScript('services/scheduled-mission-execution.js');
             await loadScript('services/attack-preparation.js');
 
-            await window.EAS.Villages.ensureFresh({ maxAgeMs: 5 * 60 * 1000 }).catch((error) => console.warn('[EAS Villages] inicialização usará o último snapshot válido.', error));
+            window.EAS.Data.bootstrap().catch((error) => window.EAS.Log.error('bootstrap', 'background-refresh-failed', error));
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();

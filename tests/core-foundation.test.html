@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>window.EAS={Storage:{},Utils:{Perf:{start:()=>({startedAt:performance.now()}),end:()=>({})}},Data:{},State:{},MarketEngine:{},Troops:{},Villages:{},World:{},Market:{}};</script>
+<script src="../core/storage.js"></script><script src="../core/observability.js"></script>
+<script>
+let villageRefreshes=0,troopRefreshes=0,marketRefreshes=0;
+const village={id:1,name:'A',coordinate:'500|500'};const marketVillage={villageId:'1',resources:{wood:100,stone:200,iron:300},incomingTransports:{wood:0,stone:0,iron:0},outgoingTransports:{wood:0,stone:0,iron:0},activeOffers:{wood:0,stone:0,iron:0},merchants:{available:5,total:10},updatedAt:Date.now(),available:true};
+Object.assign(EAS.World,{getInfo:()=>({world:'br1',player:{id:7}}),getServerNowTimestamp:()=>Date.now(),getWorldName:()=> 'br1'});
+Object.assign(EAS.Villages,{getAll:()=>[village],getById:(id)=>Number(id)===1?village:null,getState:()=>({updatedAt:Date.now(),source:'cache'}),refresh:async()=>{villageRefreshes++;return[village]},ensureFresh:async()=>{villageRefreshes++;return[village]},invalidate:()=>{}});
+Object.assign(EAS.Troops,{getAll:()=>({1:{id:1,troops:{spear:10}}}),getSourceInfo:()=>({updatedAtLocal:Date.now(),source:'cache'}),refresh:async()=>{troopRefreshes++;return{}},ensureLoaded:async()=>{troopRefreshes++;return{}}});
+Object.assign(EAS.MarketEngine,{getCache:()=>({updatedAt:Date.now(),source:'cache',villages:{1:marketVillage}}),cacheVillages:(cache)=>Object.values(cache.villages),getProjectedResources:(value)=>value.resources,refreshMarketVillage:async()=>{marketRefreshes++;return marketVillage},refreshAllVillages:async()=>{marketRefreshes++;return{}},TransportExecutor:{findMarketSendButton:(doc)=>doc.querySelector('[data-send]'),isMarketTransportConfirmationPage:()=>false,findMarketConfirmationSendButton:()=>null,detectMarketTransportSuccess:()=>false}});
+</script>
+<script src="../core/game-data.js"></script><script src="../services/game-adapters.js"></script><script src="../core/runtime.js"></script>
+<script>
+(async()=>{const failures=[];let assertions=0;const ok=(value,label)=>{assertions++;if(!value)failures.push(label)};const equal=(a,b,label)=>ok(JSON.stringify(a)===JSON.stringify(b),`${label}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
+equal(Object.keys(EAS.Data).includes('Villages'),true,'Data Layer expõe aldeias');equal(EAS.Data.TTL.resources<EAS.Data.TTL.villages,true,'TTL varia por domínio');
+const snapshot=EAS.State.snapshot();equal([snapshot.villages.length,snapshot.troops['1'].available.spear,snapshot.resources['1'].wood,snapshot.merchants['1'].available],[1,10,100,5],'snapshot reúne fontes autoritativas');ok(snapshot.metadata.villages.confidence==='high','snapshot inclui metadados');
+let calls=0;const factory=()=>new Promise(resolve=>setTimeout(()=>{calls++;resolve(7)},20));const [a,b]=await Promise.all([EAS.Data.dedupe('same',factory),EAS.Data.dedupe('same',factory)]);equal([a,b,calls],[7,7,1],'requests simultâneas são deduplicadas');
+let active=0,maxActive=0;await EAS.Data.mapLimit([1,2,3,4,5],2,async()=>{active++;maxActive=Math.max(maxActive,active);await new Promise(resolve=>setTimeout(resolve,10));active--});equal(maxActive,2,'concorrência respeita limite');
+EAS.Data.onTransportSent({originVillageId:1,targetVillageId:2});ok(EAS.Data.Market.getMetadata().stale,'evento invalida Market State');
+const doc=document.implementation.createHTMLDocument('market');doc.body.innerHTML='<input name="wood" value="11"><input name="stone" value="22"><input name="iron" value="33"><button data-send>Enviar</button>';equal(EAS.Adapters.MarketPage.readResources(doc),{wood:11,stone:22,iron:33},'adapter central lê recursos');ok(EAS.Adapters.MarketPage.findSendButton(doc),'adapter usa executor compartilhado');
+let fired=0;const runtime=EAS.Runtime.create({id:'r1',type:'test'});runtime.listen(window,'foundation-event',()=>fired++);window.dispatchEvent(new Event('foundation-event'));runtime.dispose();window.dispatchEvent(new Event('foundation-event'));equal(fired,1,'dispose remove listeners');equal(runtime.start().status,'running','lifecycle inicia');equal(runtime.complete().status,'completed','lifecycle conclui');
+for(let index=0;index<510;index++)EAS.Log.debug('test','entry',{index});equal(EAS.Log.entries().length,500,'logger mantém ring buffer');EAS.Usage.track('market.balance.execute');EAS.Usage.track('market.balance.execute');equal(EAS.Usage.report()['market.balance.execute'].count,2,'usage counter é local e acumulativo');
+document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:`PASS - ${assertions} assertions`;document.title=failures.length?'FAIL':'PASS';})();
+</script>
