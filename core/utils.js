@@ -3,6 +3,51 @@
 
     EAS.Utils = EAS.Utils || {};
 
+    const perfEntries = [];
+    EAS.Utils.Perf = EAS.Utils.Perf || {
+        enabled: () => {
+            try { return localStorage.getItem('eas_tw_perf_debug') === 'true'; } catch { return false; }
+        },
+        start(name, detail = {}) {
+            if (!this.enabled()) return null;
+            return { name, detail, startedAt: performance.now() };
+        },
+        end(mark, detail = {}) {
+            if (!mark) return null;
+            const entry = { name: mark.name, durationMs: Number((performance.now() - mark.startedAt).toFixed(2)), timestamp: Date.now(), detail: { ...mark.detail, ...detail } };
+            perfEntries.push(entry);
+            if (perfEntries.length > 100) perfEntries.splice(0, perfEntries.length - 100);
+            console.debug('[PERF]', entry);
+            return entry;
+        },
+        entries: () => perfEntries.slice(),
+        clear: () => { perfEntries.length = 0; }
+    };
+
+    EAS.Utils.waitForElement = (selector, { document: targetDocument = document, timeoutMs = 5000, targetWindow = window } = {}) => new Promise((resolve) => {
+        const existing = targetDocument.querySelector(selector);
+        if (existing) { resolve(existing); return; }
+        let settled = false;
+        let observer = null;
+        let timer = null;
+        const finish = (element) => {
+            if (settled) return;
+            settled = true;
+            observer?.disconnect();
+            if (timer !== null) targetWindow.clearTimeout(timer);
+            resolve(element);
+        };
+        const Observer = targetWindow.MutationObserver;
+        if (Observer) {
+            observer = new Observer(() => {
+                const element = targetDocument.querySelector(selector);
+                if (element) finish(element);
+            });
+            observer.observe(targetDocument.documentElement || targetDocument, { childList: true, subtree: true });
+        }
+        timer = targetWindow.setTimeout(() => finish(targetDocument.querySelector(selector)), Math.max(0, Number(timeoutMs) || 0));
+    });
+
     EAS.Utils.parseCoordinate = (value) => {
         const match = String(value ?? '').match(/(\d{1,3})\|(\d{1,3})/);
 

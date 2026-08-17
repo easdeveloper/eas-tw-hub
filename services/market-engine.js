@@ -3,6 +3,7 @@
     EAS.MarketEngine = EAS.MarketEngine || {};
     const CACHE_KEY = 'eas_tw_market_cache';
     const RESOURCES = ['wood', 'stone', 'iron'];
+    const inFlightVillageRequests = new Map();
     const amount = (value) => Math.max(0, Math.floor(Number(value) || 0));
     const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
     const resourceMap = (value = {}) => Object.fromEntries(RESOURCES.map((resource) => [resource, amount(value[resource])]));
@@ -11,6 +12,7 @@
     const readCache = () => { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); } catch { return null; } };
     const saveCache = (cache) => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); return true; } catch { return false; } };
     const cacheVillages = (cache) => Array.isArray(cache?.villages) ? cache.villages : Object.values(cache?.villages || {});
+    const requestMarketVillage = (village) => { const key = String(village?.id ?? village?.villageId ?? ''); if (inFlightVillageRequests.has(key)) return inFlightVillageRequests.get(key); const request = (async () => { const perfMark = EAS.Utils.Perf?.start('market.village-request', { villageId: key }); const url = new URL('/game.php', location.origin); url.searchParams.set('village', key); url.searchParams.set('screen', 'market'); url.searchParams.set('mode', 'own_offer'); const response = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); if (!response.ok) throw new Error(`HTTP ${response.status}`); const html = await response.text(); const doc = new DOMParser().parseFromString(html, 'text/html'); const parsed = parseMarketVillageDocument(doc, village); EAS.Utils.Perf?.end(perfMark, { status: parsed.status }); return { parsed, normalized: normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-page' }) }; })().finally(() => inFlightVillageRequests.delete(key)); inFlightVillageRequests.set(key, request); return request; };
 
     const normalizeVillage = (village = {}) => ({
         villageId: String(village.villageId ?? village.id ?? ''),
@@ -128,11 +130,8 @@
             if (shouldCancel()) break;
             onProgress({ index: index + 1, total: listed.length, village, status: 'updating' });
             try {
-                const url = new URL('/game.php', location.origin); url.searchParams.set('village', village.id); url.searchParams.set('screen', 'market'); url.searchParams.set('mode', 'own_offer');
-                const response = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const html = await response.text(); const doc = new DOMParser().parseFromString(html, 'text/html'); const parsed = parseMarketVillageDocument(doc, village);
-                result[String(village.id)] = normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-page' });
+                const { parsed, normalized } = await requestMarketVillage(village);
+                result[String(village.id)] = normalized;
                 result[String(village.id)].status = parsed.status; result[String(village.id)].activeOfferList = parsed.activeOfferList;
                 onProgress({ index: index + 1, total: listed.length, village, status: parsed.status });
                 if (parsed.sessionExpired) break;
@@ -148,12 +147,9 @@
     const refreshMarketVillage = async (villageId) => {
         const cache = getCache(); const key = String(villageId); const listed = EAS.Villages?.list?.() || [];
         const village = listed.find((item) => String(item.id) === key) || cacheVillages(cache).find((item) => String(item.villageId) === key) || { id: key };
-        const url = new URL('/game.php', location.origin); url.searchParams.set('village', key); url.searchParams.set('screen', 'market'); url.searchParams.set('mode', 'own_offer');
-        const response = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const doc = new DOMParser().parseFromString(await response.text(), 'text/html'); const parsed = parseMarketVillageDocument(doc, village);
+        const { parsed, normalized } = await requestMarketVillage(village);
         if (parsed.sessionExpired || !parsed.marketAvailable) throw new Error(parsed.sessionExpired ? 'Sessão expirada' : 'Mercado indisponível');
-        const normalized = normalizeVillage({ ...village, ...parsed, activeOffers: parsed.activeOffers, activeOfferList: parsed.activeOfferList, source: 'market-page' }); normalized.status = parsed.status;
+        normalized.status = parsed.status;
         cache.villages = Array.isArray(cache.villages) ? Object.fromEntries(cache.villages.map((item) => [String(item.villageId), item])) : (cache.villages || {});
         cache.villages[key] = normalized; cache.updatedAt = Date.now(); saveCache(cache); return normalized;
     };
@@ -220,9 +216,10 @@
         return { village: item, offers, resourcesBefore: initial, resourcesAfter: virtual, balanceBefore: beforeBalance, balanceAfter: afterBalance, balancedBefore: withinTolerance(beforeBalance), balancedAfter: withinTolerance(afterBalance), merchantsUsed: item.merchants.available - merchantsLeft, merchantsLeft };
     };
     const buildGlobalOfferSuggestions = (villages, config = {}) => {
+        const perfMark = EAS.Utils.Perf?.start('market.smart-offers.calculate', { villageCount: villages.length });
         const normalized = villages.map(normalizeVillage).filter((village) => village.available && village.status !== 'read-failed'); const merchantCapacity = amount(config.merchantCapacity || getMerchantCapacity()); const calculationBase = config.calculationBase || (config.considerActiveOffers === false ? 'current' : 'projected');
         const villagePlans = normalized.map((village) => buildVillageOfferPlan({ village, offerSize: config.maximumPerOffer || 10000, minimumOfferSize: config.minimumPerOffer || 100, merchantCapacity, activeOffers: calculationBase !== 'current', reserveConfig: config.reserve || {}, tolerance: config.tolerancePercent ?? 3, roundToHundreds: config.roundToHundreds !== false })); const suggestions = villagePlans.flatMap((plan) => plan.offers); const uncovered = villagePlans.reduce((total, plan) => addResources(total, plan.balanceAfter.deficit), resourceMap()); const currentResources = calculateGlobalResources(normalized, getAvailableResources); const projectedResources = calculateGlobalResources(normalized, getProjectedResources);
-        return { version: 2, calculationMode: 'per-village', suggestions, villagePlans, uncovered, currentResources, projectedResources, currentImbalance: calculateResourceImbalance(currentResources), projectedImbalance: calculateResourceImbalance(projectedResources), summary: { villagesAnalyzed: villagePlans.length, villagesBalanced: villagePlans.filter((plan) => plan.balancedAfter).length, villagesUnbalanced: villagePlans.filter((plan) => !plan.balancedAfter).length, villagesWithoutMerchants: villagePlans.filter((plan) => !plan.village.merchants.available).length } };
+        const result = { version: 2, calculationMode: 'per-village', suggestions, villagePlans, uncovered, currentResources, projectedResources, currentImbalance: calculateResourceImbalance(currentResources), projectedImbalance: calculateResourceImbalance(projectedResources), summary: { villagesAnalyzed: villagePlans.length, villagesBalanced: villagePlans.filter((plan) => plan.balancedAfter).length, villagesUnbalanced: villagePlans.filter((plan) => !plan.balancedAfter).length, villagesWithoutMerchants: villagePlans.filter((plan) => !plan.village.merchants.available).length } }; EAS.Utils.Perf?.end(perfMark, { analyzedVillages: villagePlans.length, suggestionCount: suggestions.length }); return result;
     };
     const buildTransportPlan = ({ source, target, desiredResources }) => {
         const origin = normalizeVillage(source); const destination = normalizeVillage(target); const available = getAvailableResources(origin); const space = getProjectedStorageSpace(destination); const capacity = origin.merchants.available * getMerchantCapacity(); let capacityLeft = capacity; const resources = resourceMap();
@@ -319,5 +316,5 @@
         }; win.body.append(body, status); render();
     };
 
-    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, calculateVillageResourceBalance, calculateTargetSupplyNeed, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, refreshMarketVillage, refreshCurrentMarketVillageFromPage, refreshAllVillages, applyCreatedOfferToCache, applyInternalTransportToCache, validateTransport, coordinateDistance, calculateVillageReserve, distributeLimitedResources, buildMarketBalancePlan, buildTargetSupplyPlan, buildOfferPlan, buildVillageOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
+    Object.assign(EAS.MarketEngine, { CACHE_KEY, RESOURCES, normalizeVillage, getAvailableResources, getProjectedResources, getProjectedStorageSpace, calculateBalancedResourceTarget, calculateResourceImbalance, calculateVillageResourceBalance, calculateTargetSupplyNeed, getMerchantCapacity, calculateMerchantsRequired, calculateOfferRepeatCount, calculateOfferExecutionValues, calculateOfferQuantity, splitOfferAmount, aggregateActiveOffers, parseMarketVillageDocument, requestMarketVillage, refreshMarketVillage, refreshCurrentMarketVillageFromPage, refreshAllVillages, applyCreatedOfferToCache, applyInternalTransportToCache, validateTransport, coordinateDistance, calculateVillageReserve, distributeLimitedResources, buildMarketBalancePlan, buildTargetSupplyPlan, buildOfferPlan, buildVillageOfferPlan, buildGlobalOfferSuggestions, buildTransportPlan, calculateGlobalResources, applyInternalTransport, distributeTargetNeed, collectVillageData, getCache, cacheVillages, openFoundationModule });
 })();

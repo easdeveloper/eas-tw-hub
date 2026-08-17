@@ -23,6 +23,7 @@
     ];
 
     let villagesById = {};
+    let refreshPromise = null;
     let sourceInfo = {
         available: false,
         source: 'none',
@@ -431,7 +432,8 @@
         };
     };
 
-    EAS.Troops.refresh = async (_options = {}) => {
+    const refreshTroops = async (_options = {}) => {
+        const perfMark = EAS.Utils.Perf?.start('troops.refresh');
         const url = buildOverviewUrl();
         let response;
 
@@ -465,7 +467,14 @@
             ...cache
         });
 
+        EAS.Utils.Perf?.end(perfMark, { villageCount: Object.keys(villagesById).length, source: parsed.source });
         return villagesById;
+    };
+
+    EAS.Troops.refresh = (_options = {}) => {
+        if (refreshPromise) return refreshPromise;
+        refreshPromise = refreshTroops(_options).finally(() => { refreshPromise = null; });
+        return refreshPromise;
     };
 
     EAS.Troops.ensureLoaded = async ({

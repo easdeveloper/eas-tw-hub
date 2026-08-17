@@ -97,7 +97,7 @@
     };
     const watchExecutionWindow = (targetWindow, ownerWindow = window) => {
         if (!targetWindow || targetWindow.closed) return null; if (targetWindow.__easMarketWatchTimer) return targetWindow.__easMarketWatchTimer;
-        const timer = ownerWindow.setInterval(() => { if (targetWindow.closed || !read() || read()?.endedAt) { ownerWindow.clearInterval(timer); return; } try { if (targetWindow.document?.readyState !== 'loading' && !targetWindow.EAS?.MarketOffersExecution?.initialize) injectLoader(targetWindow); else if (!targetWindow.document?.getElementById(PANEL_ID)) targetWindow.EAS?.MarketOffersExecution?.initialize?.(); } catch {} }, 300);
+        const timer = ownerWindow.setInterval(() => { const execution = read(); if (targetWindow.closed || !execution || execution.endedAt) { ownerWindow.clearInterval(timer); try { targetWindow.__easMarketWatchTimer = null; } catch {} return; } try { if (targetWindow.document?.readyState !== 'loading' && !targetWindow.EAS?.MarketOffersExecution?.initialize) injectLoader(targetWindow); else if (!targetWindow.document?.getElementById(PANEL_ID)) targetWindow.EAS?.MarketOffersExecution?.initialize?.(); } catch {} }, 300);
         try { targetWindow.__easMarketWatchTimer = timer; } catch {} return timer;
     };
     const openCurrent = (context) => {
@@ -145,7 +145,7 @@
         return { ...result, valid, initialValue, finalValue: input.value, stableAttempt, stabilizedAtMs, diagnostics, message: valid ? null : `Falha ao preparar repetições após 5 tentativas. Esperado: ${expected}. Atual: ${actual}.` };
     };
     const findSubmit = (doc, form) => form?.querySelector(`${MARKET_SELECTORS.createButton}, [name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]`) || doc.querySelector(`${MARKET_SELECTORS.createButton}, [name="create_offer"], [data-action="create-offer"]`);
-    const waitForElement = (doc, selector, timeoutMs = 5000, targetWindow = window) => new Promise((resolve) => { const existing = doc.querySelector(selector); if (existing) { resolve(existing); return; } let settled = false; let observer = null; const finish = (value) => { if (settled) return; settled = true; observer?.disconnect(); targetWindow.clearTimeout(timer); resolve(value); }; const Observer = targetWindow.MutationObserver || window.MutationObserver; if (Observer) { observer = new Observer(() => { const element = doc.querySelector(selector); if (element) finish(element); }); observer.observe(doc.documentElement || doc, { childList: true, subtree: true }); } const timer = targetWindow.setTimeout(() => finish(doc.querySelector(selector)), Math.max(0, Number(timeoutMs) || 0)); });
+    const waitForElement = (doc, selector, timeoutMs = 5000, targetWindow = window) => EAS.Utils.waitForElement(selector, { document: doc, timeoutMs, targetWindow });
     const waitForMaxTravelTimeInput = (doc, timeoutMs = 5000, targetWindow = window) => waitForElement(doc, MARKET_SELECTORS.maxTravelTime, timeoutMs, targetWindow);
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
         const names = kind === 'offer' ? ['res_sell', 'sell_resource', 'offer_resource'] : ['res_buy', 'buy_resource', 'request_resource'];
