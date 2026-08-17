@@ -371,7 +371,7 @@
 
     const normalizeTransportText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('pt-BR');
     const isHubControl = (element) => Boolean(element?.closest?.('[id^="eas-"],.fake-execution-panel,.market-module'));
-    const hasEditableTransportFields = (container) => Boolean(container?.querySelector?.('input[name="wood"],input[name="stone"],input[name="iron"],input[name="input"],input[name="target"],input[name="target_coord"]'));
+    const hasEditableTransportFields = (container) => [...(container?.querySelectorAll?.('input[name="wood"],input[name="stone"],input[name="iron"],input[name="input"],input[name="target"],input[name="target_coord"]') || [])].some((input) => String(input.type || 'text').toLowerCase() !== 'hidden' && !input.disabled);
     const transportSubmit = (container) => [...(container?.querySelectorAll?.('input[type="submit"],button[type="submit"]') || [])]
         .find((button) => !isHubControl(button) && normalizeTransportText(button.value || button.textContent) === 'enviar') || null;
     const findMarketSendForm = (doc) => [...doc.querySelectorAll('form')].find((form) => !isHubControl(form) && hasEditableTransportFields(form) && transportSubmit(form)) || null;
