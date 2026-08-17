@@ -185,7 +185,7 @@
         return result.success ? { status: 'created', offerId: result.offerId, evidence: result.evidence } : null;
     };
     const validateQueueItem = (item) => {
-        const cache = EAS.MarketEngine.getCache(); const village = EAS.MarketEngine.cacheVillages(cache).find((entry) => String(entry.villageId) === String(item.villageId)); const reasons = [];
+        const village = EAS.Data.Market.getById(item.villageId); const reasons = [];
         if (!village?.available) reasons.push('Dados incompletos');
         if (Date.now() - Number(village?.updatedAt || 0) > 15 * 60 * 1000) reasons.push('Dados alterados ou desatualizados');
         if (!(item.offerAmount > 0) || !(item.requestAmount > 0) || !(item.repeatCount > 0) || item.offerResource === item.requestResource) reasons.push('Oferta inválida');
@@ -259,7 +259,7 @@
             add('Recalcular ofertas pendentes', () => recalculatePending(), !active);
             add('Copiar diagnóstico', async () => { const text = JSON.stringify(exportDiagnostic(targetWindow), null, 2); try { await targetWindow.navigator.clipboard.writeText(text); render('Diagnóstico copiado.', 'success'); } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'copy-diagnostic', message: error.message }); targetWindow.prompt('Copie o diagnóstico:', text); } });
             add('Limpar diagnóstico', () => { clearDebugLogs(); render('Diagnóstico limpo. A fila foi preservada.', 'info'); });
-            if (finished) add('Atualizar todos os dados', () => EAS.MarketEngine.refreshAllVillages().then(() => render('', 'success')));
+            if (finished) add('Atualizar todos os dados', () => EAS.Data.Market.refresh({ forceRefresh: true }).then(() => render('', 'success')));
             add('Voltar ao menu', () => returnToMarketMenu({ targetWindow, context, render }));
             add('Encerrar execução', () => { if (targetWindow.confirm('Encerrar a execução? As ofertas restantes serão canceladas.')) { stop(); cleanupMarketOfferRuntime(targetWindow); context.endedAt = Date.now(); context.queue.forEach((entry) => { if (!TERMINAL.has(entry.status)) entry.status = 'cancelled'; }); syncIndex(context); save(context); render('Execução encerrada. Use “Voltar ao menu” para retornar e fechar esta aba, ou permaneça aqui.', 'info'); } });
             const visualStatus = finished ? 'completed' : type === 'error' ? 'error' : type === 'success' ? 'success' : !sameVillage || active?.status === 'verification-required' ? 'warning' : active?.status === 'prepared' ? 'prepared' : active?.status === 'submitting' ? 'submitting' : 'preparing';
@@ -302,7 +302,7 @@
         };
         const recalculatePending = () => {
             let config = {}; try { config = JSON.parse(localStorage.getItem('eas_tw_market_offers_config') || '{}'); } catch {}
-            const result = EAS.MarketEngine.buildGlobalOfferSuggestions(EAS.MarketEngine.cacheVillages(EAS.MarketEngine.getCache()), config); const preserved = context.queue.filter((entry) => TERMINAL.has(entry.status)); context.queue = [...preserved, ...result.suggestions.map(normalizeItem)]; context.currentIndex = preserved.length; syncIndex(context); save(context); emit({ type: 'offer-queue-updated', executionId: context.executionId }); render('Ofertas pendentes recalculadas.', 'success');
+            const result = EAS.MarketEngine.buildGlobalOfferSuggestions(EAS.Data.Market.getAll(), config); const preserved = context.queue.filter((entry) => TERMINAL.has(entry.status)); context.queue = [...preserved, ...result.suggestions.map(normalizeItem)]; context.currentIndex = preserved.length; syncIndex(context); save(context); emit({ type: 'offer-queue-updated', executionId: context.executionId }); render('Ofertas pendentes recalculadas.', 'success');
         };
         render();
         if (!item) render('', 'success');
