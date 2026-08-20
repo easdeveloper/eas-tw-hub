@@ -53,6 +53,7 @@
     };
     const shouldInitializeMarketBalanceExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_balance_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send' && String(window.game_data?.village?.id || url.searchParams.get('village') || '') === String(item.sourceVillageId)); } catch { return false; } };
     const shouldInitializeMarketTargetExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_target_supply_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && !execution.finishedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send'); } catch { return false; } };
+    const shouldInitializeMassFarmExecution = () => { try { const execution=JSON.parse(localStorage.getItem('eas-tw-hub:farm.mass.execution')||'null');const url=new URL(location.href);return Boolean(execution&&!['completed','cancelled'].includes(execution.status)&&execution.queue?.[execution.currentIndex]&&url.searchParams.get('screen')==='am_farm'); } catch { return false; } };
 
     const initializeMarketOfferExecutionIfNeeded = () => {
         if (!shouldInitializeMarketOfferExecution()) return false;
@@ -108,6 +109,7 @@
         if (window.__EAS_TW_RUNTIME_RESUMED__) return Boolean(window.__EAS_TW_RUNTIME_RESUMED__.active);
         loaderLog('eas-loader-runtime-resume-start', { url: location.href });
         const url = new URL(location.href);
+        if (shouldInitializeMassFarmExecution()) { const active=Boolean(window.EAS?.MassFarmExecution?.initialize?.());if(active){window.__EAS_TW_RUNTIME_RESUMED__={active:true,type:'mass-farm'};loaderLog('eas-loader-main-menu-suppressed',window.__EAS_TW_RUNTIME_RESUMED__);return true;} }
         if (url.searchParams.get('screen') === 'place' && (url.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId)) {
             loaderLog('eas-loader-scheduled-mission-detected', { missionId: url.searchParams.get('eas_mission'), stage: url.searchParams.get('try') === 'confirm' ? 'confirmation' : 'preparation' });
             const confirmation = await initializeScheduledMissionConfirmationIfNeeded();
@@ -201,6 +203,8 @@
                     if (!window.EAS.Data?.Villages) await loadScript('core/game-data.js');
                 }
                 if (!window.EAS.Market?.ExecutionPanel) await loadScript('services/market-execution-ui.js');
+                if (!window.EAS.Adapters?.FarmAssistant) await loadScript('services/farm-assistant-adapter.js');
+                if (!window.EAS.MassFarmExecution?.initialize) await loadScript('services/mass-farm-execution.js');
                 if (!window.EAS.MarketOffersExecution?.initialize) {
                     await loadScript('services/market-offers-execution.js');
                 }
@@ -251,6 +255,8 @@
             await loadScript('services/game-adapters.js');
             await loadScript('core/game-data.js');
             await loadScript('services/market-execution-ui.js');
+            await loadScript('services/farm-assistant-adapter.js');
+            await loadScript('services/mass-farm-execution.js');
             await loadScript('services/market-offers-execution.js');
             await loadScript('services/market-balance-execution.js');
             await loadScript('services/market-target-execution.js');
