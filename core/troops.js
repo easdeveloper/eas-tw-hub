@@ -4,7 +4,7 @@
     EAS.Troops = EAS.Troops || {};
 
     const CACHE_KEY = 'troops.available';
-    const CACHE_SCHEMA_VERSION = 3;
+    const CACHE_SCHEMA_VERSION = 4;
     const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
     const UNITS = [
         'spear',
@@ -24,6 +24,7 @@
 
     let villagesById = {};
     let refreshPromise = null;
+    const normalizationWarnings = new Set();
     let sourceInfo = {
         available: false,
         source: 'none',
@@ -175,6 +176,10 @@
 
         return troops;
     };
+    const addTroops = (...values) => Object.fromEntries(UNITS.map((unit) => [unit, values.reduce((sum, value) => sum + Math.max(0, Number(value?.[unit] || 0)), 0)]));
+    const subtractTroops = (left, right) => Object.fromEntries(UNITS.map((unit) => [unit, Math.max(0, Number(left?.[unit] || 0) - Number(right?.[unit] || 0))]));
+    const warnImpossibleState = ({ villageId, ownHome, inVillage, outside, inTransit }) => { const units = UNITS.filter((unit) => inVillage[unit] < ownHome[unit]); const key = `${villageId}:${units.join(',')}`; if (!units.length || normalizationWarnings.has(key)) return; normalizationWarnings.add(key); EAS.Log?.warn?.('troops', 'normalization.warning', { villageId: String(villageId), ownHome, inVillage, outside, inTransit, support: subtractTroops(inVillage, ownHome), units }); };
+    const normalizeVillageStates = (village = {}, id = village.id) => { const ownHome = normalizeTroops(village.ownHome || village.available || village.troops || village); const inVillage = normalizeTroops(village.inVillage || village.home || ownHome); const outside = normalizeTroops(village.outside); const inTransit = normalizeTroops(village.inTransit); warnImpossibleState({ villageId: id, ownHome, inVillage, outside, inTransit }); const support = subtractTroops(inVillage, ownHome); const allOwn = addTroops(ownHome, outside, inTransit); return { ownHome, inVillage, outside, inTransit, support, allOwn, total: normalizeTroops(village.total), available: ownHome, home: inVillage, own: allOwn, troops: ownHome }; };
 
     const readCache = () => {
         if (!EAS.Storage?.get) {
@@ -201,18 +206,12 @@
         const ownedIds = new Set((EAS.Villages?.getAll?.() || []).map((village) => String(village.id)));
         villagesById = Object.entries(cache.villages || {}).filter(([id]) => !ownedIds.size || ownedIds.has(String(id))).reduce(
             (result, [id, village]) => {
-                const home = normalizeTroops(village.home || village.available || village.troops || village);
+                const states = normalizeVillageStates(village, id);
                 result[Number(id)] = {
                     id: Number(village.id || id),
                     name: village.name || '',
                     coordinate: village.coordinate || '',
-                    troops: home,
-                    available: normalizeTroops(village.available || home),
-                    home,
-                    own: normalizeTroops(village.own),
-                    support: normalizeTroops(village.support),
-                    outside: normalizeTroops(village.outside),
-                    inTransit: normalizeTroops(village.inTransit)
+                    ...states
                 };
                 return result;
             },
@@ -263,9 +262,11 @@
         url.searchParams.set('screen', 'overview_villages');
         url.searchParams.set('mode', 'units');
         url.searchParams.set('type', 'complete');
+        url.searchParams.set('page', '-1');
 
         return url.toString();
     };
+    EAS.Troops.buildOverviewUrl = buildOverviewUrl;
 
     EAS.Troops.detectUnitOrder = (table) => {
         const headers = Array.from(
@@ -318,16 +319,20 @@
                 .join(' ')
         ].join(' '));
 
+        if (text.includes('suas proprias') || text.includes('proprias tropas') || technical.includes('type=own')) {
+            return 'ownHome';
+        }
+
         if (technical.includes('type=there') || text.includes('na aldeia')) {
-            return 'home';
+            return 'inVillage';
         }
 
         if (text.includes('em transito') || text.includes('em movimento')) {
-            return 'moving';
+            return 'inTransit';
         }
 
         if (text.includes('fora')) {
-            return 'away';
+            return 'outside';
         }
 
         if (text.includes('apoio')) {
@@ -343,7 +348,7 @@
 
     EAS.Troops.findHomeRow = (tbody) => {
         return Array.from(tbody.querySelectorAll('tr')).find((row) => {
-            return EAS.Troops.detectRowType(row) === 'home' &&
+            return EAS.Troops.detectRowType(row) === 'ownHome' &&
                 row.querySelectorAll('td.unit-item').length > 0;
         }) || null;
     };
@@ -352,9 +357,10 @@
         const villageElement = tbody.querySelector('.quickedit-vn[data-id]');
         const labelElement = tbody.querySelector('.quickedit-label');
         const rows = Array.from(tbody.querySelectorAll('tr')).filter((row) => row.querySelectorAll('td.unit-item').length > 0);
-        const homeRow = rows.find((row) => EAS.Troops.detectRowType(row) === 'home');
+        const typedRows = Object.fromEntries(rows.map((row, index) => [EAS.Troops.detectRowType(row) === 'unknown' ? ['ownHome','inVillage','outside','inTransit','total'][index] : EAS.Troops.detectRowType(row), row]));
+        const ownHomeRow = typedRows.ownHome;
 
-        if (!villageElement || !labelElement || !homeRow) {
+        if (!villageElement || !labelElement || !ownHomeRow) {
             return null;
         }
 
@@ -369,16 +375,24 @@
         }
 
         const parseRow = (row) => { const result = createEmptyTroops(); const cells = Array.from(row?.querySelectorAll('td.unit-item') || []); unitOrder.forEach((unit, index) => { result[unit] = parseInteger(cells[index]?.textContent); }); return result; };
-        const dimensions = { home: parseRow(homeRow) };
-        rows.forEach((row) => { const type = EAS.Troops.detectRowType(row); if (type === 'moving') dimensions.inTransit = parseRow(row); if (type === 'away') dimensions.outside = parseRow(row); if (type === 'support') dimensions.support = parseRow(row); if (type === 'total') dimensions.own = parseRow(row); });
+        const ownHome = parseRow(ownHomeRow); const inVillage = parseRow(typedRows.inVillage || ownHomeRow); const outside = parseRow(typedRows.outside); const inTransit = parseRow(typedRows.inTransit); const total = parseRow(typedRows.total); const support = subtractTroops(inVillage, ownHome); const allOwn = addTroops(ownHome, outside, inTransit);
+        warnImpossibleState({ villageId: String(villageElement.dataset.id || 0), ownHome, inVillage, outside, inTransit });
 
         return {
             id: Number(villageElement.dataset.id || 0),
             name,
             coordinate,
-            troops: dimensions.home,
-            available: dimensions.home,
-            ...dimensions
+            troops: ownHome,
+            available: ownHome,
+            home: inVillage,
+            ownHome,
+            inVillage,
+            outside,
+            inTransit,
+            support,
+            allOwn,
+            own: allOwn,
+            total
         };
     };
 
@@ -430,7 +444,7 @@
             throw new Error('Nenhuma aldeia foi localizada na visão geral.');
         }
 
-        const rowTypes = [...new Set(Object.values(villages).flatMap((village) => ['available','home','own','support','outside','inTransit'].filter((type) => Object.hasOwn(village, type))))];
+        const rowTypes = ['available','own','home','support','outside','inTransit'];
         return {
             source: 'remote_units_overview',
             complete: !hasPagination(doc, Object.keys(villages).length),
