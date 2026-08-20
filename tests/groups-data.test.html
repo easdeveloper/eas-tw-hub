@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset="utf-8"><title>running</title></head><body><pre id="result">running</pre>
+<script>
+const store=new Map(),logs=[],owned=[{id:1,name:'A'},{id:2,name:'B'},{id:3,name:'C'}];let requests=0,metadataVersion=1,delayMembership=false;
+const metadataHtml=()=>metadataVersion===1?`<div class="vis_item" data-group-id="10"><a href="?screen=overview_villages&group=10"><span class="group-menu-item-name">Ataque</span></a></div><a class="vis_item" href="?screen=overview_villages&group=20">Defesa</a><a class="vis_item" href="?screen=overview_villages&group=10">Ataque</a>`:`<a class="vis_item" href="?screen=overview_villages&group=10">Ofensivas</a>`;
+const membershipHtml=(id)=>`<table id="units_table">${id==='10'?'<tr><td><span class="quickedit-vn" data-id="1"></span></td></tr><tr><td><span class="quickedit-vn" data-id="2"></span></td></tr><tr><td><span class="quickedit-vn" data-id="99"></span></td></tr>':''}</table>`;
+window.fetch=async(url)=>{requests++;const id=new URL(url).searchParams.get('group');if(delayMembership&&id==='10')await new Promise((resolve)=>setTimeout(resolve,20));return{ok:true,text:async()=>id==='0'?metadataHtml():membershipHtml(id)}};
+window.EAS={Storage:{get:(key,fallback)=>store.has(key)?structuredClone(store.get(key)):fallback,set:(key,value)=>{store.set(key,structuredClone(value));return true}},World:{getInfo:()=>({world:'br-test',player:{id:7}}),getGameData:()=>({player:{id:7}}),getCurrentVillage:()=>({id:1}),getWorldName:()=>'br-test'},Villages:{getAll:()=>owned,getState:()=>({updatedAt:123})},Log:{info:(...args)=>logs.push(args),error:(...args)=>logs.push(args)}};
+</script><script src="../core/groups.js"></script><script>
+(async()=>{const failures=[];let assertions=0;const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${label}: esperado ${JSON.stringify(expected)}, recebido ${JSON.stringify(actual)}`)};
+equal(EAS.Groups.getById('all'),{id:'all',name:'Todos',villageIds:['1','2','3'],villageCount:3,updatedAt:123},'A: grupo virtual Todos usa aldeias centrais');
+const concurrent=await Promise.all([EAS.Groups.ensureFresh(),EAS.Groups.ensureFresh()]);equal([requests,concurrent[0].map((g)=>g.name)],[1,['Ataque','Defesa']],'B/C: lista real ordenada e refresh concorrente deduplicado');
+await EAS.Groups.ensureFresh();equal(requests,1,'D: cache fresh evita nova consulta de metadados');
+delayMembership=true;const memberships=await Promise.all([EAS.Groups.ensureMembership('10'),EAS.Groups.ensureMembership('10')]);equal([requests,memberships[0],memberships[1]],[2,['1','2'],['1','2']],'E/F: membership concorrente deduplicado, filtra aldeia perdida e preserva resultado');
+await EAS.Groups.ensureMembership('10');equal(requests,2,'G: troca repetida para grupo em cache não consulta novamente');
+await EAS.Groups.ensureMembership('20');equal([requests,EAS.Groups.getById('20').villageCount,EAS.Groups.getVillageIds('20')],[3,0,[]],'H: grupo vazio tem semântica explícita');
+equal([EAS.Groups.contains('10',1),EAS.Groups.contains('10',3),EAS.Groups.getGroupsForVillage(2).map((g)=>g.id)],[true,false,['10']],'I: helpers de associação funcionam');
+owned.splice(1,1);equal(EAS.Groups.getVillageIds('10'),['1'],'J: perda de aldeia é filtrada sem depender do cache');owned.push({id:4,name:'Nova'});equal(EAS.Groups.getVillageIds('all'),['1','3','4'],'K: nova aldeia entra imediatamente em Todos');
+metadataVersion=2;await EAS.Groups.refresh();equal([requests,EAS.Groups.getAll().map((g)=>[g.id,g.name]),EAS.Groups.getById('20')],[4,[['10','Ofensivas']],null],'L/M: rename atualiza nome e grupo excluído desaparece');
+equal([EAS.Groups.getMetadata().source,EAS.Groups.getMetadata().count,EAS.Groups.getMetadata().remoteRequests],['authenticated-units-overview',1,4],'N: metadados expõem fonte, quantidade e requests');
+EAS.Groups.invalidate('test');equal(EAS.Groups.getMetadata().stale,true,'O: invalidação marca cache stale');
+const parsed=EAS.Groups.parseGroups(new DOMParser().parseFromString(metadataHtml(),'text/html'));equal(parsed.map((g)=>g.id),['10'],'P: parser público representa a fonte Tribal Wars');
+equal(logs.some((entry)=>entry.includes('groups.refresh.start'))&&logs.some((entry)=>entry.includes('groups.refresh.complete'))&&logs.some((entry)=>entry.includes('groups.membership.invalidVillage')),true,'Q: observabilidade registra refresh e referência inválida');
+document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:`PASS · ${assertions} assertions`;document.title=failures.length?'FAIL':'PASS';})().catch((error)=>{document.getElementById('result').textContent=`FAIL\n${error.stack||error}`;document.title='FAIL'});
+</script></body></html>
