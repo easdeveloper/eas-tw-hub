@@ -278,6 +278,7 @@
             antisnipe: 'Antisnipe',
             noble: 'Noble',
             resources: 'Resources',
+            'troop-counter': 'TroopCounter',
             'market-smart-offers': 'MarketSmartOffers',
             'market-balance': 'MarketBalance',
             'market-target-supply': 'MarketTargetSupply',
@@ -347,6 +348,7 @@
                 {id:'market-balance',icon:'⚖️',title:'Balanceamento',description:'Redistribua recursos entre suas aldeias.',status:'Disponível'},
                 {id:'market-target-supply',icon:'🎯',title:'Envio Coordenado',description:'Abasteça uma aldeia-alvo usando várias origens.',status:'Disponível'} ] },
             { icon:'🧠', title:'Inteligência', description:'Dados, relatórios e auditoria.', tools:[
+                {id:'troop-counter',icon:'🪖',title:'Contador de Tropas',description:'Some tropas por grupo e situação usando o snapshot central.',status:'Disponível'},
                 {id:'statistics',icon:'📊',title:'Estatísticas',description:'Visualize dados consolidados da conta.',status:'Em desenvolvimento',disabled:true},
                 {id:'reports',icon:'📋',title:'Relatórios',description:'Gere análises de operações e economia.',status:'Em desenvolvimento',disabled:true},
                 {id:'history',icon:'📜',title:'Histórico',description:'Consulte operações e ações anteriores.',status:'Em desenvolvimento',disabled:true},
@@ -513,7 +515,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id.startsWith('market-')) {
+        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     const opened = loadedModule.open();

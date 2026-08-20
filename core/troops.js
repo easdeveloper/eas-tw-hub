@@ -33,6 +33,7 @@
         updatedAtLocal: null,
         unitOrder: [],
         unitColumnDetails: [],
+        rowTypes: [],
         villageCount: 0,
         selectedTable: null,
         rowType: null,
@@ -200,11 +201,18 @@
         const ownedIds = new Set((EAS.Villages?.getAll?.() || []).map((village) => String(village.id)));
         villagesById = Object.entries(cache.villages || {}).filter(([id]) => !ownedIds.size || ownedIds.has(String(id))).reduce(
             (result, [id, village]) => {
+                const home = normalizeTroops(village.home || village.available || village.troops || village);
                 result[Number(id)] = {
                     id: Number(village.id || id),
                     name: village.name || '',
                     coordinate: village.coordinate || '',
-                    troops: normalizeTroops(village.troops || village)
+                    troops: home,
+                    available: normalizeTroops(village.available || home),
+                    home,
+                    own: normalizeTroops(village.own),
+                    support: normalizeTroops(village.support),
+                    outside: normalizeTroops(village.outside),
+                    inTransit: normalizeTroops(village.inTransit)
                 };
                 return result;
             },
@@ -220,6 +228,7 @@
             updatedAtLocal: cache.updatedAtLocal || null,
             unitOrder: cache.unitOrder || [],
             unitColumnDetails: cache.unitColumnDetails || [],
+            rowTypes: cache.rowTypes || ['available', 'home'],
             villageCount: Object.keys(villagesById).length,
             selectedTable: cache.selectedTable || '#units_table',
             rowType: cache.rowType || 'home',
@@ -342,7 +351,8 @@
     EAS.Troops.parseVillageBlock = (tbody, unitOrder) => {
         const villageElement = tbody.querySelector('.quickedit-vn[data-id]');
         const labelElement = tbody.querySelector('.quickedit-label');
-        const homeRow = EAS.Troops.findHomeRow(tbody);
+        const rows = Array.from(tbody.querySelectorAll('tr')).filter((row) => row.querySelectorAll('td.unit-item').length > 0);
+        const homeRow = rows.find((row) => EAS.Troops.detectRowType(row) === 'home');
 
         if (!villageElement || !labelElement || !homeRow) {
             return null;
@@ -358,18 +368,17 @@
             return null;
         }
 
-        const unitCells = Array.from(homeRow.querySelectorAll('td.unit-item'));
-        const troops = createEmptyTroops();
-
-        unitOrder.forEach((unit, index) => {
-            troops[unit] = parseInteger(unitCells[index]?.textContent);
-        });
+        const parseRow = (row) => { const result = createEmptyTroops(); const cells = Array.from(row?.querySelectorAll('td.unit-item') || []); unitOrder.forEach((unit, index) => { result[unit] = parseInteger(cells[index]?.textContent); }); return result; };
+        const dimensions = { home: parseRow(homeRow) };
+        rows.forEach((row) => { const type = EAS.Troops.detectRowType(row); if (type === 'moving') dimensions.inTransit = parseRow(row); if (type === 'away') dimensions.outside = parseRow(row); if (type === 'support') dimensions.support = parseRow(row); if (type === 'total') dimensions.own = parseRow(row); });
 
         return {
             id: Number(villageElement.dataset.id || 0),
             name,
             coordinate,
-            troops
+            troops: dimensions.home,
+            available: dimensions.home,
+            ...dimensions
         };
     };
 
@@ -421,6 +430,7 @@
             throw new Error('Nenhuma aldeia foi localizada na visão geral.');
         }
 
+        const rowTypes = [...new Set(Object.values(villages).flatMap((village) => ['available','home','own','support','outside','inTransit'].filter((type) => Object.hasOwn(village, type))))];
         return {
             source: 'remote_units_overview',
             complete: !hasPagination(doc, Object.keys(villages).length),
@@ -429,6 +439,7 @@
             selectedTable: '#units_table',
             rowType: 'home',
             label: 'Na Aldeia',
+            rowTypes,
             villages
         };
     };

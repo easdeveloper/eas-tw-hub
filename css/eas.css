@@ -1157,3 +1157,4 @@
         flex-direction: column;
     }
 }
+.troop-counter-filters,.troop-counter-footer{display:flex;align-items:end;justify-content:space-between;gap:12px;flex-wrap:wrap}.troop-counter-filters{margin-bottom:14px}.troop-counter-table th,.troop-counter-table td{text-align:center;min-width:46px}.troop-counter-table th img{width:24px;height:24px;object-fit:contain}.troop-counter-footer{align-items:center;margin-top:12px}.troop-counter .eas-status{margin-top:10px}

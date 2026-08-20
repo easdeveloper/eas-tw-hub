@@ -180,6 +180,7 @@
                 if (!window.EAS.Units?.calculateCommandPopulation) {
                     await loadScript('core/units.js');
                 }
+                if (!window.EAS.Groups?.getAll) await loadScript('core/groups.js');
 
                 if (!window.EAS.WorldRules?.get) {
                     await loadScript('core/world-rules.js');
@@ -240,6 +241,7 @@
             await loadScript('core/units.js');
             await loadScript('core/world-rules.js');
             await loadScript('core/villages.js');
+            await loadScript('core/groups.js');
             await loadScript('core/troops.js');
             await loadScript('services/place.js');
             await loadScript('services/public-map.js');
