@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>running</title></head><body><pre id="result">running</pre>
+<script>
+const logs=[];
+window.EAS={MarketEngine:{},Log:{warn:(module,event,detail)=>logs.push({module,event,detail})},World:{getGameData:()=>({config:{merchant_capacity:1000}})},Villages:{list:()=>[]},Utils:{}};
+</script>
+<script src="../services/market-engine.js"></script>
+<script>
+(async()=>{
+ const failures=[];let assertions=0;
+ const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${label}: esperado ${JSON.stringify(expected)}, recebido ${JSON.stringify(actual)}`)};
+ const originalFetch=window.fetch;let attempts=0;
+ window.fetch=async()=>{attempts++;return attempts===1?{ok:false,status:429,headers:{get:(name)=>name==='Retry-After'?'0.001':null}}:{ok:true,status:200,headers:{get:()=>null}}};
+ const response=await EAS.MarketEngine.requestWithBackoff({url:new URL('/game.php?village=7&screen=market&mode=transports',location.origin),villageId:'7',executionId:'balance-429',requestType:'market-transports'});
+ equal([attempts,response.status],[2,200],'429 aplica backoff e repete somente uma vez');
+ equal([logs[0]?.module,logs[0]?.event,logs[0]?.detail?.villageId,logs[0]?.detail?.screen,logs[0]?.detail?.mode,logs[0]?.detail?.attempt,logs[0]?.detail?.retryAfter],['market.balance','http429','7','market','transports',1,'0.001'],'429 gera diagnóstico estruturado');
+ let planningFetches=0;window.fetch=async()=>{planningFetches++;throw new Error('ranking não deve acessar a rede')};
+ const villages=[{id:'a',name:'A',coordinate:'500|500',resources:{wood:90000,stone:30000,iron:30000},storage:100000,merchants:{available:10,total:10},available:true},{id:'b',name:'B',coordinate:'501|500',resources:{wood:10000,stone:40000,iron:40000},storage:100000,merchants:{available:0,total:10},available:true}];
+ const plan=EAS.MarketEngine.buildMarketBalancePlan({villages,reserveConfig:{mode:'none'},minimumTransport:100});
+ equal([planningFetches,plan.transports.length>0],[0,true],'cálculo e ranking usam somente o snapshot em memória');
+ window.fetch=originalFetch;
+ document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:`PASS — ${assertions} assertions`;
+ document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.getElementById('result').textContent=`FAIL\n${error.stack||error}`;document.title='FAIL'});
+</script></body></html>
