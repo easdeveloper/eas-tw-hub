@@ -280,6 +280,7 @@
             resources: 'Resources',
             'troop-counter': 'TroopCounter',
             'mass-farm': 'MassFarm',
+            'mass-snipe': 'MassSnipe',
             'market-smart-offers': 'MarketSmartOffers',
             'market-balance': 'MarketBalance',
             'market-target-supply': 'MarketTargetSupply',
@@ -344,7 +345,8 @@
                 {id:'scheduled-missions',icon:'⏱️',title:'Missões Agendadas',description:'Gerencie operações preparadas para horários futuros.',status:'Beta'},
                 {id:'support',icon:'🛡️',title:'Planejador de Apoios',description:'Distribua e programe apoios entre aldeias.',status:'Disponível'},
                 {id:'mass-farm',icon:'🌾',title:'Farm em Massa',description:'Execute o Modelo A nas aldeias selecionadas de um grupo.',status:'Beta'},
-                {id:'fakes',icon:'🎭',title:'Gerenciador de Fakes',description:'Crie e analise operações de fake.',status:'Disponível'} ] },
+                {id:'fakes',icon:'🎭',title:'Gerenciador de Fakes',description:'Crie e analise operações de fake.',status:'Disponível'},
+                {id:'mass-snipe',icon:'🎯',title:'Mass Snipe',description:'Calcule snips com horários e countdown em milissegundos.',status:'Disponível'} ] },
             { icon:'🏪', title:'Mercado', description:'Economia e distribuição de recursos.', tools:[
                 {id:'market-smart-offers',icon:'🔄',title:'Ofertas Inteligentes',description:'Equilibre os recursos de cada aldeia por ofertas.',status:'Disponível'},
                 {id:'market-balance',icon:'⚖️',title:'Balanceamento',description:'Redistribua recursos entre suas aldeias.',status:'Disponível'},
@@ -517,7 +519,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id.startsWith('market-')) {
+        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     const opened = loadedModule.open();

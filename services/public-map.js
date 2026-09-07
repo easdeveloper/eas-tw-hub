@@ -28,6 +28,7 @@
         loadPromise = loadOnce(forceRefresh).finally(() => { loadPromise = null; });
         return loadPromise;
     };
+    EAS.PublicMap.getVillages = async ({ forceRefresh = false } = {}) => (await load(forceRefresh)).villages;
     EAS.PublicMap.findPlayerVillages = async (name, { forceRefresh = false } = {}) => {
         const searched = String(name || '').trim().toLocaleLowerCase();
         if (!searched) throw new Error('Informe o nome do jogador.');

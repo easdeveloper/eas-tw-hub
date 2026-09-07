@@ -1,0 +1,87 @@
+<!doctype html><html><head><meta charset="utf-8"><title>running</title><link rel="stylesheet" href="../css/eas.css"></head><body><pre id="result">running</pre>
+<script>
+window.onerror = (message) => { document.getElementById('result').textContent = `FAIL ${message}`; document.title = 'FAIL'; };
+const nowDate = new Date(2026, 8, 7, 0, 0, 0, 55);
+let now = nowDate.getTime(), sounds = 0, refreshed = [], copied = '', loads = [], speedRequests = 0;
+const owned = [{id:1,name:'A',coordinate:'500|500'}, {id:2,name:'B',coordinate:'501|500'}, {id:3,name:'Other group',coordinate:'502|500'}];
+const troops = {1:{ownHome:{spear:100,sword:49}},2:{ownHome:{spear:80,sword:100}},3:{ownHome:{spear:999}}};
+window.game_data = {group_id:7,units:['spear','sword','archer','spy','militia'],player:{id:5,sitter:0}};
+window.Timing = {getCurrentServerTime:()=>now, tickHandlers:{timers:{init:()=>{throw new Error('native timer must not be used');}}}};
+window.TribalWars = {playSound:(name)=>{if(name==='chat')sounds++;}};
+const memory = new Map();
+window.EAS = {name:'EAS TW Hub',version:'test',UI:{},Modules:{},Selectors:{},Adapters:{},
+    Log:{info:()=>{},debug:()=>{},error:()=>{}},Usage:{track:()=>{}},
+    Storage:{get:(key,fallback=null)=>memory.has(key)?structuredClone(memory.get(key)):fallback,set:(key,value)=>memory.set(key,structuredClone(value)),remove:key=>memory.delete(key)},
+    World:{getGameData:()=>game_data,getPlayer:()=>game_data.player,getWorldName:()=>'test',getCurrentVillage:()=>owned[0],getServerDateTime:()=>({available:true,timestamp:nowDate.getTime()})},
+    Data:{dedupe:(_key,fn)=>fn(),Server:{get:()=>({now:now+123})},
+        Villages:{ensureFresh:async()=>owned,getAll:()=>owned},
+        Groups:{ensureFresh:async()=>[],getById:id=>id==='7'?{id:'7'}:null,ensureMembership:async()=>['1','2']},
+        Troops:{ensureFresh:async()=>troops,getAll:()=>troops},
+        refreshStale:async(names)=>{refreshed=names;return names.map(()=>({status:'fulfilled'}));}},
+    PublicMap:{getVillages:async()=>[{id:10,coordinate:'501|501'}]}
+};
+window.fetch=async(url)=>{if(String(url)!=='/interface.php?func=get_unit_info')throw new Error(`unexpected fetch ${url}`);speedRequests++;return{ok:true,text:async()=>'<config><spear><speed>18</speed></spear><sword><speed>22</speed></sword><archer><speed>18</speed></archer></config>'};};
+window.EASLoader={loadScript:async(path)=>{loads.push(path);await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='../'+path;script.onload=resolve;script.onerror=reject;document.head.append(script);});}};
+Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text)=>{copied=text;}}});
+</script>
+<script src="../core/utils.js"></script><script src="../core/runtime.js"></script><script src="../core/ui.js"></script>
+<script>
+(async()=>{
+    const failures=[];let assertions=0;
+    const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${label}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);};
+    const tick=()=>new Promise(resolve=>setTimeout(resolve,60));
+    try {
+        EAS.UI.openMainWindow();
+        equal(Boolean(document.querySelector('[data-eas-module="mass-snipe"]')),true,'menu card');
+        const module=await EAS.UI.loadModule('mass-snipe');await module.open();
+        equal(loads,['modules/mass-snipe.js','services/mass-snipe-execution.js'],'lazy module and service');
+        const s=EAS.MassSnipeExecution;
+        equal(typeof window.twSDK,'undefined','no global SDK');
+        const landing=s.getLandingTime('07/09/2026 21:00:00:271');
+        equal(s.formatDateTime(landing),'07/09/2026 21:00:00:271','arrival milliseconds');
+        equal(s.getLandingTime('07/09/2026 21:00:00').getMilliseconds(),0,'legacy arrival');
+        equal(s.getLandingTime('07/09/2026 21:00:00:7').getMilliseconds(),7,'colon integer ms');
+        equal(s.formatDateTime(s.getLaunchTime('spear',landing,1,0,{spear:67021784/60000})),'07/09/2026 02:22:58:487','requested departure example');
+        equal(s.formatDurationMs(12104216),'3:21:44.216','duration precision');
+        equal(s.formatDurationMs(-1),'0:00:00.000','expired duration');
+        equal(s.formatDurationMs(90000001),'25:00:00.001','duration over a day');
+        equal(s.getCurrentServerTimeMs(),now,'synchronized clock');
+        const timing=window.Timing;delete window.Timing;equal(s.getCurrentServerTimeMs(),now+123,'central fallback');window.Timing=timing;
+        const input={selectedUnits:['spear','sword'],snipesNeeded:[{coord:'501|501',landingTime:'07/09/2026 21:00:00:271',sigil:25,minAmount:50}]};
+        const inputs=await s.loadInputs();await s.loadInputs();
+        equal(speedRequests,1,'unit speeds cached');equal(inputs.ownVillages.map(v=>v.id),[1,2],'current group only');
+        const results=s.calculate(input,inputs);
+        equal(results.length,3,'home troops and minimum');equal(results.some(v=>v.id===3),false,'other group excluded');
+        equal(results.find(v=>v.id===1).launchTime,Math.round(landing.getTime()-Math.sqrt(2)*18*60000/1.25),'same distance and sigil formula');
+        equal(results.every((v,i)=>!i||results[i-1].launchTime<=v.launchTime),true,'sorted departures');
+        equal(s.calculate(input,inputs,landing.getTime()).length,0,'past departures excluded');
+        const url=new URL(s.commandUrl(results[0]));equal(url.searchParams.getAll('y'),['501'],'one y');
+        equal(url.searchParams.has('try')||url.searchParams.has('action'),false,'no final send URL');
+        game_data.player.sitter=1;equal(new URL(s.commandUrl(results[0])).searchParams.get('t'),'5','sitter URL');game_data.player.sitter=0;
+        equal(s.getBBCodeExport(results).includes('21:00:00:271'),true,'BBCode keeps ms');
+        const imported=s.parseTrains('Village: 501|501\nNoble Arrival time: Sep 7, 2026 21:00:00:271\nNoble Arrival time: today at 22:00:00.007');
+        equal(imported.map(v=>v.landingTime),['07/09/2026 21:00:00:271','07/09/2026 22:00:00:007'],'forum import');
+        equal(s.parseArrival('amanhã às 01:00:00:123'),'08/09/2026 01:00:00:123','relative arrival');
+        equal(s.parseArrival('em 08.09. às 01:00:00:123'),'08/09/2026 01:00:00:123','dated incoming');
+        const root=document.getElementById('eas-mass-snipe');
+        equal([...root.querySelectorAll('[name="unit"]')].map(v=>v.value),['spear','sword','archer'],'unit exclusions');
+        root.querySelector('[name="village_coord"]').value='501|501';root.querySelector('[name="landing_time"]').value='07/09/2026 21:00:00:271';
+        root.querySelector('[data-calculate]').click();await tick();
+        equal(root.querySelectorAll('[data-endtime-ms]').length,3,'UI renders combinations');
+        equal(root.querySelectorAll('.timer,[data-endtime]').length,0,'native timer markup absent');
+        equal(root.querySelector('[data-endtime-ms]').textContent.match(/\d+:\d{2}:\d{2}\.\d{3}/)!==null,true,'visual duration');
+        const send=root.querySelector('[data-combinations] a.eas-button');equal([send.textContent,send.target],['Enviar','_blank'],'manual link');
+        root.querySelector('[data-export]').click();await tick();equal(copied.includes('21:00:00:271'),true,'UI export');
+        root.querySelector('[data-refresh]').click();await tick();equal(refreshed,['Villages','Groups','Troops'],'shared refresh');
+        const first=root.querySelector('[data-endtime-ms]');now=Number(first.dataset.endtimeMs)-10001;await tick();const before=sounds;now+=28;await tick();await tick();equal(sounds,before+1,'one alert crossing threshold');
+        const firstRow=first.closest('tr');now=Number(first.dataset.endtimeMs)+1;await tick();equal(firstRow.isConnected,false,'expired row removed');
+        const oldRuntime=EAS.Runtime.get('mass-snipe-countdown');root.querySelector('[data-calculate]').click();await tick();equal(oldRuntime.resources.intervals.size,0,'recalculate disposes old timer');
+        document.querySelector('#eas-mass-snipe [data-eas-action="close"]').click();await tick();equal(EAS.Runtime.get('mass-snipe-countdown'),null,'close disposes countdown');equal(EAS.Runtime.get('mass-snipe-ui'),null,'close disposes UI');
+        await module.open();equal(loads.length,2,'reopen does not reload service');
+        document.querySelector('#eas-mass-snipe [data-export]').click();await tick();equal(copied.includes('[table]'),true,'export after reopen');
+        document.querySelector('#eas-mass-snipe [data-back]').click();await tick();equal(EAS.Runtime.get('mass-snipe-ui'),null,'back cleanup');
+    } catch(error){failures.push(error.stack||String(error));}
+    document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:`PASS — ${assertions} assertions`;
+    document.title=failures.length?'FAIL':'PASS';
+})();
+</script></body></html>
