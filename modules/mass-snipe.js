@@ -80,7 +80,7 @@
                 <td><input class="eas-input" name="min_amount" aria-label="Quantidade mín." value="${escape(minAmount)}"></td>
                 <td><button class="eas-button eas-button--secondary" data-remove aria-label="Remover snip">×</button></td>`;
         };
-        const defaultRow = () => ({ coord: EAS.World.getCurrentVillage().coordinate || '', landingTime: service.formatDateTime(EAS.World.getServerDateTime().timestamp || Date.now()) });
+        const defaultRow = () => ({ coord: EAS.World.getCurrentVillage().coordinate || '', landingTime: service.formatDateTime(service.getCurrentServerTimeMs()) });
         (saved.snipesNeeded || [defaultRow()]).forEach((snipe) => addRow(snipe, false));
         const villageLink = (id, coordinate) => {
             if (!id) return escape(coordinate);

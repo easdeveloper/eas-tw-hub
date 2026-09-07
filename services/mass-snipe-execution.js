@@ -4,13 +4,23 @@
     'use strict';
 
     const RUNTIME_ID = 'mass-snipe-countdown';
-    const formatDateTime = (value) => EAS.Utils.formatDateTime(Number(value), true).replace(/\.(\d{3})$/, ':$1');
+    // Encode the server's displayed calendar with UTC fields. These values are
+    // server wall-clock milliseconds, not Unix instants or the client's timezone.
+    const formatDateTime = (value) => {
+        const date = new Date(Number(value));
+        if (!Number.isFinite(date.getTime())) return '-';
+        const pad = (part, size = 2) => String(part).padStart(size, '0');
+        return `${pad(date.getUTCDate())}/${pad(date.getUTCMonth() + 1)}/${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}:${pad(date.getUTCMilliseconds(), 3)}`;
+    };
     const getLandingTime = (value) => {
         const match = String(value).trim().match(/^(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})(?::(\d{1,3}))?$/);
         if (!match) throw new Error('Informe a chegada como DD/MM/YYYY HH:MM:SS:mmm.');
-        const parsed = EAS.Utils.createServerDateTime(match[1], `${match[2]}.${String(match[3] || '0').padStart(3, '0')}`);
-        if (!parsed) throw new Error('Hora de chegada inválida.');
-        return new Date(parsed.timestamp);
+        const [day, month, year] = match[1].split('/').map(Number);
+        const [hours, minutes, seconds] = match[2].split(':').map(Number);
+        const milliseconds = Number(match[3] || 0);
+        const date = new Date(Date.UTC(year, month - 1, day, hours, minutes, seconds, milliseconds));
+        if (year < 1970 || formatDateTime(date) !== `${match[1]} ${match[2]}:${String(milliseconds).padStart(3, '0')}`) throw new Error('Hora de chegada inválida.');
+        return date;
     };
     const getLaunchTime = (unit, landingTime, distance, sigil, unitSpeeds) => {
         const unitTime = (distance * unitSpeeds[unit] * 60000) / (1 + sigil / 100);
@@ -22,8 +32,18 @@
         return `${Math.floor(duration / 3600000)}:${pad(Math.floor(duration / 60000) % 60)}:${pad(Math.floor(duration / 1000) % 60)}.${pad(duration % 1000, 3)}`;
     };
     const getCurrentServerTimeMs = () => {
-        if (typeof window.Timing?.getCurrentServerTime === 'function') return window.Timing.getCurrentServerTime();
-        return EAS.Data.Server.get().now;
+        // Reuse the Hub's #serverDate/#serverTime reader, but never its locally
+        // constructed timestamp. The displayed fields define the server calendar.
+        const server = EAS.World.getServerDateTime();
+        if (!server.date || !server.time) throw new Error('Data/hora do servidor indisponível.');
+        const wallTime = getLandingTime(`${server.date} ${server.time.replace('.', ':')}`).getTime();
+        const synchronized = window.Timing?.getCurrentServerTime?.();
+        if (!Number.isFinite(synchronized)) return wallTime;
+        // Discover the clock offset in whole minutes (including fractional-hour
+        // zones). Rounding only the offset avoids importing the DOM clock's
+        // second-level quantization into Timing's millisecond precision.
+        const offset = Math.round((wallTime - synchronized) / 60000) * 60000;
+        return synchronized + offset;
     };
 
     // Only the missing game-specific reads live in this adapter. Troops/groups
@@ -129,17 +149,17 @@
         if (explicit) return formatDateTime(getLandingTime(`${explicit[0]} ${clock}`));
         const base = EAS.World.getServerDateTime();
         if (!base.available) throw new Error('Data do servidor indisponível para importar chegadas.');
-        const date = new Date(base.timestamp);
+        const date = getLandingTime(`${base.date} 00:00:00`);
         const language = window.lang || {};
         const today = (language.aea2b0aa9ae1534226518faaefffdaad || 'today at %s').split('%s')[0].trim();
         const tomorrow = (language['57d28d1b211fddbb7a499ead5bf23079'] || 'tomorrow at %s').split('%s')[0].trim();
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
         const english = value.match(/\b([A-Z][a-z]{2})\s+(\d{1,2}),\s*(\d{4})?\s/);
         const dotted = value.match(/\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b/);
-        if (english && months.includes(english[1])) date.setFullYear(Number(english[3] || date.getFullYear()), months.indexOf(english[1]), Number(english[2]));
-        else if (/tomorrow|amanh[ãa]|mañana/i.test(value) || (tomorrow && value.includes(tomorrow))) date.setDate(date.getDate() + 1);
+        if (english && months.includes(english[1])) date.setUTCFullYear(Number(english[3] || date.getUTCFullYear()), months.indexOf(english[1]), Number(english[2]));
+        else if (/tomorrow|amanh[ãa]|mañana/i.test(value) || (tomorrow && value.includes(tomorrow))) date.setUTCDate(date.getUTCDate() + 1);
         else if (/today|hoje|hoy/i.test(value) || (today && value.includes(today))) { /* current server day */ }
-        else if (dotted) date.setFullYear(Number(dotted[3] || date.getFullYear()), Number(dotted[2]) - 1, Number(dotted[1]));
+        else if (dotted) date.setUTCFullYear(Number(dotted[3] || date.getUTCFullYear()), Number(dotted[2]) - 1, Number(dotted[1]));
         else throw new Error('Não foi possível ler a data de chegada.');
         return formatDateTime(getLandingTime(`${formatDateTime(date).split(' ')[0]} ${clock}`));
     };

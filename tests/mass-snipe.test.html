@@ -1,7 +1,7 @@
 <!doctype html><html><head><meta charset="utf-8"><title>running</title><link rel="stylesheet" href="../css/eas.css"></head><body><pre id="result">running</pre>
 <script>
 window.onerror = (message) => { document.getElementById('result').textContent = `FAIL ${message}`; document.title = 'FAIL'; };
-const nowDate = new Date(2026, 8, 7, 0, 0, 0, 55);
+const nowDate = new Date(Date.UTC(2026, 8, 7, 0, 0, 0, 55));
 let now = nowDate.getTime(), sounds = 0, refreshed = [], copied = '', loads = [], speedRequests = 0;
 const owned = [{id:1,name:'A',coordinate:'500|500'}, {id:2,name:'B',coordinate:'501|500'}, {id:3,name:'Other group',coordinate:'502|500'}];
 const troops = {1:{ownHome:{spear:100,sword:49}},2:{ownHome:{spear:80,sword:100}},3:{ownHome:{spear:999}}};
@@ -12,7 +12,7 @@ const memory = new Map();
 window.EAS = {name:'EAS TW Hub',version:'test',UI:{},Modules:{},Selectors:{},Adapters:{},
     Log:{info:()=>{},debug:()=>{},error:()=>{}},Usage:{track:()=>{}},
     Storage:{get:(key,fallback=null)=>memory.has(key)?structuredClone(memory.get(key)):fallback,set:(key,value)=>memory.set(key,structuredClone(value)),remove:key=>memory.delete(key)},
-    World:{getGameData:()=>game_data,getPlayer:()=>game_data.player,getWorldName:()=>'test',getCurrentVillage:()=>owned[0],getServerDateTime:()=>({available:true,timestamp:nowDate.getTime()})},
+    World:{getGameData:()=>game_data,getPlayer:()=>game_data.player,getWorldName:()=>'test',getCurrentVillage:()=>owned[0],getServerDateTime:()=>{const parts=new Date(now).toISOString().split('T');return{available:true,date:parts[0].split('-').reverse().join('/'),time:parts[1].slice(0,8)};}},
     Data:{dedupe:(_key,fn)=>fn(),Server:{get:()=>({now:now+123})},
         Villages:{ensureFresh:async()=>owned,getAll:()=>owned},
         Groups:{ensureFresh:async()=>[],getById:id=>id==='7'?{id:'7'}:null,ensureMembership:async()=>['1','2']},
@@ -39,14 +39,14 @@ Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:
         equal(typeof window.twSDK,'undefined','no global SDK');
         const landing=s.getLandingTime('07/09/2026 21:00:00:271');
         equal(s.formatDateTime(landing),'07/09/2026 21:00:00:271','arrival milliseconds');
-        equal(s.getLandingTime('07/09/2026 21:00:00').getMilliseconds(),0,'legacy arrival');
-        equal(s.getLandingTime('07/09/2026 21:00:00:7').getMilliseconds(),7,'colon integer ms');
+        equal(s.getLandingTime('07/09/2026 21:00:00').getUTCMilliseconds(),0,'legacy arrival');
+        equal(s.getLandingTime('07/09/2026 21:00:00:7').getUTCMilliseconds(),7,'colon integer ms');
         equal(s.formatDateTime(s.getLaunchTime('spear',landing,1,0,{spear:67021784/60000})),'07/09/2026 02:22:58:487','requested departure example');
         equal(s.formatDurationMs(12104216),'3:21:44.216','duration precision');
         equal(s.formatDurationMs(-1),'0:00:00.000','expired duration');
         equal(s.formatDurationMs(90000001),'25:00:00.001','duration over a day');
         equal(s.getCurrentServerTimeMs(),now,'synchronized clock');
-        const timing=window.Timing;delete window.Timing;equal(s.getCurrentServerTimeMs(),now+123,'central fallback');window.Timing=timing;
+        const timing=window.Timing;delete window.Timing;equal(s.getCurrentServerTimeMs(),Math.floor(now/1000)*1000,'displayed server clock fallback');window.Timing=timing;
         const input={selectedUnits:['spear','sword'],snipesNeeded:[{coord:'501|501',landingTime:'07/09/2026 21:00:00:271',sigil:25,minAmount:50}]};
         const inputs=await s.loadInputs();await s.loadInputs();
         equal(speedRequests,1,'unit speeds cached');equal(inputs.ownVillages.map(v=>v.id),[1,2],'current group only');
