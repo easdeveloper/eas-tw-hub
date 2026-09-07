@@ -1,0 +1,76 @@
+<!doctype html><html><head><meta charset="utf-8"><title>running</title><link rel="stylesheet" href="../css/eas.css"></head><body>
+<pre id="result">running</pre><span id="serverDate">07/09/2026</span> <span id="serverTime">13:40:00</span><div id="fixture"></div>
+<script>
+window.onerror=(message)=>{document.getElementById('result').textContent=`FAIL ${message}`;document.title='FAIL';};
+window.EAS={name:'EAS TW Hub',version:'test',Modules:{},UI:{},Selectors:{},Adapters:{},
+    Log:{info(){},debug(){},error(){}},Usage:{track(){}},Storage:{get:(_key,fallback)=>fallback,set(){},remove(){}}};
+window.game_data={world:'test',player:{id:1,sitter:0},units:['spear'],village:{id:1,x:517,y:464}};
+const start=performance.now(),base=Date.UTC(2026,8,7,13,40,0);
+window.Timing={getCurrentServerTime:()=>base+performance.now()-start+3*3600000};
+const clockTimer=setInterval(()=>{document.getElementById('serverTime').textContent=new Date(base+performance.now()-start).toISOString().slice(11,19);},50);
+window.EASLoader={loadScript:async(path)=>new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='../'+path;script.onload=resolve;script.onerror=reject;document.head.append(script);})};
+let clicks=0;const logs=[];
+const nativeInfo=console.info;console.info=(...args)=>{logs.push(args);nativeInfo(...args);};
+const setConfirmation=(label='Enviar ataque')=>{
+    document.getElementById('fixture').innerHTML=`<form id="command-confirm-form" action="?screen=place&amp;action=command"><input type="hidden" name="x" value="537"><input type="hidden" name="y" value="450"><button id="troop_confirm_submit" type="submit">${label}</button></form>`;
+    document.getElementById('troop_confirm_submit').addEventListener('click',event=>{event.preventDefault();clicks++;});
+    document.getElementById('command-confirm-form').addEventListener('submit',event=>event.preventDefault());
+    history.replaceState({},'',location.pathname+'?screen=place&try=confirm');
+};
+</script>
+<script src="../core/utils.js"></script><script src="../core/world.js"></script><script src="../core/runtime.js"></script><script src="../core/ui.js"></script>
+<script src="../services/mass-snipe-execution.js"></script><script src="../modules/mass-snipe.js"></script>
+<script>
+(async()=>{
+    let assertions=0;const failures=[];
+    const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${label}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);};
+    const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    const find=selector=>document.querySelector('#eas-mass-snipe-precise '+selector);
+    const plan=(delay=1000,compensation=93)=>{
+        find('[data-target]').value=EAS.MassSnipeExecution.formatDateTime(Math.floor(EAS.MassSnipeExecution.getCurrentServerTimeMs()+delay));
+        find('[data-latency]').value=String(compensation);find('[data-enable]').checked=true;
+        find('[data-enable]').dispatchEvent(new Event('input',{bubbles:true}));
+    };
+    try {
+        setConfirmation();
+        await EAS.Modules.MassSnipe.open();document.querySelector('#eas-mass-snipe [data-precise]').click();
+        for(let i=0;i<100&&!document.getElementById('eas-mass-snipe-precise');i++)await wait(10);
+        equal(Boolean(document.getElementById('eas-mass-snipe-precise')),true,'separate mode opens through Mass Snipe');
+        equal(document.getElementById('eas-mass-snipe'),null,'planner closes');
+        equal([find('[data-enable]').checked,find('[data-arm]').disabled,clicks],[false,true,0],'manual default, no auto arm');
+        find('[data-target]').value='07/09/2026 13:40:34:271';find('[data-latency]').value='93';find('[data-target]').dispatchEvent(new Event('input'));
+        equal(find('[data-fire-display]').textContent,'07/09/2026 13:40:34.178','93ms compensation displayed');
+        equal(find('[data-arm]').disabled,true,'entering time alone never arms');
+        plan(500);find('[data-arm]').click();equal(find('[data-cancel]').disabled,false,'cancel available when armed');
+        equal(find('[data-countdown]').textContent.startsWith('00:00:00.'),true,'millisecond countdown');
+        find('[data-cancel]').click();await wait(550);equal(clicks,0,'cancel prevents click');
+        equal(find('[data-enable]').checked,false,'cancel requires fresh activation');
+        plan(300);find('[data-arm]').click();find('[data-arm]').click();await wait(400);
+        equal(clicks,1,'attack single click');
+        equal(logs.filter(entry=>entry[0].includes('Envio preciso')).length,1,'one result log');
+        const report=logs.find(entry=>entry[0].includes('Envio preciso'))[1];
+        equal(report.targetTimestamp-report.targetClickTimestamp,93,'target and compensated timestamps logged');
+        equal(Number.isFinite(report.actualClickTimestamp)&&Number.isFinite(report.performanceNowAtClick),true,'actual call timestamp and monotonic clock logged');
+        equal(report['Scheduler error'].startsWith('+'),true,'signed scheduler error');
+        equal(find('[data-arm]').disabled,true,'cannot rearm consumed form');
+        let rejected=false;try{EAS.MassSnipePrecise.open();}catch{rejected=true;}equal(rejected,true,'reopening consumed confirmation rejected');
+
+        setConfirmation('Enviar apoio');EAS.MassSnipePrecise.open();plan(300,0);find('[data-arm]').click();await wait(400);equal(clicks,2,'support button works');
+        setConfirmation();EAS.MassSnipePrecise.open();plan(400);find('[data-arm]').click();document.getElementById('troop_confirm_submit').click();await wait(450);equal(clicks,3,'manual click consumes armed command');
+        setConfirmation();EAS.MassSnipePrecise.open();plan(400);find('[data-arm]').click();document.getElementById('troop_confirm_submit').remove();await wait(450);equal(clicks,3,'missing button cancels');
+        equal(find('[data-status]').textContent.includes('mudou'),true,'changed confirmation reported');
+
+        setConfirmation();EAS.MassSnipePrecise.open();plan(400);find('[data-arm]').click();document.querySelector('#eas-mass-snipe-precise [data-eas-action="close"]').click();await wait(450);equal(clicks,3,'closing cancels');equal(EAS.Runtime.get('mass-snipe-precise'),null,'runtime disposed');
+        setConfirmation();EAS.MassSnipePrecise.open();plan(400);find('[data-arm]').click();history.replaceState({},'',location.pathname+'?screen=place');await wait(450);equal(clicks,3,'leaving confirmation cancels');
+        rejected=false;try{EAS.MassSnipePrecise.open();}catch{rejected=true;}equal(rejected,true,'cannot open on rally preparation page');
+
+        setConfirmation();EAS.MassSnipePrecise.open();plan(400);const timing=window.Timing;delete window.Timing;find('[data-arm]').click();equal(find('[data-status]').textContent.includes('Timing'),true,'unavailable synchronized clock blocks experiment');window.Timing=timing;
+        window.EASScheduledMissionRuntime={sendTimer:1};rejected=false;try{EAS.MassSnipePrecise.open();}catch{rejected=true;}equal(rejected,true,'existing scheduler never competes');delete window.EASScheduledMissionRuntime;
+        document.getElementById('troop_confirm_submit').disabled=true;rejected=false;try{EAS.MassSnipePrecise.open();}catch{rejected=true;}equal(rejected,true,'disabled send button rejected');
+        document.querySelector('#eas-mass-snipe-precise [data-eas-action="close"]').click();await wait(0);
+    } catch(error){failures.push(error.stack||String(error));}
+    clearInterval(clockTimer);
+    document.getElementById('result').textContent=failures.length?`FAIL\n${failures.join('\n')}`:`PASS — ${assertions} assertions`;
+    document.title=failures.length?'FAIL':'PASS';
+})();
+</script></body></html>

@@ -52,6 +52,7 @@
                 <button class="eas-button" data-calculate>Calcular tempos</button>
                 <button class="eas-button" data-import>Import. em massa</button>
                 <button class="eas-button" data-export>Exportar como Código BB</button>
+                <button class="eas-button eas-button--secondary" data-precise>Envio preciso (experimental)</button>
                 <button class="eas-button eas-button--secondary" data-refresh>Atualizar dados</button>
                 <button class="eas-button eas-button--secondary" data-reset>Redefinir script</button>
                 <button class="eas-button eas-button--secondary" data-back>Voltar ao menu</button>
@@ -159,6 +160,12 @@
             renderResults([]); status('A configuração do script foi redefinida!', 'success');
         };
         find('[data-back]').onclick = () => { dispose(); EAS.UI.openMainWindow(); };
+        find('[data-precise]').onclick = safely(async () => {
+            if (!EAS.MassSnipePrecise) await EASLoader.loadScript('services/mass-snipe-precise.js');
+            if (closed) return;
+            EAS.MassSnipePrecise.open();
+            dispose();
+        });
         runtime.listen(document, 'click', (event) => {
             const row = event.target.closest?.(`${EAS.Selectors.massSnipe.commands}, ${EAS.Selectors.massSnipe.incomings}`);
             if (!row || !row.querySelector('td')) return;
