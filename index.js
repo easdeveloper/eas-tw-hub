@@ -167,6 +167,10 @@
         try {
             if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
+                if (!window.EAS.Minting) {
+                    await loadScript('services/minting-adapter.js');
+                    await loadScript('services/minting.js');
+                }
                 if (!window.EAS.UI.FloatingPanel) {
                     await loadStyle('css/eas.css');
                     await loadScript('core/floating-position.js');
@@ -273,6 +277,9 @@
             await loadScript('services/mission-scheduler.js');
             await loadScript('services/scheduled-mission-execution.js');
             await loadScript('services/attack-preparation.js');
+
+            await loadScript('services/minting-adapter.js');
+            await loadScript('services/minting.js');
 
             window.EAS.Data.bootstrap().catch((error) => window.EAS.Log.error('bootstrap', 'background-refresh-failed', error));
 

@@ -285,6 +285,7 @@
             'troop-counter': 'TroopCounter',
             'mass-farm': 'MassFarm',
             'mass-snipe': 'MassSnipe',
+            minting: 'Minting',
             'market-smart-offers': 'MarketSmartOffers',
             'market-balance': 'MarketBalance',
             'market-target-supply': 'MarketTargetSupply',
@@ -352,6 +353,7 @@
                 {id:'fakes',icon:'🎭',title:'Gerenciador de Fakes',description:'Crie e analise operações de fake.',status:'Disponível'},
                 {id:'mass-snipe',icon:'🎯',title:'Mass Snipe',description:'Calcule snips com horários e countdown em milissegundos.',status:'Disponível'} ] },
             { icon:'🏪', title:'Mercado', description:'Economia e distribuição de recursos.', tools:[
+                {id:'minting',icon:'🪙',title:'Cunhagem',description:'Cunhe moedas por aldeia no grupo selecionado.',status:'Beta'},
                 {id:'market-smart-offers',icon:'🔄',title:'Ofertas Inteligentes',description:'Equilibre os recursos de cada aldeia por ofertas.',status:'Disponível'},
                 {id:'market-balance',icon:'⚖️',title:'Balanceamento',description:'Redistribua recursos entre suas aldeias.',status:'Disponível'},
                 {id:'market-target-supply',icon:'🎯',title:'Envio Coordenado',description:'Abasteça uma aldeia-alvo usando várias origens.',status:'Disponível'} ] },
@@ -524,7 +526,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id.startsWith('market-')) {
+        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id === 'minting' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     const opened = loadedModule.open();
