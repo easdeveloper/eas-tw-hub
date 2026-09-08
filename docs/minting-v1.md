@@ -21,15 +21,15 @@ Nenhum endpoint em massa foi fornecido; a V1 processa o grupo com POSTs sequenci
 
 `inspectVillage` devolve apenas campos não sensíveis. O `h`, action e mensagens anteriores permanecem em memória e não entram no storage, resultados ou logs do adapter. `execute` ignora tokens de discovery e faz OUTRO GET imediatamente antes da tentativa, usando o `h` dessa nova leitura. Não executa scripts do HTML remoto.
 
-## Quantidade máxima: limitação ainda pendente
+## Quantidade máxima: evidência do Mundo 143
 
-O trecho fornecido mostra `#coin_mint_fill_max`, mas não seu JavaScript nem um valor máximo. Portanto não foi possível validar seu algoritmo oficial. Não se usa texto decorativo do link, print, maxlength ou fórmula estimada como capacidade.
+A nova estrutura fornecida pelo usuário contém `#coin_mint_fill_max` com texto `(7)`, confirmado como máximo disponível naquele momento. O adapter aceita exclusivamente um inteiro entre parênteses, no único link com esse ID dentro do formulário selecionado. Textos extras, decimais e separadores regionais não são interpretados. Não há cálculo de custos nem execução do JavaScript remoto.
 
-Se o input nativo fornecer `max` inteiro explícito, o adapter o utiliza: `count = min(requested, maxMintable)`. Esse suporte está coberto por fixture sintética; o atributo NÃO estava presente na captura fornecida. Sem esse atributo, `maxMintable = null`.
+O atributo `max` inteiro continua suportado como fallback. Se houver dois limites numéricos, usa-se o menor. Na fixture fiel ao trecho enviado, `maxMintable=7`. Sem evidência numérica válida, permanece null.
 
-Com máximo desconhecido, count é limitado a 1 mesmo quando requested é maior. A presença do formulário foi confirmada pelo usuário como sinal de disponibilidade. A quantidade configurada é preservada e os logs/UI avisam: “Limite máximo oficial ainda não validado; execução limitada a 1 moeda por aldeia.” `maxlength` apenas valida o tamanho do campo; não representa moedas disponíveis.
+Nesta correção, o envio permanece limitado a **uma moeda por aldeia**, inclusive com máximo conhecido: `count = min(1, requested, maxMintable)` quando conhecido e 1 quando desconhecido. Isso evita que reconhecer `(7)` amplie os gastos. Requested preserva a configuração. A UI informa o limite de uma moeda. `maxlength` apenas valida o tamanho do campo.
 
-Para ampliar esse suporte, precisamos do HTML completo do link e do trecho do JavaScript NATIVO que preenche `coin_mint_count` (incluindo os valores de entrada). Não enviar tokens reais.
+O handler completo do link ainda não foi fornecido; a leitura é do valor literal confirmado, não uma implementação do algoritmo desse handler.
 
 ## Redirects e confirmação
 
@@ -51,7 +51,7 @@ Reutiliza `EAS.Runtime`, `EAS.Storage`, `EAS.Log`, `EAS.Usage` e as janelas exis
 
 Web Locks por mundo/jogador/sitter e guarda local impedem ciclos concorrentes. A associação ao grupo é revalidada antes da inspeção final. A callback síncrona `beforePost(count)` verifica cancelamento e persiste a tentativa ANTES do POST. Falha nessa persistência impede envio. Um formulário que desapareceu ou quantidade não validável gera attempted=0, sem falso incremento. Parar durante o GET impede o POST; não desfaz uma requisição já processada.
 
-Cada resultado contém `villageId`, `villageName`, `requested`, `attempted`, `confirmed`, `status`, `reason`. Requested preserva a quantidade configurada; attempted representa o count realmente preparado para envio. Só confirmed soma ao total. Por exemplo requested=5/max=3 produz attempted=3, não 5. Depois de uma tentativa com resultado incerto, a automação para, sem repetir automaticamente.
+Cada resultado contém `villageId`, `villageName`, `requested`, `attempted`, `confirmed`, `status`, `reason`. Requested preserva a quantidade configurada; attempted representa o count realmente preparado para envio. Só confirmed soma ao total. Nesta validação, requested=5/max=7 produz attempted=1. Depois de uma tentativa com resultado incerto, a automação para, sem repetir automaticamente.
 
 Chave `eas-tw-hub:minting.v1.<world>.<playerId>.<sitterId>`, via EAS.Storage: configuração, automação, status, total confirmado, contadores do último ciclo, lastRunAt/nextRunAt, resultados, últimos 100 logs e erro. Nenhum token é persistido. Horários são timestamps absolutos; a UI identifica a exibição no horário do navegador.
 
@@ -61,7 +61,28 @@ Chave `eas-tw-hub:minting.v1.<world>.<playerId>.<sitterId>`, via EAS.Storage: co
 - `tests/minting.test.cjs`: scheduler, recuperação, grupo, locks, tentativa sem confirmação, contagem efetiva, cancelamento durante inspeção e falha de persistência antes do POST.
 - `tests/minting.test.html`: UI e integração dos serviços com transporte simulado.
 
-Os testes não gastam recursos no jogo. Permanecem pendentes: handler/valor real do preenchimento máximo, HTML exato da mensagem de sucesso, variantes de idioma/mundo e validação autenticada de ponta a ponta. O contexto de sitter é preservado e validado, mas também exige conferência no jogo.
+Os testes não gastam recursos no jogo. Permanecem pendentes: handler completo do preenchimento máximo, HTML exato da mensagem de sucesso, variantes de idioma/mundo e validação autenticada de ponta a ponta. O valor literal `(7)` já foi validado na fixture do Mundo 143. O contexto de sitter é preservado e validado, mas também exige conferência no jogo.
+
+## Investigação de NO_H_FIELD em village=1561
+
+O parser ANTERIOR às alterações desta rodada foi executado sobre a estrutura fornecida: eligible=true, h encontrado, sem erro. Portanto esse fragmento não reproduz NO_H_FIELD e não permite determinar a causa raiz da falha no servidor real. Não se deve atribuir o problema a seletores/redirects sem a evidência do GET que falhou.
+
+O fluxo foi revisado: GET explícito da Academia → response.text() sem substituições/normalização → DOMParser text/html → candidato pela action → validação de contexto/método → querySelectorAll por name dentro desse formulário. Não usa CSS.escape nem o DOM da tela atual. Scripts da resposta não executam nesse documento separado, portanto o DOM renderizado pode diferir do HTML recebido. Isso é uma hipótese a verificar, não causa confirmada.
+
+A extração não foi ampliada para procurar h globalmente ou em outro formulário. Agora também se rejeita um campo descendente explicitamente associado a outro form. `form.elements` é consultado apenas no diagnóstico para comparar associação e descendência; não serve de fallback para buscar tokens fora do formulário.
+
+Ativação: `EAS.Storage.set('minting.diagnostics', true)`. Depois usar **Verificar aldeias**, sem Iniciar/Executar Agora. Cada inspeção emite `[EAS Cunhagem] academy GET` com:
+
+- requestedGetUrl e finalGetUrl sanitizadas; redirected, httpStatus e htmlResponse;
+- formCount (todos os forms), coinCandidateCount e mintCandidateCount;
+- selectedAction sanitizada e method;
+- descendantFieldNames e associatedFieldNames;
+- documentHCount, selectedHCount, associatedHCount e selectedHHasValue (somente booleano, sem o valor);
+- villageId, status, stage e reason.
+
+URLs mantêm apenas origem local, caminhos conhecidos e valores permitidos de village/screen/action/group/t. Demais parâmetros, credenciais, fragmentos, origem externa e caminhos arbitrários são omitidos/mascarados. Nomes de campos inesperados são mascarados. Nunca se registra valor de h, valores de inputs, HTML, cookies ou headers de autenticação. O relatório não é persistido pelo adapter; pode ser compartilhado como saída sanitizada. Desativar com a mesma chave false.
+
+Se documentHCount for positivo mas selectedHCount zero, o h está fora do candidato no DOM parseado. Se ambos forem zero, a resposta parseada não contém esse campo: comparar o GET/final URL com a página renderizada é o próximo passo. O caso real permanece pendente dessa saída; não houve conexão ao jogo nem POST real nesta investigação.
 
 
 ## Alinhamento com os testes reais do usuário

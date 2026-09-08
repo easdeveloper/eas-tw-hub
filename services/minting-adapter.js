@@ -10,16 +10,42 @@
     const integer = (value) => /^\d+$/.test(String(value)) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
     const normalizeText = (text) => String(text || '').replace(/\s+/g, ' ').trim();
     const messages = (doc) => [...doc.querySelectorAll(selectors.success)].map((node) => normalizeText(node.textContent)).filter(Boolean);
-    // No fill-max handler was supplied. Only a native numeric input constraint is
-    // supported; never execute fetched JavaScript, infer costs, or read decorative text.
-    const maxMintable = (form) => integer(form.querySelector(selectors.count)?.getAttribute('max'));
+    // The user verified the official fill-max link's literal "(7)" in world 143.
+    // Accept only that unambiguous integer notation inside the selected form.
+    const maxMintable = (form) => {
+        const nativeMax = integer(form.querySelector(selectors.count)?.getAttribute('max'));
+        const links = form.querySelectorAll('#coin_mint_fill_max');
+        const match = links.length === 1 ? normalizeText(links[0].textContent).match(/^\((\d+)\)$/) : null;
+        const linkMax = match ? integer(match[1]) : null;
+        return linkMax === null ? nativeMax : nativeMax === null ? linkMax : Math.min(linkMax, nativeMax);
+    };
     const calculateCount = (requested, maximum) => {
         if (!Number.isSafeInteger(requested) || requested < 1) return 0;
         if (maximum === null) return 1;
-        return Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(requested, maximum) : 0;
+        return Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(1, requested, maximum) : 0;
     };
-    const createAdapter = ({ origin = location.origin, fetchPage = (...args) => fetch(...args), gameData = () => EAS.World.getGameData() } = {}) => {
+    const createAdapter = ({ origin = location.origin, fetchPage = (...args) => fetch(...args), gameData = () => EAS.World.getGameData(),
+        onDiagnostic = (detail) => { if (EAS.Storage?.get?.('minting.diagnostics', false)) console.debug('[EAS Cunhagem] academy GET', detail); }
+    } = {}) => {
         const pending = new Set();
+        const safeUrl = (value) => {
+            try {
+                const url = new URL(value, origin);
+                const query = new URLSearchParams();
+                for (const [key, val] of url.searchParams) {
+                    if ((['village', 'group', 't'].includes(key) && /^\d{1,20}$/.test(val))
+                        || (key === 'screen' && ['snob', 'overview', 'place', 'login', 'overview_villages'].includes(val))
+                        || (key === 'action' && val === 'coin')) query.append(key, val);
+                }
+                const host = url.origin === origin ? origin : '[external-origin]';
+                const path = ['/game.php', '/index.php', '/'].includes(url.pathname) ? url.pathname : '/[redacted-path]';
+                return host + path + (query.size ? '?' + query : '');
+            } catch { return '[invalid-url]'; }
+        };
+        const fieldNames = (fields) => [...new Set([...fields].map((field) => {
+            const name = field.getAttribute('name');
+            return !name ? null : /^[a-z_\[\]]{1,40}$/.test(name) ? name : '[redacted-name]';
+        }).filter(Boolean))];
         const sitterId = () => String(gameData().player?.sitter || 0);
         const sameContext = (url, villageId, action = null) => {
             if (url.origin !== origin || url.pathname !== '/game.php' || url.username || url.password || url.hash) return false;
@@ -41,7 +67,11 @@
             return null;
         };
         const parsePage = (doc, url, villageId) => {
-            const result = { villageId: String(villageId), eligible: false, actionUrl: null, h: null, maxMintable: null, status: 'NOT_ELIGIBLE', reason: null, stage: 'page' };
+            const diagnostics = { finalGetUrl: safeUrl(url), formCount: doc.querySelectorAll('form').length,
+                coinCandidateCount: 0, mintCandidateCount: 0, selectedAction: null, method: null,
+                descendantFieldNames: [], associatedFieldNames: [], documentHCount: doc.querySelectorAll(selectors.token).length,
+                selectedHCount: 0, associatedHCount: 0, selectedHHasValue: false };
+            const result = { villageId: String(villageId), eligible: false, actionUrl: null, h: null, maxMintable: null, status: 'NOT_ELIGIBLE', reason: null, stage: 'page', diagnostics };
             const reject = (status, reason, stage) => ({ ...result, status, reason, stage });
             const invalid = pageReason(doc, url, villageId);
             if (invalid) return reject(invalid === 'SESSION_EXPIRED' ? 'SESSION_EXPIRED' : 'PARSE_FAILED', invalid === 'SESSION_EXPIRED' ? 'LOGIN_PAGE' : invalid, 'page');
@@ -50,6 +80,8 @@
                 catch { return false; }
             });
             const candidates = coinForms.filter((form) => new URL(form.getAttribute('action'), url).searchParams.get('screen') === 'snob');
+            diagnostics.coinCandidateCount = coinForms.length;
+            diagnostics.mintCandidateCount = candidates.length;
             if (!candidates.length) {
                 if (coinForms.some((form) => form.querySelector(selectors.count))) return reject('PARSE_FAILED', 'INVALID_ACTION', 'action');
                 if (!doc.querySelector(selectors.content) && !(doc.querySelector('#serverDate') && doc.querySelector('#serverTime'))) return reject('PARSE_FAILED', 'INVALID_PAGE', 'page');
@@ -58,11 +90,15 @@
             if (candidates.length !== 1) return reject('PARSE_FAILED', 'MULTIPLE_MINT_FORMS', 'form');
             const form = candidates[0], action = new URL(form.getAttribute('action'), url);
             const count = form.querySelector(selectors.count), tokens = form.querySelectorAll(selectors.token);
+            Object.assign(diagnostics, { selectedAction: safeUrl(action), method: form.method.toUpperCase(),
+                descendantFieldNames: fieldNames(form.querySelectorAll('input, select, textarea, button')),
+                associatedFieldNames: fieldNames(form.elements), selectedHCount: tokens.length, selectedHHasValue: tokens.length === 1 && Boolean(tokens[0].value.trim()),
+                associatedHCount: [...form.elements].filter((field) => field.matches(selectors.token)).length });
             if (!sameContext(action, villageId, 'coin')) return reject('PARSE_FAILED', 'INVALID_ACTION', 'action');
             if (form.method.toLowerCase() !== 'post') return reject('PARSE_FAILED', 'INVALID_METHOD', 'method');
             if (!tokens.length || (tokens.length === 1 && !tokens[0].value.trim())) return reject('PARSE_FAILED', 'NO_H_FIELD', 'token');
-            if (tokens.length !== 1 || tokens[0].matches(':disabled')) return reject('PARSE_FAILED', 'INVALID_H_FIELD', 'token');
-            if (form.querySelectorAll(selectors.count).length !== 1 || count?.matches(':disabled')) return reject('PARSE_FAILED', 'INVALID_COUNT_FIELD', 'count');
+            if (tokens.length !== 1 || tokens[0].matches(':disabled') || tokens[0].form !== form) return reject('PARSE_FAILED', 'INVALID_H_FIELD', 'token');
+            if (form.querySelectorAll(selectors.count).length !== 1 || count?.matches(':disabled') || count?.form !== form) return reject('PARSE_FAILED', 'INVALID_COUNT_FIELD', 'count');
             return { ...result, eligible: true, actionUrl: action.href, h: tokens[0].value,
                 maxMintable: maxMintable(form), maxLength: integer(count.getAttribute('maxlength')), status: 'READY', reason: null, stage: 'complete' };
         };
@@ -72,21 +108,29 @@
             try {
                 const response = await fetchPage(String(url), { credentials: 'same-origin', mode: 'same-origin', cache: 'no-store', redirect: 'follow',
                     ...options, headers: { Accept: 'text/html', ...options.headers }, signal: abort.signal });
-                if (response.status === 401 || response.status === 403) return { reason: 'SESSION_EXPIRED' };
-                if (!response.ok) return { reason: 'HTTP_ERROR' };
-                if (!(response.headers.get('content-type') || '').toLowerCase().includes('text/html')) return { reason: 'INVALID_PAGE' };
-                const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-                return { doc, url: new URL(response.url), reason: null };
+                const htmlResponse = (response.headers.get('content-type') || '').toLowerCase().includes('text/html');
+                const diagnostics = { finalGetUrl: safeUrl(response.url), redirected: Boolean(response.redirected), httpStatus: response.status, htmlResponse };
+                if (response.status === 401 || response.status === 403) return { reason: 'SESSION_EXPIRED', diagnostics };
+                if (!response.ok) return { reason: 'HTTP_ERROR', diagnostics };
+                if (!htmlResponse) return { reason: 'INVALID_PAGE', diagnostics };
+                const html = await response.text();
+                // No transformations; scripts in this detached document are not executed.
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                return { doc, url: new URL(response.url), reason: null, diagnostics };
             } catch { return { reason: 'REQUEST_FAILED' }; }
             finally { clearTimeout(timeout); }
         };
         const inspectMinting = async (villageId) => {
-            let page;
-            try { page = await requestDocument(academyUrl(villageId)); }
+            let page, requestedGetUrl = '[invalid-url]';
+            try { const url = academyUrl(villageId); requestedGetUrl = safeUrl(url); page = await requestDocument(url); }
             catch { page = { reason: 'INVALID_PAGE' }; }
-            if (page.reason) return { villageId: String(villageId), eligible: false, actionUrl: null, h: null, maxMintable: null,
-                status: page.reason === 'SESSION_EXPIRED' ? 'SESSION_EXPIRED' : page.reason === 'INVALID_PAGE' ? 'PARSE_FAILED' : 'REQUEST_FAILED', reason: page.reason, stage: 'request' };
-            return { ...parsePage(page.doc, page.url, villageId), previousMessages: messages(page.doc) };
+            const result = page.reason ? { villageId: String(villageId), eligible: false, actionUrl: null, h: null, maxMintable: null,
+                status: page.reason === 'SESSION_EXPIRED' ? 'SESSION_EXPIRED' : page.reason === 'INVALID_PAGE' ? 'PARSE_FAILED' : 'REQUEST_FAILED', reason: page.reason, stage: 'request' }
+                : { ...parsePage(page.doc, page.url, villageId), previousMessages: messages(page.doc) };
+            const diagnostics = { ...result.diagnostics, ...page.diagnostics, requestedGetUrl,
+                villageId: /^[1-9]\d*$/.test(String(villageId)) ? String(villageId) : '[invalid-id]', status: result.status, stage: result.stage, reason: result.reason };
+            try { onDiagnostic(diagnostics); } catch {}
+            return result;
         };
         const confirm = (doc, url, villageId, attempted, previousMessages = []) => {
             const invalid = pageReason(doc, url, villageId);

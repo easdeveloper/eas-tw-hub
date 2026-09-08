@@ -6,13 +6,24 @@
     const failures=[];let assertions=0;
     const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual));};
     try {
-        const names=['academy-form','academy-no-form','login','unexpected','confirmation-one'];
+        const names=['academy-form','academy-no-form','login','unexpected','confirmation-one','academy-world143'];
         const fixtures=Object.fromEntries(await Promise.all(names.map(async name=>[name,await(await fetch('fixtures/minting/'+name+'.html')).text()])));
         const origin=location.origin, url=new URL('/game.php?village=7&screen=snob',origin);
         const doc=html=>new DOMParser().parseFromString(html,'text/html');
         const adapter=EAS.Adapters.Minting;
         const form=fixtures['academy-form'], success=fixtures['confirmation-one'], empty=fixtures['academy-no-form'];
         const parse=html=>adapter.parsePage(doc(html),url,'7');
+        const liveUrl = new URL('/game.php?village=1561&screen=snob', origin);
+        const live = adapter.parsePage(doc(fixtures['academy-world143']), liveUrl, '1561');
+        equal([live.eligible, Boolean(live.h), live.maxMintable, live.reason], [true,true,7,null], 'world 143 observed form parsed without POST');
+        equal(live.diagnostics.formCount,1,'world 143 form count');
+        equal([live.diagnostics.coinCandidateCount,live.diagnostics.mintCandidateCount],[1,1],'world 143 selected candidate');
+        equal([live.diagnostics.method,live.diagnostics.descendantFieldNames],['POST',['count','h']],'world 143 method and field names');
+        equal([live.diagnostics.selectedHCount,live.diagnostics.associatedHCount],[1,1],'world 143 descendant and associated token counts');
+        equal(JSON.stringify(live.diagnostics).includes('synthetic-world143-token'),false,'diagnostics never expose synthetic token');
+        for(const value of ['(7) extra','(7.5)','(1,000)','(-1)']) {
+            equal(adapter.parsePage(doc(fixtures['academy-world143'].replace('(7)',value)),liveUrl,'1561').maxMintable,null,'ambiguous max notation rejected: '+value);
+        }
         equal(parse(form).eligible,true,'A official form eligible');
         equal(parse(form).h,'fixture-token','A token from coin form');
         const minimal = form.replace('id="coin_mint_count"','').replace('type="hidden"','type="text"');
@@ -28,6 +39,8 @@
         equal([parse(missing).status,parse(missing).stage],['PARSE_FAILED','token'],'missing h has safe diagnostic stage');
         equal(parse(form.replace('name="count"','name="other"')).reason,'INVALID_COUNT_FIELD','missing count distinguished');
         equal(parse(form.replace('value="fixture-token"','value=""')).reason,'NO_H_FIELD','empty token rejected');
+        equal(parse(form.replace('value="fixture-token"','value=""')).diagnostics.selectedHHasValue,false,'empty token distinguished without exposing a value');
+        equal(live.diagnostics.selectedHHasValue,true,'nonempty world 143 token identified only as a boolean');
         equal(parse(form.replace('village=7','village=8')).reason,'INVALID_ACTION','wrong village action');
         equal(parse(form.replace('/game.php?', 'https://example.invalid/game.php?')).reason,'INVALID_ACTION','foreign action');
         equal(parse(form.replace('screen=snob','screen=market')).reason,'INVALID_ACTION','wrong screen action');
@@ -36,7 +49,7 @@
         const withMax=form.replace('maxlength="5"','maxlength="5" max="3"');
         equal(parse(withMax).maxMintable,3,'synthetic native max constraint');
         equal(adapter.calculateCount(1,3),1,'E count 1 of 3');
-        equal(adapter.calculateCount(5,3),3,'F cap 5 at 3');
+        equal(adapter.calculateCount(5,3),1,'F safety cap remains one even with known maximum');
         equal(adapter.calculateCount(5,null),1,'unknown max caps multi-coin request at one');
         equal(adapter.calculateCount(1,null),1,'available form validates single coin');
         equal(adapter.confirm(doc(success),url,'7',1).confirmed,1,'H explicit one-coin receipt');
@@ -72,8 +85,8 @@
         equal([...new URLSearchParams(post.options.body).keys()],['count','h'],'only official payload fields');
         equal(post.options.redirect,'follow','normal redirect following');equal(post.options.mode,'same-origin','same-origin transport');
         equal(Object.keys(await fresh.instance.inspectVillage({id:7,name:'Village'})),['villageId','villageName','eligible','maxMintable','status','reason','stage'],'discovery excludes token/action');
-        const capped=mock(withMax,success.replace('1 moeda','3 moedas'));
-        equal((await capped.instance.execute({villageId:'7',requested:5})).attempted,3,'F real POST capped');
+        const capped=mock(withMax,success);
+        equal((await capped.instance.execute({villageId:'7',requested:5})).attempted,1,'F simulated POST remains limited to one');
         const cancelled=mock();equal((await cancelled.instance.execute({villageId:'7',requested:1},{beforePost:()=>false})).attempted,0,'cancel before POST');equal(cancelled.calls.length,1,'cancel GET only');
         const multi=mock(form);let state=null;const sent=[];
         const c=EAS.Minting.createController({read:()=>structuredClone(state),write:value=>{state=structuredClone(value);return true;},now:()=>1000,
@@ -86,6 +99,26 @@
         c.configure({groupId:'19',requestedPerVillage:1,intervalHours:0.5});await c.run();
         equal(c.read().totalConfirmedCoins,7,'I seven villages confirm at most seven');equal(sent.length,7,'I exactly seven POSTs');
         equal(JSON.stringify(state).includes('fresh-'),false,'tokens not persisted');
+        const diagnostics=[];let liveRequests=0;
+        const observed=adapter.createAdapter({origin,onDiagnostic:entry=>diagnostics.push(entry),gameData:()=>({player:{id:1},village:{id:99}}),fetchPage:async(href,options)=>{
+            liveRequests++;equal(options.method || 'GET','GET','inspection never POSTs');
+            equal(new URL(href).searchParams.get('village'),'1561','explicit target independent of current village/screen');
+            return {ok:true,status:200,url:liveUrl.href+'&h=url-secret#fragment-secret',redirected:true,headers:new Headers({'content-type':'text/html'}),text:async()=>fixtures['academy-world143']};
+        }});
+        // Unexpected fragment deliberately causes INVALID_PAGE; sanitized diagnostics still identify the redirect.
+        await observed.inspectMinting('1561');
+        equal(liveRequests,1,'diagnostic path uses only GET');
+        equal([diagnostics[0].redirected,diagnostics[0].httpStatus,diagnostics[0].htmlResponse],[true,200,true],'GET transport metadata');
+        equal(diagnostics[0].finalGetUrl,liveUrl.href,'final URL strips token and fragment');
+        equal(/url-secret|fragment-secret|synthetic-world143-token/.test(JSON.stringify(diagnostics)),false,'no secrets in diagnostic callback');
+        const outside = form.replace('name="h"','name="not_h"')+'<form action="/other"><input name="h" value="foreign-token"></form>';
+        const scoped=parse(outside);
+        equal([scoped.reason,scoped.diagnostics.formCount,scoped.diagnostics.documentHCount,scoped.diagnostics.selectedHCount],['NO_H_FIELD',2,1,0],'diagnostics identify token outside selected form without borrowing it');
+        const tokenInOtherOwner = form.replace('<form action=', '<form id="mint-owner" action=').replace('name="h"','form="other-owner" name="h"')+'<form id="other-owner"></form>';
+        equal(parse(tokenInOtherOwner).diagnostics.associatedHCount,0,'form association diagnostic distinguishes DOM containment');
+        equal(parse(tokenInOtherOwner).reason,'INVALID_H_FIELD','token assigned to another form cannot be used');
+        const actionSecret=parse(form.replace('action=coin','action=coin&amp;h=action-secret&amp;opaque=other-secret'));
+        equal(actionSecret.diagnostics.selectedAction,new URL('/game.php?village=7&screen=snob&action=coin',origin).href,'candidate action diagnostic excludes sensitive query fields');
     }catch(error){failures.push(error.stack);}
     document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
 })();

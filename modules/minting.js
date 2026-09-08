@@ -39,7 +39,7 @@
             field('next').textContent = `Próxima execução: ${state.nextRunAt ? new Date(state.nextRunAt).toLocaleString() + ' (horário deste navegador)' : '—'}`;
             field('counts').textContent = `Último ciclo: solicitado ${state.lastCycleRequested}; tentado ${state.lastCycleAttempted}; confirmado ${state.lastCycleConfirmed}.`;
             field('blocked').textContent = EAS.Adapters.Minting.blockedReason || (!navigator.locks ? 'Navegador sem suporte ao lock exclusivo.'
-                : 'Limite máximo oficial ainda não validado; execução limitada a 1 moeda por aldeia.');
+                : 'Nesta validação, execução limitada a 1 moeda por aldeia.');
             const executing = !EAS.Adapters.Minting.available || !navigator.locks || state.status === 'RUNNING';
             field('start').disabled = executing || state.automation;
             field('now').disabled = executing;
