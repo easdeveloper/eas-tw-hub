@@ -9,9 +9,12 @@
         window.matchMedia?.('(pointer: coarse)')?.matches ||
         innerWidth <= 640
     );
-    const notifyReady = () => window.dispatchEvent(new CustomEvent('eas-tw-hub-ready', {
-        detail: { version: window.EAS?.version || '', mobile: isMobile(), timestamp: Date.now() }
-    }));
+    const notifyReady = () => {
+        window.EAS?.UI?.FloatingPanel?.initialize({ minimizedByDefault: Boolean(window.__EAS_TW_RUNTIME_RESUMED__?.active) });
+        window.dispatchEvent(new CustomEvent('eas-tw-hub-ready', {
+            detail: { version: window.EAS?.version || '', mobile: isMobile(), timestamp: Date.now() }
+        }));
+    };
 
     const loadScript = (src) => new Promise((resolve, reject) => {
         const existing = document.querySelector(`script[data-eas-script="${src}"]`);
@@ -164,6 +167,11 @@
         try {
             if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
+                if (!window.EAS.UI.FloatingPanel) {
+                    await loadStyle('css/eas.css');
+                    await loadScript('core/floating-position.js');
+                    await loadScript('core/floating-panel.js');
+                }
                 const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
                 if (window.__EAS_TW_SILENT_BOOTSTRAP__) {
                     window.EAS.MissionScheduler?.initialize?.();
@@ -241,6 +249,8 @@
             await loadScript('core/observability.js');
             await loadScript('core/runtime.js');
             await loadScript('core/ui.js');
+            await loadScript('core/floating-position.js');
+            await loadScript('core/floating-panel.js');
             await loadScript('core/world.js');
             await loadScript('core/units.js');
             await loadScript('core/world-rules.js');

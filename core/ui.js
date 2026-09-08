@@ -19,6 +19,10 @@
     };
 
     EAS.UI.closeWindow = (id = DEFAULT_WINDOW_ID) => {
+        if (id === DEFAULT_WINDOW_ID && EAS.UI.FloatingPanel) {
+            EAS.UI.FloatingPanel.minimize();
+            return;
+        }
         if (id === DEFAULT_WINDOW_ID && document.getElementById(id)) {
             traceHubLifecycle('closeMainHub', { id });
         }
@@ -368,6 +372,7 @@
     };
 
     EAS.UI.openMainWindow = () => {
+        if (EAS.UI.FloatingPanel) return EAS.UI.FloatingPanel.open();
         traceHubLifecycle('openMainHub', {
             existing: Boolean(document.getElementById(DEFAULT_WINDOW_ID)),
             url: location.href
@@ -724,5 +729,5 @@
         win.body.appendChild(actions);
     };
 
-    EAS.UI.toggle = EAS.UI.openMainWindow;
+    EAS.UI.toggle = () => EAS.UI.FloatingPanel ? EAS.UI.FloatingPanel.toggle() : EAS.UI.openMainWindow();
 })();

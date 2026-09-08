@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Floating panel tests</title><link rel="stylesheet" href="../css/eas.css"></head>
+<body>
+<div id="quickbar_contents"><a id="old-hub" href="#">EAS TW Hub</a> <a id="other-shortcut" href="#other">Outro script</a> <a id="similar-shortcut" href="#similar">EAS TW Hub ajuda</a></div>
+<a id="outside-quickbar" href="#outside">EAS TW Hub</a>
+<pre id="result">running</pre>
+<script src="../core/eas.js"></script><script src="../core/storage.js"></script><script src="../core/ui.js"></script>
+<script src="../core/floating-position.js"></script><script src="../core/floating-panel.js"></script>
+<script>
+window.onerror = (message) => { document.getElementById('result').textContent = `FAIL ${message}`; };
+(async () => {
+    const failures = []; let assertions = 0;
+    const equal = (actual, expected, label) => { assertions++; if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`); };
+    const pointer = (node, type, x, y) => node.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: y }));
+    const drag = (handle, x, y) => {
+        const rect = handle.getBoundingClientRect();
+        pointer(handle, 'pointerdown', rect.left + 10, rect.top + 10);
+        pointer(document, 'pointermove', rect.left + 10 + x, rect.top + 10 + y);
+        pointer(document, 'pointerup', rect.left + 10 + x, rect.top + 10 + y);
+    };
+    try {
+        // ?inspect retains storage and leaves the real shell available for interactive/reload checks.
+        if (location.search.includes('inspect')) {
+            EAS.UI.FloatingPanel.initialize();
+            document.getElementById('result').textContent = 'READY';
+            return;
+        }
+        EAS.Storage.remove('floating-panel');
+        EAS.UI.FloatingPanel.initialize();
+        const panel = document.querySelector('.eas-tw-panel'), launcher = document.querySelector('.eas-tw-launcher');
+        equal(panel.hidden, false, 'first visit opens the panel');
+        equal(document.querySelectorAll('.hub-category').length, 4, 'existing dashboard reused');
+        equal(Boolean(document.querySelector('[data-eas-module="mass-snipe"]')), true, 'Mass Snipe retained');
+        equal(document.getElementById('old-hub'), null, 'exact old quickbar shortcut removed');
+        equal(Boolean(document.getElementById('other-shortcut')), true, 'other script preserved');
+        equal(Boolean(document.getElementById('similar-shortcut')), true, 'similar name preserved');
+        equal(Boolean(document.getElementById('outside-quickbar')), true, 'same name outside quickbar preserved');
+        EAS.UI.FloatingPanel.initialize();
+        equal(document.querySelectorAll('.eas-tw-panel').length, 1, 'idempotent bootstrap');
+        const before = panel.style.left;
+        drag(panel.querySelector('[data-eas-tw-minimize]'), 80, 80);
+        equal(panel.style.left, before, 'header buttons never initiate dragging');
+        drag(panel.querySelector('.eas-tw-panel-header'), -999, -999);
+        equal(panel.style.left, '12px', 'header drag clamps left');
+        equal(panel.style.top, '12px', 'header drag clamps top');
+        panel.querySelector('[data-eas-tw-minimize]').click();
+        equal(panel.hidden && !launcher.hidden, true, 'minimization shows launcher');
+        equal(launcher.title, 'Abrir EAS TW Hub', 'launcher tooltip');
+        drag(launcher, 100, 60);
+        launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+        equal(panel.hidden, true, 'drag does not activate launcher');
+        equal(EAS.Storage.get('floating-panel').launcher, { x: 112, y: 72 }, 'independent launcher coordinates saved');
+        equal(EAS.Storage.get('floating-panel').minimized, true, 'minimized state saved');
+        launcher.click();
+        equal(panel.hidden, false, 'launcher click restores panel');
+        equal(EAS.Storage.get('floating-panel').minimized, false, 'open state saved');
+        const body = panel.querySelector('.eas-tw-panel-body');
+        const tall = document.createElement('div'); tall.style.height = '2000px'; body.append(tall);
+        equal(body.scrollHeight > body.clientHeight, true, 'large content scrolls internally');
+        const headerTop = panel.querySelector('header').getBoundingClientRect().top;
+        body.scrollTop = 200;
+        equal(panel.querySelector('header').getBoundingClientRect().top, headerTop, 'header stays fixed during scroll');
+        equal(panel.getBoundingClientRect().bottom <= innerHeight - 11, true, 'panel fits viewport height');
+        let opens = 0;
+        EAS.Modules.MassSnipe = { open: async () => { opens++; EAS.UI.createWindow({ id: 'test-module', title: 'Mass Snipe' }); } };
+        await EAS.UI.openModuleTest({ id: 'mass-snipe', text: 'Mass Snipe' });
+        equal(opens, 1, 'existing module entrypoint called once');
+        equal(Boolean(document.getElementById('test-module')), true, 'original module window retained');
+        equal(panel.hidden && !launcher.hidden, true, 'launcher remains accessible after opening module');
+        EAS.UI.closeWindow('test-module');
+        EAS.UI.toggle();
+        equal(panel.hidden, false, 'manual loader toggle restores shell');
+    } catch (error) { failures.push(error.stack); }
+    document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
+    document.title = failures.length ? 'FAIL' : 'PASS';
+})();
+</script></body></html>
