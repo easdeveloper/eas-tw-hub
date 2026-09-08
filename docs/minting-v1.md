@@ -1,15 +1,15 @@
-﻿# Cunhagem V1 — executor do formulário oficial
+# Cunhagem V1 — executor do formulário oficial
 
 ## Contrato observado e implementado
 
 Evidência fornecida pelo usuário diretamente da interface oficial:
 
 - GET `/game.php?village=<id>&screen=snob`.
-- Formulário POST com `screen=snob&action=coin`, `input#coin_mint_count[name=count]` e `input[type=hidden][name=h]`.
+- Formulário POST com `screen=snob&action=coin`, `input[name=count]` e `input[name=h]` dentro do formulário.
 - POST para a action extraída: `/game.php?village=<id>&screen=snob&action=coin`.
 - Corpo `application/x-www-form-urlencoded`: `count=<quantidade>&h=<token da página>`.
 - Resposta observada: 302 para `/game.php?screen=snob&village=<id>`.
-- O formulário só é renderizado quando existe cunhagem disponível. Ausência não prova ausência de Academia: é `NO_MINT_FORM`, salvo informação explícita de nível zero na aldeia atual.
+- O formulário só é renderizado quando existe cunhagem disponível. Ausência não prova ausência de Academia: uma página válida sem o formulário retorna `NOT_ELIGIBLE / NO_MINT_FORM`.
 
 Nenhum endpoint em massa foi fornecido; a V1 processa o grupo com POSTs sequenciais. Não reutiliza código de terceiros nem calcula custos manualmente.
 
@@ -17,7 +17,7 @@ Nenhum endpoint em massa foi fornecido; a V1 processa o grupo com POSTs sequenci
 
 `EAS.Data.Groups` obtém os grupos e sua associação pela visão autenticada já usada pelo projeto. O grupo é explícito, nunca inferido da URL. `EAS.Data.Villages` limita a seleção às aldeias possuídas. `EAS.Data.mapLimit(..., 2, ...)` limita GETs de inspeção a dois simultâneos.
 
-`EAS.Adapters.Minting.inspectMinting(id)` carrega uma página nova e valida origem, caminho, screen, aldeia, contexto de sitter, método POST, unicidade do formulário/count/token e action. A action precisa apontar para a mesma origem e aldeia. Duplicidade ou campos ausentes resultam em `PARSE_FAILED`, sem POST. Informações de acesso negado (401/403), formulário de login/senha e páginas inesperadas são rejeitadas.
+`EAS.Adapters.Minting.inspectMinting(id)` carrega uma página nova e valida origem, caminho, screen, aldeia, contexto de sitter, método POST, unicidade do formulário/count/token e action. A action precisa apontar para a mesma origem e aldeia. IDs/classes dos campos e o tipo hidden de h não são exigidos. Parâmetros adicionais de navegação da action são preservados; origem e parâmetros críticos continuam validados. Falhas têm motivos específicos: `NO_H_FIELD`, `INVALID_COUNT_FIELD`, `INVALID_METHOD`, `INVALID_ACTION`, `MULTIPLE_MINT_FORMS`. Login retorna `SESSION_EXPIRED / LOGIN_PAGE`. Nenhum desses casos envia POST. Informações de acesso negado (401/403), formulário de login/senha e páginas inesperadas são rejeitadas.
 
 `inspectVillage` devolve apenas campos não sensíveis. O `h`, action e mensagens anteriores permanecem em memória e não entram no storage, resultados ou logs do adapter. `execute` ignora tokens de discovery e faz OUTRO GET imediatamente antes da tentativa, usando o `h` dessa nova leitura. Não executa scripts do HTML remoto.
 
@@ -27,7 +27,7 @@ O trecho fornecido mostra `#coin_mint_fill_max`, mas não seu JavaScript nem um 
 
 Se o input nativo fornecer `max` inteiro explícito, o adapter o utiliza: `count = min(requested, maxMintable)`. Esse suporte está coberto por fixture sintética; o atributo NÃO estava presente na captura fornecida. Sem esse atributo, `maxMintable = null`.
 
-Com máximo desconhecido, somente requested=1 é permitido: a presença do formulário foi confirmada pelo usuário como sinal de disponibilidade. Pedidos maiores são ignorados com `QUANTITY_NOT_VALIDATED`. `maxlength` apenas valida o tamanho do campo; não representa moedas disponíveis.
+Com máximo desconhecido, count é limitado a 1 mesmo quando requested é maior. A presença do formulário foi confirmada pelo usuário como sinal de disponibilidade. A quantidade configurada é preservada e os logs/UI avisam: “Limite máximo oficial ainda não validado; execução limitada a 1 moeda por aldeia.” `maxlength` apenas valida o tamanho do campo; não representa moedas disponíveis.
 
 Para ampliar esse suporte, precisamos do HTML completo do link e do trecho do JavaScript NATIVO que preenche `coin_mint_count` (incluindo os valores de entrada). Não enviar tokens reais.
 
@@ -62,3 +62,16 @@ Chave `eas-tw-hub:minting.v1.<world>.<playerId>.<sitterId>`, via EAS.Storage: co
 - `tests/minting.test.html`: UI e integração dos serviços com transporte simulado.
 
 Os testes não gastam recursos no jogo. Permanecem pendentes: handler/valor real do preenchimento máximo, HTML exato da mensagem de sucesso, variantes de idioma/mundo e validação autenticada de ponta a ponta. O contexto de sitter é preservado e validado, mas também exige conferência no jogo.
+
+
+## Alinhamento com os testes reais do usuário
+
+A causa potencial dos falsos PARSE_FAILED no parser anterior era exigir id=coin_mint_count, type=hidden e restringir todos os parâmetros da action. Sem o HTML de cada falha não é possível atribuir todos os casos a essas exigências. Agora os campos são localizados por name dentro do formulário de screen=snob/action=coin; mantém-se validação de POST, origem e aldeia. Ausência do formulário é um skip, não falha de parsing. Página inesperada continua sendo bloqueada.
+
+Cada ciclo atualiza grupo e elegibilidade (GET com cache no-store). A lista de aldeias elegíveis não é reutilizada permanentemente. O teste sete aldeias / ciclo seguinte três confirma 7 + 3, não 7 + 7.
+
+Parar elimina o timer, mantém grupo/quantidade/intervalo/total/logs, reabilita Iniciar e desabilita Parar. Executar Agora OFF executa uma vez e continua OFF, sem nextRunAt. Durante esse ciclo é possível cancelar novas tentativas. Executar Agora ON/WAITING continua sendo política própria do EAS (fim do ciclo + intervalo), ainda não um comportamento externo validado.
+
+Logs por aldeia indicam Academia carregada, formulário encontrado, elegibilidade, ausência de formulário e h ausente, sem conteúdo sensível. Para diagnóstico técnico do parser: `EAS.Storage.set('minting.diagnostics', true)`. O console recebe somente villageId, stage e reason; para desligar, definir false. Resultados persistidos preservam esses códigos, nunca h, HTML ou action completa.
+
+Nenhuma cunhagem real foi disparada nos testes de desenvolvimento. Validação manual seguinte: selecionar explicitamente um grupo contendo uma aldeia, configurar 1 moeda e usar Executar Agora. Verificar a confirmação e o contador, e conferir que Parar permanece desabilitado e não há próxima execução, antes de testar grupo completo.

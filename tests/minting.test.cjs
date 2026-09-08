@@ -128,3 +128,34 @@ test('transient failure persisting a claim aborts the cycle before POST', async 
     f.deps.write=value=>{if(!rejected && value.results.some(row=>row.status==='ATTEMPTED')){rejected=true;return false;}return write(value);};
     await f.c.start();assert.equal(sends,0);assert.equal(f.c.read().status,'ERROR');assert.equal(f.timers.size,0);
 });
+test('each cycle discovers eligibility again: seven then three', async () => {
+    const f=fixture();await f.c.start();assert.equal(f.c.read().totalConfirmedCoins,7);
+    f.villages.slice(3).forEach(v=>{v.eligible=false;v.reason='NO_MINT_FORM';v.status='NOT_ELIGIBLE';});
+    await f.next();assert.equal(f.c.read().lastCycleConfirmed,3);assert.equal(f.c.read().totalConfirmedCoins,10);assert.equal(f.calls.length,10);
+    assert.deepEqual(f.groups,['12','12']);
+});
+test('Stop cancels timers while preserving configuration, total and old logs', async () => {
+    const f=fixture();await f.c.start();const previous=f.c.read();f.c.stop();const stopped=f.c.read();
+    assert.equal(f.timers.size,0);assert.equal(stopped.automation,false);assert.equal(stopped.nextRunAt,null);
+    assert.equal(stopped.totalConfirmedCoins,7);assert.deepEqual(clone(stopped.config),clone(previous.config));
+    assert.deepEqual(clone(stopped.logs.slice(0,-1)),clone(previous.logs));
+    await f.reload();assert.equal(f.timers.size,0);
+});
+test('Execute Now stopped: a single eligible village adds one and stays OFF', async () => {
+    const f=fixture();f.deps.write({...f.c.read(),totalConfirmedCoins:16,status:'STOPPED'});
+    f.villages.splice(1);await f.c.run();assert.equal(f.c.read().totalConfirmedCoins,17);
+    assert.equal(f.c.read().automation,false);assert.equal(f.c.read().nextRunAt,null);assert.equal(f.timers.size,0);assert.equal(f.calls.length,1);
+});
+test('unknown maximum does not skip requested > 1 and logs the limit', async () => {
+    const f=fixture({execute:async(row,{beforePost})=>{beforePost(1);return{status:'CONFIRMED',attempted:1,confirmed:1};}});
+    f.villages.forEach(v=>v.maxMintable=null);f.c.configure({groupId:'12',requestedPerVillage:5,intervalHours:0.5});
+    await f.c.run();assert.equal(f.c.read().lastCycleConfirmed,7);assert.equal(f.c.read().lastCycleAttempted,7);
+    assert.ok(f.c.read().logs.some(entry=>entry.level==='WARNING' && entry.message.includes('1 moeda por aldeia')));
+});
+test('parser status and diagnostics survive discovery without secrets', async () => {
+    const diagnostics=[];const f=fixture({diagnostic:detail=>diagnostics.push(detail)});
+    f.villages.splice(1);Object.assign(f.villages[0],{eligible:false,status:'PARSE_FAILED',reason:'NO_H_FIELD',stage:'token',h:'must-not-persist'});
+    await f.c.run();assert.equal(f.c.read().results[0].status,'PARSE_FAILED');assert.equal(f.c.read().results[0].reason,'NO_H_FIELD');
+    assert.deepEqual(clone(diagnostics),[{villageId:'1',stage:'token',reason:'NO_H_FIELD'}]);
+    assert.equal(JSON.stringify(f.c.read()).includes('must-not-persist'),false);assert.equal(f.calls.length,0);
+});

@@ -12,11 +12,12 @@
         return { groupId: String(groupId), requestedPerVillage: amount, intervalHours: intervalMs(intervalHours) / 3600000 };
     };
     const planVillage = (village, amount) => {
-        const status = village.reason === 'NO_ACADEMY' ? 'NO_ACADEMY' : !village.eligible ? 'NOT_ELIGIBLE'
+        const status = ['SESSION_EXPIRED', 'PARSE_FAILED', 'REQUEST_FAILED'].includes(village.status) ? village.status
+            : village.reason === 'NO_ACADEMY' ? 'NO_ACADEMY' : !village.eligible ? 'NOT_ELIGIBLE'
             : village.maxMintable === 0 ? 'INSUFFICIENT_RESOURCES'
-            : village.maxMintable === null && amount > 1 ? 'NOT_ELIGIBLE' : 'READY';
+            : 'READY';
         return { villageId: String(village.villageId), villageName: village.villageName, requested: amount, attempted: 0, confirmed: 0, status,
-            reason: status === 'READY' ? null : village.reason || 'QUANTITY_NOT_VALIDATED' };
+            reason: status === 'READY' ? null : village.reason || 'QUANTITY_NOT_VALIDATED', stage: village.stage || null };
     };
     const initial = () => ({ version: 1, config: { groupId: '', requestedPerVillage: 1, intervalHours: 0.5 }, automation: false,
         status: 'IDLE', totalConfirmedCoins: 0, lastCycleConfirmed: 0, lastCycleAttempted: 0, lastCycleRequested: 0,
@@ -68,13 +69,23 @@
                     const discovery = await deps.discover(config.groupId);
                     state = read();
                     if (state.status === 'STOPPED') return false;
-                    if (discovery.villages.some((village) => ['SESSION_EXPIRED', 'INVALID_PAGE'].includes(village.reason))) throw new Error('Página da Academia inválida ou sessão expirada. Nenhuma nova cunhagem será enviada.');
                     const results = discovery.villages.map((village) => planVillage(village, config.requestedPerVillage));
                     state.results = results;
                     state.lastCycleRequested = results.reduce((sum, row) => sum + (row.status === 'READY' ? row.requested : 0), 0);
                     if (!Number.isSafeInteger(state.lastCycleRequested)) throw new Error('Quantidade total excede o limite seguro.');
                     record(state, 'INFO', `Grupo ${discovery.groupName}: ${results.length} aldeias; ${results.filter((row) => row.status === 'READY').length} elegíveis. Solicitando até ${state.lastCycleRequested} moedas.`);
+                    if (discovery.villages.some((village) => village.eligible && village.maxMintable === null)) {
+                        record(state, 'WARNING', 'Limite máximo oficial ainda não validado; execução limitada a 1 moeda por aldeia.');
+                    }
+                    for (const village of discovery.villages) {
+                        if (village.stage && village.stage !== 'request' && village.stage !== 'page') record(state, 'INFO', `${village.villageId} - Academia carregada.`);
+                        if (village.eligible) record(state, 'INFO', `${village.villageId} - Formulário de cunhagem encontrado; elegível para ${village.maxMintable === null ? 1 : Math.min(config.requestedPerVillage, village.maxMintable)} moeda(s).`);
+                        else if (village.reason === 'NO_MINT_FORM') record(state, 'INFO', `${village.villageId} - Sem formulário de cunhagem.`);
+                        else if (village.reason === 'NO_H_FIELD') record(state, 'WARNING', `${village.villageId} - h não encontrado no formulário.`);
+                        if (village.status === 'PARSE_FAILED') deps.diagnostic?.({ villageId: String(village.villageId), stage: village.stage, reason: village.reason });
+                    }
                     save(state);
+                    if (discovery.villages.some((village) => village.status === 'SESSION_EXPIRED' || ['SESSION_EXPIRED', 'LOGIN_PAGE', 'INVALID_PAGE'].includes(village.reason))) throw new Error('Página da Academia inválida ou sessão expirada. Nenhuma nova cunhagem será enviada.');
                     for (let index = 0; index < results.length; index++) {
                         state = read();
                         if (state.status === 'STOPPED') break;
@@ -110,13 +121,14 @@
                         const confirmed = response?.status === 'CONFIRMED' && Number.isSafeInteger(response.confirmed)
                             && response.confirmed > 0 && response.confirmed <= current.attempted && response.attempted === current.attempted ? response.confirmed : 0;
                         Object.assign(current, { confirmed, status: confirmed ? 'CONFIRMED' : current.attempted ? 'CONFIRMATION_FAILED'
-                            : response?.status === 'REQUEST_FAILED' ? 'REQUEST_FAILED' : 'NOT_ELIGIBLE',
-                            reason: confirmed ? null : response?.reason || 'Não foi possível confirmar a cunhagem. Verifique o jogo.' });
+                            : ['REQUEST_FAILED', 'SESSION_EXPIRED', 'PARSE_FAILED'].includes(response?.status) ? response.status : 'NOT_ELIGIBLE',
+                            reason: confirmed ? null : response?.reason || 'Não foi possível confirmar a cunhagem. Verifique o jogo.', stage: response?.stage || current.stage });
+                        if (current.status === 'PARSE_FAILED') deps.diagnostic?.({ villageId: current.villageId, stage: current.stage, reason: current.reason });
                         state.totalConfirmedCoins += confirmed; state.lastCycleConfirmed += confirmed;
                         record(state, confirmed ? 'SUCCESS' : 'ERROR', `${row.villageName}: ${confirmed} moedas confirmadas.`); save(state);
                         // Unknown mutation outcomes must not be automatically retried in later cycles.
                         if (!confirmed && current.attempted) throw new Error('Resultado de cunhagem incerto. Automação parada para evitar repetição.');
-                        if (['SESSION_EXPIRED', 'INVALID_PAGE'].includes(response?.reason)) throw new Error('Página da Academia inválida ou sessão expirada. Automação parada.');
+                        if (response?.status === 'SESSION_EXPIRED' || ['SESSION_EXPIRED', 'LOGIN_PAGE', 'INVALID_PAGE'].includes(response?.reason)) throw new Error('Página da Academia inválida ou sessão expirada. Automação parada.');
                     }
                     state = read();
                     state.status = state.automation ? 'WAITING' : state.status === 'STOPPED' ? 'STOPPED' : 'IDLE';
@@ -185,6 +197,7 @@
                 catch { throw new Error('Falha ao verificar o grupo antes da cunhagem. Confirme a sessão do jogo.'); }
             },
             execute: (row, options) => EAS.Adapters.Minting.execute(row, options),
+            diagnostic: (detail) => { if (EAS.Storage.get('minting.diagnostics', false)) console.debug('[EAS Cunhagem] parser', detail); },
             log: (level, message) => EAS.Log?.info?.('minting', 'cycle', { level, message })
         });
         return controller;

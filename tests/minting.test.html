@@ -28,6 +28,7 @@ EAS.Data = {
         const field=name=>win.body.querySelector('[data-'+name+']');
         equal(field('group').value,'','no implicit current URL group');
         equal([field('start').disabled,field('now').disabled],[false,false],'official executor enabled');
+        equal(field('stop').disabled,true,'Stop disabled while OFF');
         field('group').value='19';field('group').dispatchEvent(new Event('change'));
         equal(EAS.Minting.getController().read().config.groupId,'19','selection persisted');
         const data=await EAS.Minting.discover('19');
@@ -39,8 +40,13 @@ EAS.Data = {
         equal(posts,1,'only eligible village receives one POST');
         equal(EAS.Minting.getController().read().totalConfirmedCoins,1,'only explicit receipt counts');
         equal(field('total').textContent,'1','UI shows confirmed total');
+        equal([field('start').disabled,field('stop').disabled,field('now').disabled],[true,false,false],'WAITING controls');
         field('stop').click();
         equal(EAS.Minting.getController().read().status,'STOPPED','stop remains available');
+        equal([field('start').disabled,field('stop').disabled],[false,true],'Stop restores Start and disables Stop');
+        await field('now').onclick();
+        equal([EAS.Minting.getController().read().totalConfirmedCoins,EAS.Minting.getController().read().automation,EAS.Minting.getController().read().nextRunAt],[2,false,null],'Execute Now stopped adds one without enabling automation');
+        equal([field('start').disabled,field('stop').disabled],[false,true],'one-shot returns to OFF controls');
         win.close();await new Promise(resolve=>setTimeout(resolve,0));
         equal(EAS.Runtime.get('minting-ui'),null,'UI runtime cleaned up');
         equal(Boolean(EAS.Runtime.get('minting')),true,'closing UI does not dispose automation runtime');

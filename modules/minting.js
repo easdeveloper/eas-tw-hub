@@ -39,8 +39,11 @@
             field('next').textContent = `Próxima execução: ${state.nextRunAt ? new Date(state.nextRunAt).toLocaleString() + ' (horário deste navegador)' : '—'}`;
             field('counts').textContent = `Último ciclo: solicitado ${state.lastCycleRequested}; tentado ${state.lastCycleAttempted}; confirmado ${state.lastCycleConfirmed}.`;
             field('blocked').textContent = EAS.Adapters.Minting.blockedReason || (!navigator.locks ? 'Navegador sem suporte ao lock exclusivo.'
-                : 'Sem máximo verificável, somente 1 moeda por aldeia. Se o resultado não puder ser confirmado, a automação será interrompida.');
-            field('start').disabled = field('now').disabled = !EAS.Adapters.Minting.available || !navigator.locks || state.status === 'RUNNING';
+                : 'Limite máximo oficial ainda não validado; execução limitada a 1 moeda por aldeia.');
+            const executing = !EAS.Adapters.Minting.available || !navigator.locks || state.status === 'RUNNING';
+            field('start').disabled = executing || state.automation;
+            field('now').disabled = executing;
+            field('stop').disabled = !state.automation && state.status !== 'RUNNING';
             for (const name of ['group', 'amount', 'hours', 'refresh', 'discover']) field(name).disabled = state.status === 'RUNNING';
             rows(state.results);
             field('logs').textContent = state.logs.map((entry) => `[${new Date(entry.at).toLocaleTimeString()}] ${entry.level}: ${entry.message}`).join('\n');
