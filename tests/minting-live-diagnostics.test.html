@@ -1,4 +1,4 @@
-﻿<!doctype html><html><head><meta charset="utf-8"><title>Cunhagem live comparison tests</title></head><body><pre id="result">running</pre><div id="live-fixture"></div>
+<!doctype html><html><head><meta charset="utf-8"><title>Cunhagem live comparison tests</title></head><body><pre id="result">running</pre><div id="live-fixture"></div>
 <script>window.EAS={World:{getGameData:()=>({player:{id:1},village:{id:13186}})}};</script>
 <script src="../core/observability.js"></script><script src="../services/minting-adapter.js"></script>
 <script>
@@ -34,6 +34,28 @@
   }
   html=form('start').replace('</form>','<input data-name="h" value=" name=h "></form>');await adapter.inspectVillage({id:13186});equal(report.rawMarkers.containsHInputMarkup,false,'attribute values and data-name do not count');
   equal(requests,8,'one GET per inspection without extra requests');
+  const previousUI=window.UI;let fixupCalls=0;
+  try {
+   window.UI={fixupCSRFInUrl:()=>{fixupCalls++;throw new Error('must not execute');}};
+   html=form('start').replace('action=start_auto_minting_session','action=start_auto_minting_session&amp;h=synthetic-action-secret');
+   const inspected=await adapter.inspectVillage({id:13186});
+   equal(inspected.reason,'NO_H_FIELD','raw action presence does not change parser');
+   equal(report.rawFormDiagnostics,[{isStartAutoMinting:true,isCancelAutoMinting:false,method:'POST',hasHQueryParamInRawAction:true,hasHiddenHField:false}],'raw action h presence only');
+   equal(report.runtimeDiagnostics,{hasUI:true,hasFixupCSRFInUrl:true},'runtime helper presence');
+   equal(fixupCalls,0,'official helper never called');
+   equal(JSON.stringify(report).includes('synthetic-action-secret'),false,'action value never logged');
+   html=form('cancel').replace('</form>','<input type="hidden" name="h" value="synthetic-hidden-secret"></form>');
+   await adapter.inspectVillage({id:13186});
+   equal(report.rawFormDiagnostics,[{isStartAutoMinting:false,isCancelAutoMinting:true,method:'POST',hasHQueryParamInRawAction:false,hasHiddenHField:true}],'hidden h and cancel state');
+   equal(JSON.stringify(report).includes('synthetic-hidden-secret'),false,'hidden value never logged');
+   window.UI={};html=form('start').replace('action=start_auto_minting_session','action=start_auto_minting_session&amp;other=h');await adapter.inspectVillage({id:13186});
+   equal(report.rawFormDiagnostics[0].hasHQueryParamInRawAction,false,'h text in another parameter is not h');
+   equal(report.runtimeDiagnostics,{hasUI:true,hasFixupCSRFInUrl:false},'helper absent');
+   delete window.UI;await adapter.inspectVillage({id:13186});
+   equal(report.runtimeDiagnostics,{hasUI:false,hasFixupCSRFInUrl:false},'UI absent');
+   equal(requests,12,'diagnostics add no extra requests');
+  } finally { if(previousUI===undefined)delete window.UI;else window.UI=previousUI; }
+
  }catch(error){failures.push(error.stack);}finally{history.replaceState(null,'',previousUrl);fixture.replaceChildren();}
  document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
 })();

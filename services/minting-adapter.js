@@ -80,6 +80,25 @@
             containsStartAutoMintingAction: html.includes(START),
             containsCancelAutoMintingAction: html.includes(CANCEL)
         });
+        // TEMPORARY: presence only; do not read the h value or invoke the official helper.
+        const rawFormDiagnostic = (form, baseUrl) => {
+            let action;
+            try { action = new URL(form.getAttribute('action'), baseUrl); } catch {}
+            return {
+                isStartAutoMinting: action?.searchParams.get('action') === START,
+                isCancelAutoMinting: action?.searchParams.get('action') === CANCEL,
+                method: form.method.toUpperCase(),
+                hasHQueryParamInRawAction: action?.searchParams.has('h') ?? false,
+                hasHiddenHField: Boolean(form.querySelector('input[type="hidden"][name="h"]'))
+            };
+        };
+        const runtimeDiagnostic = () => {
+            try {
+                const pageWindow = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
+                const ui = pageWindow.UI;
+                return { hasUI: Boolean(ui), hasFixupCSRFInUrl: typeof ui?.fixupCSRFInUrl === 'function' };
+            } catch { return { hasUI: false, hasFixupCSRFInUrl: false }; }
+        };
         const liveDiagnostic = (page, result, villageId, requestedUrl) => {
             const doc = page.doc, forms = [...(doc?.querySelectorAll('table.auto-minting form') || [])];
             const selected = result.diagnostics;
@@ -98,6 +117,8 @@
                 selectedFormMethod: selected?.method ?? null, selectedFormFieldNames: selected?.fieldNames ?? [],
                 selectedFormHasH: Boolean(selected?.selectedHCount),
                 resultReason: result.reason,
+                rawFormDiagnostics: forms.map(form => rawFormDiagnostic(form, page.url)),
+                runtimeDiagnostics: runtimeDiagnostic(),
                 liveDocumentComparison: compareLiveDocument(villageId),
                 rawMarkers: page.diagnostics?.rawMarkers ?? { containsHInputMarkup: false, containsStartAutoMintingAction: false, containsCancelAutoMintingAction: false },
                 hCounts: { document: doc?.querySelectorAll(selectors.token).length ?? 0,
