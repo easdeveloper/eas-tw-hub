@@ -1,95 +1,64 @@
-(() => {
+﻿(() => {
     'use strict';
     EAS.Modules ||= {};
-    let opening = null;
-    let cleanup = null;
+    let opening = null, cleanup = null;
     const open = async () => {
         if (!EAS.Adapters.Minting) await EASLoader.loadScript('services/minting-adapter.js');
         if (!EAS.Minting) await EASLoader.loadScript('services/minting.js');
         cleanup?.();
-        const service = EAS.Minting, controller = service.getController();
-        const win = EAS.UI.createWindow({ id: 'eas-minting', title: 'Cunhagem', icon: '🪙', width: 700 });
-        const runtime = EAS.Runtime.create({ id: 'minting-ui', type: 'minting-ui' });
-        const escape = EAS.Utils.escapeHtml;
+        const controller = EAS.Minting.getController();
+        const win = EAS.UI.createWindow({ id: 'eas-minting', title: 'Cunhagem — Criação automática oficial', icon: '🪙', width: 700 });
+        const runtime = EAS.Runtime.create({ id: 'minting-ui', type: 'minting-ui' }), escape = EAS.Utils.escapeHtml;
         win.body.innerHTML = `
-            <p>TOTAL DE MOEDAS: <strong data-total>0</strong></p>
+            <p>Ative a criação automática oficial por 8h. O jogo gerencia a cunhagem durante a sessão; o EAS não renova automaticamente.</p>
             <p class="eas-status eas-status--warning" data-blocked></p>
             <div class="eas-field"><label>Grupo de aldeias: <select data-group><option value="">Selecione um grupo</option></select></label></div>
-            <button type="button" class="eas-button" data-refresh>Atualizar grupos</button>
-            <div class="eas-field"><label>Quantidade por aldeia: <input data-amount type="number" min="1" step="1"></label></div>
-            <div class="eas-field"><label>Intervalo (horas): <input data-hours type="text" inputmode="decimal"></label></div>
             <div class="eas-actions">
-                <button type="button" class="eas-button" data-start>Iniciar</button>
-                <button type="button" class="eas-button" data-stop>Parar</button>
-                <button type="button" class="eas-button" data-now>Executar Agora</button>
+                <button type="button" class="eas-button" data-refresh>Atualizar grupos</button>
                 <button type="button" class="eas-button" data-discover>Verificar aldeias</button>
             </div>
-            <p data-status role="status"></p><p data-next></p><p data-counts></p>
-            <p>Executar Agora: com automação desligada, executa uma vez. Com automação ligada, recalcula o intervalo após o ciclo.</p>
-            <div class="eas-table-wrapper"><table class="eas-table"><thead><tr><th>Aldeia</th><th>Solicitado</th><th>Tentado</th><th>Confirmado</th><th>Resultado</th></tr></thead><tbody data-results></tbody></table></div>
+            <p data-status role="status"></p><p data-counts></p>
+            <div class="eas-table-wrapper"><table class="eas-table"><thead><tr><th>Aldeia</th><th>Estado</th><th>Fim</th><th>Resultado</th></tr></thead><tbody data-results></tbody></table></div>
+            <button type="button" class="eas-button" data-activate>Ativar 8h nas disponíveis</button>
             <pre data-logs style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>`;
-        const field = (name) => win.body.querySelector(`[data-${name}]`);
-        const config = controller.read().config;
-        field('amount').value = config.requestedPerVillage;
-        field('hours').value = config.intervalHours;
-        const rows = (results) => { field('results').innerHTML = results.map((row) => `<tr><td>${escape(row.villageName)}</td><td>${row.requested}</td><td>${row.attempted}</td><td>${row.confirmed}</td><td>${escape(row.status)}: ${escape(row.reason)}</td></tr>`).join(''); };
-        const render = (state) => {
-            field('total').textContent = state.totalConfirmedCoins;
-            field('status').textContent = `${state.status}${state.error ? ': ' + state.error : ''}`;
-            field('next').textContent = `Próxima execução: ${state.nextRunAt ? new Date(state.nextRunAt).toLocaleString() + ' (horário deste navegador)' : '—'}`;
-            field('counts').textContent = `Último ciclo: solicitado ${state.lastCycleRequested}; tentado ${state.lastCycleAttempted}; confirmado ${state.lastCycleConfirmed}.`;
-            field('blocked').textContent = EAS.Adapters.Minting.blockedReason || (!navigator.locks ? 'Navegador sem suporte ao lock exclusivo.'
-                : 'Nesta validação, execução limitada a 1 moeda por aldeia.');
-            const executing = !EAS.Adapters.Minting.available || !navigator.locks || state.status === 'RUNNING';
-            field('start').disabled = executing || state.automation;
-            field('now').disabled = executing;
-            field('stop').disabled = !state.automation && state.status !== 'RUNNING';
-            for (const name of ['group', 'amount', 'hours', 'refresh', 'discover']) field(name).disabled = state.status === 'RUNNING';
-            rows(state.results);
-            field('logs').textContent = state.logs.map((entry) => `[${new Date(entry.at).toLocaleTimeString()}] ${entry.level}: ${entry.message}`).join('\n');
-        };
-        const saveConfig = () => controller.configure({ groupId: field('group').value, requestedPerVillage: field('amount').value, intervalHours: field('hours').value });
-        const error = (message) => { field('status').textContent = message; };
+        const field = name => win.body.querySelector(`[data-${name}]`);
+        const labels = { ACTIVE: 'ATIVA', AVAILABLE: 'DISPONÍVEL', UNAVAILABLE: 'INDISPONÍVEL', PARSE_FAILED: 'ERRO DE LEITURA', SESSION_INVALID: 'SESSÃO INVÁLIDA', UNCERTAIN: 'INCERTO' };
+        const outcomes = { ACTIVATED: 'ATIVADA', UNCERTAIN: 'UNCERTAIN — confira a Academia antes de tentar novamente', SKIPPED: 'Não ativada', ATTEMPTED: 'Aguardando confirmação' };
         let refreshing = false;
+        const render = state => {
+            const busy = ['VERIFYING', 'ACTIVATING'].includes(state.status);
+            const count = kind => state.results.filter(row => row.state === kind).length;
+            field('status').textContent = state.error || ({ IDLE: 'Selecione um grupo e verifique as aldeias.', VERIFYING: 'Verificando Academias…', PREVIEW: 'Verificação concluída. Revise as aldeias antes de ativar.', ACTIVATING: 'Ativando sessões oficiais…', DONE: 'Operação encerrada. Não há renovação agendada pelo EAS.' }[state.status] || state.status);
+            field('counts').textContent = `Ativas: ${count('ACTIVE')} | Disponíveis: ${count('AVAILABLE')} | Indisponíveis: ${count('UNAVAILABLE')} | Erros: ${state.results.filter(row => ['PARSE_FAILED', 'SESSION_INVALID', 'UNCERTAIN'].includes(row.state)).length}`;
+            field('blocked').textContent = !navigator.locks ? 'Ativação indisponível: navegador sem lock exclusivo.' : '';
+            for (const name of ['group', 'discover', 'refresh']) field(name).disabled = busy || refreshing;
+            field('activate').disabled = busy || refreshing || !navigator.locks || !state.previewReady || !count('AVAILABLE');
+            field('results').innerHTML = state.results.map(row => `<tr><td>${escape(row.villageName)} (${escape(row.villageId)})</td><td>${escape(labels[row.state] || row.state)}</td><td>—</td><td>${escape(outcomes[row.outcome] || row.reason || (row.state === 'AVAILABLE' ? 'Pronta para ativar' : '—'))}</td></tr>`).join('');
+            field('logs').textContent = state.logs.map(entry => `[${new Date(entry.at).toLocaleTimeString()}] ${entry.level}: ${entry.message}`).join('\n');
+        };
+        const error = message => { field('status').textContent = message; };
         const refresh = async () => {
             if (refreshing) return;
-            refreshing = true; field('refresh').disabled = true;
+            refreshing = true; render(controller.read());
             try {
                 const selected = field('group').value || controller.read().config.groupId;
                 const groups = await EAS.Data.Groups.ensureFresh({ forceRefresh: true });
-                field('group').innerHTML = '<option value="">Selecione um grupo</option>' + groups.map((group) => `<option value="${escape(group.id)}">${escape(group.name)}</option>`).join('');
+                field('group').innerHTML = '<option value="">Selecione um grupo</option>' + groups.map(group => `<option value="${escape(group.id)}">${escape(group.name)}</option>`).join('');
                 field('group').value = selected;
-                if (selected && !field('group').value) error('O grupo salvo não está mais disponível. Selecione outro grupo.');
             } catch { error('Falha ao atualizar grupos. Verifique sua sessão do jogo.'); }
-            finally { refreshing = false; field('refresh').disabled = false; }
+            finally { refreshing = false; render(controller.read()); }
         };
-        for (const name of ['group', 'amount', 'hours']) field(name).addEventListener('change', () => { try { saveConfig(); } catch (err) { error(err.message); } });
+        field('group').onchange = () => { try { controller.configure({ groupId: field('group').value }); } catch (err) { error(err.message); } };
         field('refresh').onclick = refresh;
-        field('stop').onclick = () => { try { controller.stop(); } catch (err) { error(err.message); } };
-        for (const [name, action] of [['start', () => controller.start()], ['now', () => controller.run()]]) {
-            field(name).onclick = async () => { try { saveConfig(); await action(); } catch (err) { error(err.message); } };
-        }
-        let discovering = false;
-        field('discover').onclick = async () => {
-            if (discovering) return;
-            discovering = true; field('discover').disabled = true;
-            try {
-                saveConfig();
-                const data = await service.discover(field('group').value);
-                rows(data.villages.map((village) => service.planVillage(village, controller.read().config.requestedPerVillage)));
-                error(`${data.villages.length} aldeias verificadas; ${data.villages.filter((village) => village.eligible).length} com formulário de cunhagem. Nenhuma moeda foi enviada nesta verificação.`);
-            } catch (err) { error(err.message); }
-            finally { discovering = false; field('discover').disabled = false; }
+        field('discover').onclick = async () => { try { controller.configure({ groupId: field('group').value }); await controller.verify(); } catch (err) { error(err.message); } };
+        field('activate').onclick = async () => {
+            if (field('group').value !== controller.read().config.groupId) { error('Verifique novamente o grupo selecionado.'); return; }
+            await controller.activate();
         };
         const unsubscribe = controller.subscribe(render);
         cleanup = () => { unsubscribe(); EAS.Runtime.dispose('minting-ui'); win.close(); cleanup = null; };
-        runtime.observe(new MutationObserver(() => {
-            if (!win.element.isConnected) cleanup?.();
-        })).observe(document.body, { childList: true, subtree: true });
-        render(controller.read());
-        EAS.Usage?.track?.('minting.open');
-        await refresh();
-        return win;
+        runtime.observe(new MutationObserver(() => { if (!win.element.isConnected) cleanup?.(); })).observe(document.body, { childList: true, subtree: true });
+        render(controller.read()); EAS.Usage?.track?.('minting.open'); await refresh(); return win;
     };
     EAS.Modules.Minting = { open() { if (!opening) opening = open().finally(() => { opening = null; }); return opening; } };
 })();

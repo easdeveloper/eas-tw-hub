@@ -1,98 +1,68 @@
-# Cunhagem V1 — executor do formulário oficial
+﻿# Cunhagem — Criação automática oficial de 8h
 
-## Contrato observado e implementado
+## Motivo da mudança
 
-Evidência fornecida pelo usuário diretamente da interface oficial:
+A Academia já oferece sessões oficiais de criação automática de moedas por 8h. O EAS passa a verificar e ativar essas sessões, mediante ação explícita do jogador. O serviço não cunha moedas diretamente, não executa ciclos periódicos, não renova sessões e não cancela sessões oficiais.
 
-- GET `/game.php?village=<id>&screen=snob`.
-- Formulário POST com `screen=snob&action=coin`, `input[name=count]` e `input[name=h]` dentro do formulário.
-- POST para a action extraída: `/game.php?village=<id>&screen=snob&action=coin`.
-- Corpo `application/x-www-form-urlencoded`: `count=<quantidade>&h=<token da página>`.
-- Resposta observada: 302 para `/game.php?screen=snob&village=<id>`.
-- O formulário só é renderizado quando existe cunhagem disponível. Ausência não prova ausência de Academia: uma página válida sem o formulário retorna `NOT_ELIGIBLE / NO_MINT_FORM`.
+O problema antigo NO_H_FIELD em action=coin não foi provado a partir do fragmento recebido. Esta mudança substitui aquele contrato pela funcionalidade oficial observada; não afirma ter resolvido retroativamente a causa do parser antigo.
 
-Nenhum endpoint em massa foi fornecido; a V1 processa o grupo com POSTs sequenciais. Não reutiliza código de terceiros nem calcula custos manualmente.
+## Arquitetura e fluxo
 
-## Descoberta e tokens
+- `modules/minting.js`: janela comum do Hub, seleção de grupo, preview, resumo e botão **Ativar 8h nas disponíveis**.
+- `services/minting.js`: descoberta com `EAS.Data.Groups`, `EAS.Data.Villages` e `EAS.Data.mapLimit`, estado via `EAS.Storage`, lock exclusivo por mundo/jogador/sitter, processamento sequencial.
+- `services/minting-adapter.js`: GET/POST same-origin, timeout e validação de sessão reutilizados do adapter anterior; parser estrito do contrato oficial.
 
-`EAS.Data.Groups` obtém os grupos e sua associação pela visão autenticada já usada pelo projeto. O grupo é explícito, nunca inferido da URL. `EAS.Data.Villages` limita a seleção às aldeias possuídas. `EAS.Data.mapLimit(..., 2, ...)` limita GETs de inspeção a dois simultâneos.
+1. Escolher explicitamente um grupo (a escolha anterior pode ser lembrada).
+2. **Verificar aldeias** atualiza grupos, aldeias próprias e membros do grupo. Cada Academia é obtida por GET, independentemente da tela atual. A verificação não envia POST.
+3. Revisar a tabela e o resumo: ACTIVE, AVAILABLE, UNAVAILABLE, PARSE_FAILED ou SESSION_INVALID. Sessão inválida impede ativar o preview.
+4. **Ativar 8h nas disponíveis** consome o preview. Apenas AVAILABLE são processadas, sequencialmente, sob Web Lock. A associação ao grupo e a propriedade local da aldeia são conferidas novamente.
+5. Antes de cada POST, outro GET fresco revalida a Academia. Uma aldeia que já ficou ACTIVE não recebe POST.
+6. A tentativa é registrada antes do POST. Depois há um GET final para confirmar ACTIVE. Somente essa transição marca ACTIVATED (ATIVADA na UI).
+7. Resultado incerto é UNCERTAIN. A sequência termina e não há retry nem renovação automática. Uma nova operação exige nova verificação e novo clique explícito.
 
-`EAS.Adapters.Minting.inspectMinting(id)` carrega uma página nova e valida origem, caminho, screen, aldeia, contexto de sitter, método POST, unicidade do formulário/count/token e action. A action precisa apontar para a mesma origem e aldeia. IDs/classes dos campos e o tipo hidden de h não são exigidos. Parâmetros adicionais de navegação da action são preservados; origem e parâmetros críticos continuam validados. Falhas têm motivos específicos: `NO_H_FIELD`, `INVALID_COUNT_FIELD`, `INVALID_METHOD`, `INVALID_ACTION`, `MULTIPLE_MINT_FORMS`. Login retorna `SESSION_EXPIRED / LOGIN_PAGE`. Nenhum desses casos envia POST. Informações de acesso negado (401/403), formulário de login/senha e páginas inesperadas são rejeitadas.
+## Contrato observado
 
-`inspectVillage` devolve apenas campos não sensíveis. O `h`, action e mensagens anteriores permanecem em memória e não entram no storage, resultados ou logs do adapter. `execute` ignora tokens de discovery e faz OUTRO GET imediatamente antes da tentativa, usando o `h` dessa nova leitura. Não executa scripts do HTML remoto.
+GET: `/game.php?village=<ID>&screen=snob`, preservando o contexto de sitter quando aplicável.
 
-## Quantidade máxima: evidência do Mundo 143
+Somente formulários dentro de uma única `table.auto-minting` são considerados:
 
-A nova estrutura fornecida pelo usuário contém `#coin_mint_fill_max` com texto `(7)`, confirmado como máximo disponível naquele momento. O adapter aceita exclusivamente um inteiro entre parênteses, no único link com esse ID dentro do formulário selecionado. Textos extras, decimais e separadores regionais não são interpretados. Não há cálculo de custos nem execução do JavaScript remoto.
+- `action=start_auto_minting_session`: AVAILABLE.
+- `action=cancel_auto_minting_session`: ACTIVE.
 
-O atributo `max` inteiro continua suportado como fallback. Se houver dois limites numéricos, usa-se o menor. Na fixture fiel ao trecho enviado, `maxMintable=7`. Sem evidência numérica válida, permanece null.
+Validações: mesma origem, caminho `/game.php`, screen=snob, aldeia correta, action única/esperada, sitter correto, method POST e exatamente um input name=h não vazio, habilitado e pertencente ao formulário selecionado. Formulários/tabelas ambíguos, campos adicionais que exigiriam um contrato diferente e controles desabilitados não são ativados. Texto “Ativar”/“Cancelar” isolado não determina estado.
 
-Nesta correção, o envio permanece limitado a **uma moeda por aldeia**, inclusive com máximo conhecido: `count = min(1, requested, maxMintable)` quando conhecido e 1 quando desconhecido. Isso evita que reconhecer `(7)` amplie os gastos. Requested preserva a configuração. A UI informa o limite de uma moeda. `maxlength` apenas valida o tamanho do campo.
+POST: action absoluta validada do formulário fresco, `application/x-www-form-urlencoded`, contendo somente o campo h fresco. O EAS não envia count, não usa action=coin e não dispara action=cancel_auto_minting_session.
 
-O handler completo do link ainda não foi fornecido; a leitura é do valor literal confirmado, não uma implementação do algoritmo desse handler.
+HTTP 200/302, texto de sucesso ou ausência de erro não confirmam ativação. O GET final deve mostrar o formulário oficial de cancelamento válido na mesma aldeia. Erro de transporte após iniciar POST também é UNCERTAIN e não gera repetição.
 
-## Redirects e confirmação
+## Horário de término
 
-O transporte usa `fetch` nativo, `credentials: same-origin`, `mode: same-origin`, `cache: no-store`, `redirect: follow` e timeout de 20 segundos. Não se envia `X-Requested-With`, pois a operação observada é um formulário HTML normal. O 302 é seguido pelo navegador; analisa-se o HTML final e seu URL. Não há segundo GET para consumir uma mensagem flash nem retry de POST.
+O texto observado “Fim: amanhã às 06:36:10” ainda não fornece um seletor/atributo de tempo confiável. ACTIVE é identificado estruturalmente, mas a coluna Fim mostra **—**. Nenhum horário é interpretado no timezone local nem calculado artificialmente.
 
-Referência sobre o comportamento de redirect do fetch: https://developer.mozilla.org/en-US/docs/Web/API/Request/redirect
+## Storage e reload
 
-Fetch resolvido, HTTP 200/302 ou redirect isolado não confirmam cunhagem. A página final deve pertencer à Academia/aldeia esperada, sem login e sem mensagem de erro. Usam-se os seletores de sucesso já encontrados no projeto (`.success`, `.success_box`, `.success-message`). Não foi fornecido um recibo estruturado específico de moedas.
+Mantém-se a chave/lock `minting.v1.<world>.<player>.<sitter>` para o escopo existente; o formato salvo agora é version=2. Ao criar o controller, apenas config.groupId é aproveitado, inclusive de registros v1. Preview e autorização nunca são restaurados. Resultados e logs da execução contêm somente dados seguros; tokens, action URLs e HTML não entram no estado persistido.
 
-O fallback PT-BR aceita UMA mensagem nova, explícita e não cumulativa, por exemplo `Você cunhou 1 moeda de ouro.`; também suporta as formas `Foi cunhada ...` / `Foram cunhadas ...`. A quantidade precisa ser um inteiro positivo até o valor tentado. Mensagem já presente no GET anterior, texto genérico de sucesso, `Você já cunhou ...` (possível total cumulativo), contagem excedente ou contraditória não contam.
+O serviço não registra listener de inicialização, não cria runtime de scheduler e não possui start/stop/run/restore. Abrir/recarregar não verifica Academias nem ativa sessões automaticamente. O timeout de 20s de cada requisição HTTP apenas aborta requisições pendentes e é sempre limpo; não agenda execução de jogo.
 
-**A fixture de sucesso é sintética, não uma captura do mundo do usuário.** O HTML e a redação real ainda precisam ser validados. Uma mensagem diferente resulta em `CONFIRMATION_FAILED`, confirmed=0 e parada da automação. O servidor pode ter cunhado apesar dessa falha de reconhecimento: conferir no jogo antes de reiniciar.
+Após atualizar o código, recarregar também abas antigas do Hub: uma aba que ainda está executando o código anterior não é substituída remotamente por esta versão. O nome antigo do lock foi mantido para não sobrepor execuções em abas com versões diferentes.
 
-## Scheduler, resultados e proteções
+## Diagnóstico temporário seguro
 
-Reutiliza `EAS.Runtime`, `EAS.Storage`, `EAS.Log`, `EAS.Usage` e as janelas existentes. Não altera o scheduler global, painel flutuante, Market ou Mass Snipe.
+`TEMPORARY_LIVE_DIAGNOSTICS = true` mantém os logs `[EAS Cunhagem] academy GET` por padrão durante a validação real. Remover/desativar após validar o parser das sessões oficiais. `console.debug` pode exigir nível Verbose/Detalhado no console; não exige acesso a EAS no contexto da página.
 
-`IDLE → RUNNING → WAITING` enquanto ligado; Parar resulta em `STOPPED`. Executar Agora OFF faz um ciclo; ON substitui a espera e calcula o próximo como fim do ciclo + intervalo. 0.5/0,5 hora = 1.800.000 ms. WAITING restaura um timer; atraso gera no máximo um ciclo de recuperação. RUNNING após interrupção bloqueia repetição até conferência do usuário.
+Somente: URLs sanitizadas solicitada/final, redirect, status HTTP, content-type em lista permitida sem parâmetros, quantidade de forms/tabelas/candidatos, action sanitizada, method, nomes de campos saneados, contagem e presença booleana de h, villageId, state e reason. Nunca valor de h, cookies, headers de autenticação, tokens, erro remoto bruto ou HTML completo.
 
-Web Locks por mundo/jogador/sitter e guarda local impedem ciclos concorrentes. A associação ao grupo é revalidada antes da inspeção final. A callback síncrona `beforePost(count)` verifica cancelamento e persiste a tentativa ANTES do POST. Falha nessa persistência impede envio. Um formulário que desapareceu ou quantidade não validável gera attempted=0, sem falso incremento. Parar durante o GET impede o POST; não desfaz uma requisição já processada.
+## Legado removido
 
-Cada resultado contém `villageId`, `villageName`, `requested`, `attempted`, `confirmed`, `status`, `reason`. Requested preserva a quantidade configurada; attempted representa o count realmente preparado para envio. Só confirmed soma ao total. Nesta validação, requested=5/max=7 produz attempted=1. Depois de uma tentativa com resultado incerto, a automação para, sem repetir automaticamente.
+Removidos do código ativo da Cunhagem: cálculo de quantidade/count/maxMintable, POST action=coin, confirmação textual de moedas, contador de moedas, intervalo, Iniciar/Parar/Executar Agora, estado automation/nextRunAt, restauração periódica e scheduler. Os testes anteriores desses caminhos foram substituídos pelos testes das sessões oficiais. Fixtures antigas de cunhagem direta permanecem apenas como material histórico, sem referências no código/testes ativos.
 
-Chave `eas-tw-hub:minting.v1.<world>.<playerId>.<sitterId>`, via EAS.Storage: configuração, automação, status, total confirmado, contadores do último ciclo, lastRunAt/nextRunAt, resultados, últimos 100 logs e erro. Nenhum token é persistido. Horários são timestamps absolutos; a UI identifica a exibição no horário do navegador.
+Não foram alterados outros módulos, o painel flutuante comum, o bootstrap ou o menu do Hub. O carregamento existente da Cunhagem continua válido e inerte até ação do usuário.
 
-## Testes e validação pendente
+## Testes e limites da validação
 
-- `tests/minting-adapter.test.html`: fixtures de form/login/sem form/página inesperada, token ausente, action inválida, limite, POST, resposta final, confirmação explícita, cancelamento, token fresco e sete aldeias. As fixtures usam tokens fictícios; `max` e recibo são cenários sintéticos documentados.
-- `tests/minting.test.cjs`: scheduler, recuperação, grupo, locks, tentativa sem confirmação, contagem efetiva, cancelamento durante inspeção e falha de persistência antes do POST.
-- `tests/minting.test.html`: UI e integração dos serviços com transporte simulado.
+Fixtures `auto-off.html` e `auto-on.html` reproduzem a estrutura observada com tokens inteiramente sintéticos. Nenhuma ação real no Tribal Wars é executada pelos testes. O adapter HTML testa estados, contrato inválido, fresh GET/token, transição oficial, falhas sem retry e ausência de segredos nos logs. O controller Node testa preview explícito, reload sem ação/timer, sequência, lock, claim persistente, grupos e resultado incerto. O teste HTML da UI cobre integração, controles removidos, migração da seleção e ativação via clique.
 
-Os testes não gastam recursos no jogo. Permanecem pendentes: handler completo do preenchimento máximo, HTML exato da mensagem de sucesso, variantes de idioma/mundo e validação autenticada de ponta a ponta. O valor literal `(7)` já foi validado na fixture do Mundo 143. O contexto de sitter é preservado e validado, mas também exige conferência no jogo.
+Ainda pendem validação no jogo real: HTML exato recebido pelo fetch em ambos os estados (inclusive possível diferença frente ao DOM renderizado), comportamento do POST/redirect, sitter, mundos/contas com variações de formulário e marcação confiável do horário de término. O contrato conhecido diz 8h; o EAS não inventa parâmetros de duração. Se a estrutura variar, a ativação é bloqueada até validar a variação.
 
-## Investigação de NO_H_FIELD em village=1561
-
-O parser ANTERIOR às alterações desta rodada foi executado sobre a estrutura fornecida: eligible=true, h encontrado, sem erro. Portanto esse fragmento não reproduz NO_H_FIELD e não permite determinar a causa raiz da falha no servidor real. Não se deve atribuir o problema a seletores/redirects sem a evidência do GET que falhou.
-
-O fluxo foi revisado: GET explícito da Academia → response.text() sem substituições/normalização → DOMParser text/html → candidato pela action → validação de contexto/método → querySelectorAll por name dentro desse formulário. Não usa CSS.escape nem o DOM da tela atual. Scripts da resposta não executam nesse documento separado, portanto o DOM renderizado pode diferir do HTML recebido. Isso é uma hipótese a verificar, não causa confirmada.
-
-A extração não foi ampliada para procurar h globalmente ou em outro formulário. Agora também se rejeita um campo descendente explicitamente associado a outro form. `form.elements` é consultado apenas no diagnóstico para comparar associação e descendência; não serve de fallback para buscar tokens fora do formulário.
-
-Ativação: `EAS.Storage.set('minting.diagnostics', true)`. Depois usar **Verificar aldeias**, sem Iniciar/Executar Agora. Cada inspeção emite `[EAS Cunhagem] academy GET` com:
-
-- requestedGetUrl e finalGetUrl sanitizadas; redirected, httpStatus e htmlResponse;
-- formCount (todos os forms), coinCandidateCount e mintCandidateCount;
-- selectedAction sanitizada e method;
-- descendantFieldNames e associatedFieldNames;
-- documentHCount, selectedHCount, associatedHCount e selectedHHasValue (somente booleano, sem o valor);
-- villageId, status, stage e reason.
-
-URLs mantêm apenas origem local, caminhos conhecidos e valores permitidos de village/screen/action/group/t. Demais parâmetros, credenciais, fragmentos, origem externa e caminhos arbitrários são omitidos/mascarados. Nomes de campos inesperados são mascarados. Nunca se registra valor de h, valores de inputs, HTML, cookies ou headers de autenticação. O relatório não é persistido pelo adapter; pode ser compartilhado como saída sanitizada. Desativar com a mesma chave false.
-
-Se documentHCount for positivo mas selectedHCount zero, o h está fora do candidato no DOM parseado. Se ambos forem zero, a resposta parseada não contém esse campo: comparar o GET/final URL com a página renderizada é o próximo passo. O caso real permanece pendente dessa saída; não houve conexão ao jogo nem POST real nesta investigação.
-
-
-## Alinhamento com os testes reais do usuário
-
-A causa potencial dos falsos PARSE_FAILED no parser anterior era exigir id=coin_mint_count, type=hidden e restringir todos os parâmetros da action. Sem o HTML de cada falha não é possível atribuir todos os casos a essas exigências. Agora os campos são localizados por name dentro do formulário de screen=snob/action=coin; mantém-se validação de POST, origem e aldeia. Ausência do formulário é um skip, não falha de parsing. Página inesperada continua sendo bloqueada.
-
-Cada ciclo atualiza grupo e elegibilidade (GET com cache no-store). A lista de aldeias elegíveis não é reutilizada permanentemente. O teste sete aldeias / ciclo seguinte três confirma 7 + 3, não 7 + 7.
-
-Parar elimina o timer, mantém grupo/quantidade/intervalo/total/logs, reabilita Iniciar e desabilita Parar. Executar Agora OFF executa uma vez e continua OFF, sem nextRunAt. Durante esse ciclo é possível cancelar novas tentativas. Executar Agora ON/WAITING continua sendo política própria do EAS (fim do ciclo + intervalo), ainda não um comportamento externo validado.
-
-Logs por aldeia indicam Academia carregada, formulário encontrado, elegibilidade, ausência de formulário e h ausente, sem conteúdo sensível. Para diagnóstico técnico do parser: `EAS.Storage.set('minting.diagnostics', true)`. O console recebe somente villageId, stage e reason; para desligar, definir false. Resultados persistidos preservam esses códigos, nunca h, HTML ou action completa.
-
-Nenhuma cunhagem real foi disparada nos testes de desenvolvimento. Validação manual seguinte: selecionar explicitamente um grupo contendo uma aldeia, configurar 1 moeda e usar Executar Agora. Verificar a confirmação e o contador, e conferir que Parar permanece desabilitado e não há próxima execução, antes de testar grupo completo.
+Commit sugerido (não executado): `refactor(cunhagem): use official 8h auto-minting sessions`.

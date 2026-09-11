@@ -1,56 +1,38 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Minting tests</title><link rel="stylesheet" href="../css/eas.css"></head><body><pre id="result">running</pre>
+﻿<!doctype html><html><head><meta charset="utf-8"><title>Official auto-minting UI tests</title><link rel="stylesheet" href="../css/eas.css"></head><body><pre id="result">running</pre>
 <script src="../core/eas.js"></script><script src="../core/storage.js"></script><script src="../core/utils.js"></script><script src="../core/runtime.js"></script><script src="../core/ui.js"></script>
 <script>
-window.game_data = {world:'mint-test',player:{id:1},village:{id:7,buildings:{snob:1}}};
-EAS.World.getGameData = () => game_data;
-EAS.Log = {info(){}, debug(){}};
-let membershipGroup, requests = 0, posts = 0;
-window.fetch = async (href, options = {}) => {
-    requests++; const url = new URL(href); const post = options.method === 'POST'; if (post) posts++;
-    url.searchParams.delete('action');
-    const content = post ? '<div class="success">Você cunhou 1 moeda de ouro.</div>' : url.searchParams.get('village') === '7'
-        ? '<form method="post" action="/game.php?village=7&amp;screen=snob&amp;action=coin"><input id="coin_mint_count" name="count" maxlength="5"><input type="hidden" name="h" value="test-only"></form>' : '';
-    return {ok:true,status:200,url:url.href,headers:new Headers({'content-type':'text/html'}),text:async()=>'<div id="content_value">'+content+'</div>'};
+window.game_data={world:'mint-test',player:{id:1},village:{id:99}};EAS.World.getGameData=()=>game_data;EAS.Log={info(){},debug(){}};
+let posts=0,requests=0,active=false,membershipGroup;
+window.fetch=async(href,options={})=>{
+ requests++;const url=new URL(href);if(options.method==='POST'){posts++;active=true;}
+ const id=url.searchParams.get('village');url.searchParams.delete('action');
+ const form=id==='7'?`<table class="auto-minting"><tr><td><form method="post" action="/game.php?village=7&screen=snob&action=${active?'cancel':'start'}_auto_minting_session"><button>${active?'Cancelar':'Ativar'}</button><input name="h" value="synthetic-only"></form></td></tr></table>`:'';
+ return {ok:true,status:200,url:url.href,headers:new Headers({'content-type':'text/html'}),text:async()=>'<div id="content_value">'+form+'</div>'};
 };
-EAS.Data = {
-    Groups: {ensureFresh:async()=>[{id:'19',name:'Meu grupo'}],getById:id=>id==='19'?{id:'19',name:'Meu grupo'}:null,ensureMembership:async(id)=>{membershipGroup=id;return ['7','8'];}},
-    Villages: {ensureFresh:async()=>[],getAll:()=>[{id:7,name:'A'},{id:8,name:'B'},{id:9,name:'Outside'}]},
-    mapLimit:async(items,limit,fn)=>Promise.all(items.map(fn))
-};
+EAS.Data={Groups:{ensureFresh:async()=>[{id:'19',name:'Meu grupo'}],getById:id=>id==='19'?{id:'19',name:'Meu grupo'}:null,ensureMembership:async id=>{membershipGroup=id;return ['7','8'];}},Villages:{ensureFresh:async()=>[],getAll:()=>[{id:7,name:'A'},{id:8,name:'B'},{id:9,name:'Outside'}]},mapLimit:async(items,limit,fn)=>Promise.all(items.map(fn))};
+EAS.Storage.set('minting.v1.mint-test.1.0',{version:1,automation:true,status:'WAITING',nextRunAt:1,config:{groupId:'19',intervalHours:0.001}});
 </script>
 <script src="../services/minting-adapter.js"></script><script src="../services/minting.js"></script><script src="../modules/minting.js"></script>
 <script>
 (async()=>{
-    const failures=[];let assertions=0;
-    const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual));};
-    try {
-        const win=await EAS.Modules.Minting.open();
-        const field=name=>win.body.querySelector('[data-'+name+']');
-        equal(field('group').value,'','no implicit current URL group');
-        equal([field('start').disabled,field('now').disabled],[false,false],'official executor enabled');
-        equal(field('stop').disabled,true,'Stop disabled while OFF');
-        field('group').value='19';field('group').dispatchEvent(new Event('change'));
-        equal(EAS.Minting.getController().read().config.groupId,'19','selection persisted');
-        const data=await EAS.Minting.discover('19');
-        equal(membershipGroup,'19','explicit selected group used');
-        equal(data.villages.map(v=>v.villageId),['7','8'],'intersection with owned group villages');
-        equal(data.villages.map(v=>v.eligible),[true,false],'official form defines eligibility');
-        equal(posts,0,'discovery never sends POST');
-        await EAS.Minting.getController().start();
-        equal(posts,1,'only eligible village receives one POST');
-        equal(EAS.Minting.getController().read().totalConfirmedCoins,1,'only explicit receipt counts');
-        equal(field('total').textContent,'1','UI shows confirmed total');
-        equal([field('start').disabled,field('stop').disabled,field('now').disabled],[true,false,false],'WAITING controls');
-        field('stop').click();
-        equal(EAS.Minting.getController().read().status,'STOPPED','stop remains available');
-        equal([field('start').disabled,field('stop').disabled],[false,true],'Stop restores Start and disables Stop');
-        await field('now').onclick();
-        equal([EAS.Minting.getController().read().totalConfirmedCoins,EAS.Minting.getController().read().automation,EAS.Minting.getController().read().nextRunAt],[2,false,null],'Execute Now stopped adds one without enabling automation');
-        equal([field('start').disabled,field('stop').disabled],[false,true],'one-shot returns to OFF controls');
-        win.close();await new Promise(resolve=>setTimeout(resolve,0));
-        equal(EAS.Runtime.get('minting-ui'),null,'UI runtime cleaned up');
-        equal(Boolean(EAS.Runtime.get('minting')),true,'closing UI does not dispose automation runtime');
-    } catch(error) {failures.push(error.stack);}
-    document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
+ const failures=[];let assertions=0;const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual));};
+ try{
+  window.dispatchEvent(new Event('eas-tw-hub-ready'));equal(requests,0,'legacy persisted automation never restored');
+  const win=await EAS.Modules.Minting.open(),field=name=>win.body.querySelector('[data-'+name+']');
+  equal(requests,0,'opening does not inspect or activate');equal(field('activate').disabled,true,'no implicit activation');
+  for(const name of ['amount','hours','start','stop','now','next','total'])equal(field(name),null,'obsolete UI removed '+name);
+  equal(field('group').value,'19','only selected group migrated');
+  await field('discover').onclick();equal(membershipGroup,'19','explicit group');equal(posts,0,'preview read only');
+  equal(EAS.Minting.getController().read().results.map(r=>r.villageId),['7','8'],'owned group intersection');
+  equal(EAS.Minting.getController().read().results.map(r=>r.state),['AVAILABLE','UNAVAILABLE'],'preview states');
+  equal(field('activate').disabled,false,'explicit action offered after preview');
+  await field('activate').onclick();equal(posts,1,'one official activation');
+  equal(EAS.Minting.getController().read().results[0].outcome,'ACTIVATED','transition confirmed');
+  equal(field('results').textContent.includes('ATIVADA'),true,'UI confirms activation');equal(field('activate').disabled,true,'consumed preview');
+  await field('discover').onclick();equal(EAS.Minting.getController().read().results[0].state,'ACTIVE','active state shown');equal(field('activate').disabled,true,'already active cannot activate');
+  equal(EAS.Runtime.get('minting'),null,'no scheduler runtime');
+  win.close();await new Promise(resolve=>setTimeout(resolve,0));equal(EAS.Runtime.get('minting-ui'),null,'UI runtime cleanup');
+ }catch(error){failures.push(error.stack);}
+ document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
 })();
 </script></body></html>

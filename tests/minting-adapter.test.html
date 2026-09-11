@@ -1,125 +1,71 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Minting adapter tests</title></head><body><pre id="result">running</pre>
-<script>window.EAS={Adapters:{},Selectors:{},World:{getGameData:()=>({player:{id:1},village:{id:7}})}};</script>
-<script src="../services/minting-adapter.js"></script><script src="../services/minting.js"></script>
+﻿<!doctype html><html><head><meta charset="utf-8"><title>Official auto-minting adapter tests</title></head><body><pre id="result">running</pre>
+<script>window.EAS={Adapters:{},Selectors:{},World:{getGameData:()=>({player:{id:1},village:{id:99}})}};</script>
+<script src="../services/minting-adapter.js"></script>
 <script>
 (async()=>{
-    const failures=[];let assertions=0;
-    const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual));};
-    try {
-        const names=['academy-form','academy-no-form','login','unexpected','confirmation-one','academy-world143'];
-        const fixtures=Object.fromEntries(await Promise.all(names.map(async name=>[name,await(await fetch('fixtures/minting/'+name+'.html')).text()])));
-        const origin=location.origin, url=new URL('/game.php?village=7&screen=snob',origin);
-        const doc=html=>new DOMParser().parseFromString(html,'text/html');
-        const adapter=EAS.Adapters.Minting;
-        const form=fixtures['academy-form'], success=fixtures['confirmation-one'], empty=fixtures['academy-no-form'];
-        const parse=html=>adapter.parsePage(doc(html),url,'7');
-        const liveUrl = new URL('/game.php?village=1561&screen=snob', origin);
-        const live = adapter.parsePage(doc(fixtures['academy-world143']), liveUrl, '1561');
-        equal([live.eligible, Boolean(live.h), live.maxMintable, live.reason], [true,true,7,null], 'world 143 observed form parsed without POST');
-        equal(live.diagnostics.formCount,1,'world 143 form count');
-        equal([live.diagnostics.coinCandidateCount,live.diagnostics.mintCandidateCount],[1,1],'world 143 selected candidate');
-        equal([live.diagnostics.method,live.diagnostics.descendantFieldNames],['POST',['count','h']],'world 143 method and field names');
-        equal([live.diagnostics.selectedHCount,live.diagnostics.associatedHCount],[1,1],'world 143 descendant and associated token counts');
-        equal(JSON.stringify(live.diagnostics).includes('synthetic-world143-token'),false,'diagnostics never expose synthetic token');
-        for(const value of ['(7) extra','(7.5)','(1,000)','(-1)']) {
-            equal(adapter.parsePage(doc(fixtures['academy-world143'].replace('(7)',value)),liveUrl,'1561').maxMintable,null,'ambiguous max notation rejected: '+value);
-        }
-        equal(parse(form).eligible,true,'A official form eligible');
-        equal(parse(form).h,'fixture-token','A token from coin form');
-        const minimal = form.replace('id="coin_mint_count"','').replace('type="hidden"','type="text"');
-        equal(parse(minimal).eligible,true,'named fields accepted without cosmetic IDs or hidden type');
-        equal(parse(form.replace('action=coin','action=coin&amp;mode=coin&amp;group=12')).eligible,true,'extra official navigation parameters accepted');
-        equal(parse(empty).status,'NOT_ELIGIBLE','absent form has explicit skip status');
-        equal(parse(form).maxMintable,null,'unknown fill-max handler stays null');
-        equal(parse(empty).reason,'NO_MINT_FORM','B missing form is not mintable');
-        equal(parse(fixtures.login).status,'SESSION_EXPIRED','C login detected');
-        equal(parse(fixtures.unexpected).reason,'INVALID_PAGE','C unexpected page rejected');
-        const missing=form.replace('name="h"','name="other"');
-        equal(parse(missing).reason,'NO_H_FIELD','D missing token rejected');
-        equal([parse(missing).status,parse(missing).stage],['PARSE_FAILED','token'],'missing h has safe diagnostic stage');
-        equal(parse(form.replace('name="count"','name="other"')).reason,'INVALID_COUNT_FIELD','missing count distinguished');
-        equal(parse(form.replace('value="fixture-token"','value=""')).reason,'NO_H_FIELD','empty token rejected');
-        equal(parse(form.replace('value="fixture-token"','value=""')).diagnostics.selectedHHasValue,false,'empty token distinguished without exposing a value');
-        equal(live.diagnostics.selectedHHasValue,true,'nonempty world 143 token identified only as a boolean');
-        equal(parse(form.replace('village=7','village=8')).reason,'INVALID_ACTION','wrong village action');
-        equal(parse(form.replace('/game.php?', 'https://example.invalid/game.php?')).reason,'INVALID_ACTION','foreign action');
-        equal(parse(form.replace('screen=snob','screen=market')).reason,'INVALID_ACTION','wrong screen action');
-        equal(parse(form.replace('action=coin','action=coin&amp;action=other')).reason,'INVALID_ACTION','ambiguous action');
-        equal(parse(form.replace('method="post"','method="get"')).reason,'INVALID_METHOD','wrong method');
-        const withMax=form.replace('maxlength="5"','maxlength="5" max="3"');
-        equal(parse(withMax).maxMintable,3,'synthetic native max constraint');
-        equal(adapter.calculateCount(1,3),1,'E count 1 of 3');
-        equal(adapter.calculateCount(5,3),1,'F safety cap remains one even with known maximum');
-        equal(adapter.calculateCount(5,null),1,'unknown max caps multi-coin request at one');
-        equal(adapter.calculateCount(1,null),1,'available form validates single coin');
-        equal(adapter.confirm(doc(success),url,'7',1).confirmed,1,'H explicit one-coin receipt');
-        equal(adapter.confirm(doc(success),url,'7',1,['Você cunhou 1 moeda de ouro.']).confirmed,0,'old banner rejected');
-        equal(adapter.confirm(doc(success.replace('Você cunhou','Você já cunhou')),url,'7',1).confirmed,0,'cumulative total rejected');
-        equal(adapter.confirm(doc(success.replace('1 moeda','2 moedas')),url,'7',1).confirmed,0,'overcount rejected');
-        equal(adapter.confirm(doc(success+'<div class="error">Erro</div>'),url,'7',1).confirmed,0,'error outweighs success');
-        equal(adapter.confirm(doc(success),new URL('/game.php?village=8&screen=snob',origin),'7',1).confirmed,0,'wrong final village');
-        const mock=(getHTML=form,postHTML=success,postStatus=200)=>{
-            const calls=[];let generation=0;
-            const instance=adapter.createAdapter({origin,gameData:()=>({player:{id:1}}),fetchPage:async (href,options)=>{
-                const target=new URL(href);calls.push({href,options});
-                const isPost=options.method==='POST';
-                const html=isPost?postHTML:getHTML.replace('fixture-token','fresh-'+(++generation));
-                target.searchParams.delete('action');
-                return {ok:postStatus===200 || !isPost,status:isPost?postStatus:200,url:target.href,headers:new Headers({'Content-Type':'text/html'}),text:async()=>html};
-            }});
-            return {instance,calls};
-        };
-        const noToken=mock(missing);equal((await noToken.instance.execute({villageId:'7',requested:1})).attempted,0,'D no POST with missing h');equal(noToken.calls.length,1,'D GET only');
-        const unavailable=mock(empty);equal((await unavailable.instance.execute({villageId:'7',requested:1})).reason,'NO_MINT_FORM','form disappears safely');equal(unavailable.calls.length,1,'no unavailable POST');
-        const limited=mock(minimal);const limitedResult=await limited.instance.execute({villageId:'7',requested:5});
-        equal([limitedResult.requested,limitedResult.attempted,limitedResult.confirmed],[5,1,1],'requested 5 without max actually posts and confirms one');
-        const missingResult=await noToken.instance.execute({villageId:'7',requested:1});
-        equal([missingResult.status,missingResult.reason],['PARSE_FAILED','NO_H_FIELD'],'execute preserves precise parser failure');
-        const redirected=mock(form,empty);equal((await redirected.instance.execute({villageId:'7',requested:1})).confirmed,0,'G redirected page without receipt');
-        const raw302=mock(form,success,302);equal((await raw302.instance.execute({villageId:'7',requested:1})).confirmed,0,'raw 302 is not success');
-        const fresh=mock();await fresh.instance.inspectMinting('7');
-        const result=await fresh.instance.execute({villageId:'7',villageName:'Village',requested:1});
-        equal(result.confirmed,1,'H confirmed executor result');
-        const post=fresh.calls.find(call=>call.options.method==='POST');
-        equal(new URLSearchParams(post.options.body).get('h'),'fresh-2','fresh token after discovery GET');
-        equal([...new URLSearchParams(post.options.body).keys()],['count','h'],'only official payload fields');
-        equal(post.options.redirect,'follow','normal redirect following');equal(post.options.mode,'same-origin','same-origin transport');
-        equal(Object.keys(await fresh.instance.inspectVillage({id:7,name:'Village'})),['villageId','villageName','eligible','maxMintable','status','reason','stage'],'discovery excludes token/action');
-        const capped=mock(withMax,success);
-        equal((await capped.instance.execute({villageId:'7',requested:5})).attempted,1,'F simulated POST remains limited to one');
-        const cancelled=mock();equal((await cancelled.instance.execute({villageId:'7',requested:1},{beforePost:()=>false})).attempted,0,'cancel before POST');equal(cancelled.calls.length,1,'cancel GET only');
-        const multi=mock(form);let state=null;const sent=[];
-        const c=EAS.Minting.createController({read:()=>structuredClone(state),write:value=>{state=structuredClone(value);return true;},now:()=>1000,
-            available:()=>true,blockedReason:()=>'',setTimer:()=>0,cancelTimer:()=>{},lock:fn=>fn(),contains:async()=>true,
-            discover:async()=>({groupName:'Group',villages:Array.from({length:7},(_,i)=>({villageId:String(i+1),villageName:'Village',eligible:true,maxMintable:null}))}),
-            execute:async(row,options)=>{
-                const perVillage=mock(form.replace('village=7','village='+row.villageId));
-                const result=await perVillage.instance.execute(row,options);sent.push(...perVillage.calls.filter(c=>c.options.method==='POST'));return result;
-            }});
-        c.configure({groupId:'19',requestedPerVillage:1,intervalHours:0.5});await c.run();
-        equal(c.read().totalConfirmedCoins,7,'I seven villages confirm at most seven');equal(sent.length,7,'I exactly seven POSTs');
-        equal(JSON.stringify(state).includes('fresh-'),false,'tokens not persisted');
-        const diagnostics=[];let liveRequests=0;
-        const observed=adapter.createAdapter({origin,onDiagnostic:entry=>diagnostics.push(entry),gameData:()=>({player:{id:1},village:{id:99}}),fetchPage:async(href,options)=>{
-            liveRequests++;equal(options.method || 'GET','GET','inspection never POSTs');
-            equal(new URL(href).searchParams.get('village'),'1561','explicit target independent of current village/screen');
-            return {ok:true,status:200,url:liveUrl.href+'&h=url-secret#fragment-secret',redirected:true,headers:new Headers({'content-type':'text/html'}),text:async()=>fixtures['academy-world143']};
-        }});
-        // Unexpected fragment deliberately causes INVALID_PAGE; sanitized diagnostics still identify the redirect.
-        await observed.inspectMinting('1561');
-        equal(liveRequests,1,'diagnostic path uses only GET');
-        equal([diagnostics[0].redirected,diagnostics[0].httpStatus,diagnostics[0].htmlResponse],[true,200,true],'GET transport metadata');
-        equal(diagnostics[0].finalGetUrl,liveUrl.href,'final URL strips token and fragment');
-        equal(/url-secret|fragment-secret|synthetic-world143-token/.test(JSON.stringify(diagnostics)),false,'no secrets in diagnostic callback');
-        const outside = form.replace('name="h"','name="not_h"')+'<form action="/other"><input name="h" value="foreign-token"></form>';
-        const scoped=parse(outside);
-        equal([scoped.reason,scoped.diagnostics.formCount,scoped.diagnostics.documentHCount,scoped.diagnostics.selectedHCount],['NO_H_FIELD',2,1,0],'diagnostics identify token outside selected form without borrowing it');
-        const tokenInOtherOwner = form.replace('<form action=', '<form id="mint-owner" action=').replace('name="h"','form="other-owner" name="h"')+'<form id="other-owner"></form>';
-        equal(parse(tokenInOtherOwner).diagnostics.associatedHCount,0,'form association diagnostic distinguishes DOM containment');
-        equal(parse(tokenInOtherOwner).reason,'INVALID_H_FIELD','token assigned to another form cannot be used');
-        const actionSecret=parse(form.replace('action=coin','action=coin&amp;h=action-secret&amp;opaque=other-secret'));
-        equal(actionSecret.diagnostics.selectedAction,new URL('/game.php?village=7&screen=snob&action=coin',origin).href,'candidate action diagnostic excludes sensitive query fields');
-    }catch(error){failures.push(error.stack);}
-    document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
+ const failures=[];let assertions=0;
+ const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual));};
+ try {
+  const off=await(await fetch('fixtures/minting/auto-off.html')).text(), on=await(await fetch('fixtures/minting/auto-on.html')).text();
+  const origin=location.origin,url=new URL('/game.php?village=13186&screen=snob',origin), doc=html=>new DOMParser().parseFromString(html,'text/html');
+  const adapter=EAS.Adapters.Minting, parse=html=>adapter.parsePage(doc(html),url,'13186');
+  equal(parse(off).state,'AVAILABLE','OFF official action'); equal(parse(on).state,'ACTIVE','ON official action');
+  equal(parse(on).endTime,null,'no fragile text time parser');
+  equal(parse(off.replace('name="h"','name="other"')).reason,'NO_H_FIELD','missing h');
+  equal(parse(off.replace('synthetic-off-token','')).reason,'NO_H_FIELD','empty h');
+  equal(parse(off.replace('method="post"','method="get"')).reason,'INVALID_METHOD','invalid method');
+  equal(parse(off.replace('start_auto_minting_session','coin')).reason,'INVALID_ACTION','direct coin never eligible');
+  equal(parse(off.replace('13186','999')).reason,'INVALID_ACTION','wrong village');
+  equal(parse(off.replace('/game.php?', 'https://other.invalid/game.php?')).reason,'INVALID_ACTION','cross origin');
+  equal(parse(off.replace('screen=snob','screen=overview')).reason,'INVALID_ACTION','wrong screen');
+  equal(parse(off.replace('action=start_auto_minting_session','action=start_auto_minting_session&amp;action=coin')).reason,'INVALID_ACTION','ambiguous action');
+  equal(parse('<div id="content_value">Ativar</div>').state,'UNAVAILABLE','missing table');
+  equal(parse('<table class="auto-minting"><tr><td>Ativar Cancelar</td></tr></table>').state,'UNAVAILABLE','text does not imply state');
+  equal(parse('<form id="login"><input type="password"></form>').state,'SESSION_INVALID','login');
+  equal(parse(off+on).reason,'MULTIPLE_TABLES','ambiguous tables');
+  equal(parse(off.replace('</form>','<input name="h" value="synthetic-second"></form>')).reason,'INVALID_H_FIELD','duplicate h');
+  equal(parse(off.replace('name="h"','disabled name="h"')).reason,'INVALID_H_FIELD','disabled h');
+  equal(parse(off.replace('name="h"','form="other" name="h"')+'<form id="other"></form>').reason,'INVALID_H_FIELD','wrong form owner');
+  equal(parse(off.replace('</form>','<input name="count" value="1"></form>')).reason,'UNSUPPORTED_FIELDS','unexpected payload fails closed');
+  equal(parse(off.replace('class="btn btn-default"','disabled class="btn btn-default"')).state,'UNAVAILABLE','disabled activation');
+  equal(parse(off).diagnostics.selectedHHasValue,true,'safe presence boolean');
+  equal(JSON.stringify(parse(off).diagnostics).includes('synthetic-off-token'),false,'token absent from diagnostics');
+  const mock=(options={})=>{
+   let gets=0,posts=0;const calls=[],logs=[];
+   const instance=adapter.createAdapter({origin,gameData:()=>({player:{id:1},village:{id:99}}),onDiagnostic:d=>logs.push(d),fetchPage:async(href,opts)=>{
+    const target=new URL(href),post=opts.method==='POST';calls.push({href,opts});if(post)posts++;else gets++;
+    if(post && options.throwPost)throw new Error('synthetic-network-secret');
+    const html=post?off:gets===1?(options.first||off):posts?(options.final||on):(options.fresh||off);
+    target.searchParams.delete('action');
+    return {ok:!post||!options.failPost,status:post&&options.failPost?500:200,url:target.href,redirected:post,headers:new Headers({'content-type':'text/html; charset=utf-8'}),text:async()=>html.replaceAll('synthetic-off-token','synthetic-get-'+gets)};
+   }});
+   return {instance,calls,logs,get posts(){return posts;}};
+  };
+  let m=mock(); const preview=await m.instance.inspectVillage({id:13186,name:'A'});
+  equal(preview.state,'AVAILABLE','preview'); equal(m.posts,0,'preview no POST');
+  equal(Object.keys(preview).sort(),['endTime','reason','state','villageId','villageName'],'no token retained in preview');
+  const success=await m.instance.activateVillage({villageId:'13186'});
+  equal([success.state,success.outcome],['ACTIVE','ACTIVATED'],'fresh final state confirms');
+  equal(m.calls.map(c=>c.opts.method||'GET'),['GET','GET','POST','GET'],'fresh GET before POST and final GET');
+  equal(new URLSearchParams(m.calls[2].opts.body).get('h'),'synthetic-get-2','preview token never reused');
+  equal([...new URLSearchParams(m.calls[2].opts.body).keys()],['h'],'only official payload h');
+  equal(new URL(m.calls[2].href).searchParams.get('action'),'start_auto_minting_session','official activation action');
+  equal(m.calls.every(c=>new URL(c.href).searchParams.get('village')==='13186'),true,'current screen/village irrelevant');
+  equal(JSON.stringify(m.logs).includes('synthetic-get'),false,'logs sanitized');
+  m=mock({first:on}); equal((await m.instance.activateVillage({villageId:13186})).state,'ACTIVE','already ACTIVE skipped');equal(m.posts,0,'ACTIVE never POST');
+  m=mock({fresh:on});await m.instance.inspectVillage({id:13186});await m.instance.activateVillage({villageId:13186});equal(m.posts,0,'became ACTIVE since preview skipped');
+  m=mock({final:off});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','200 and unchanged OFF uncertain');equal(m.posts,1,'uncertain no retry');
+  m=mock({failPost:true});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','HTTP error uncertain');equal(m.posts,1,'HTTP error no retry');
+  m=mock({throwPost:true});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','network error uncertain');equal(m.posts,1,'network error no retry');
+  m=mock();await m.instance.activateVillage({villageId:13186},{beforePost:()=>false});equal(m.posts,0,'claim rejected no POST');
+  const originalDebug=console.debug,automatic=[];console.debug=(...args)=>automatic.push(args);
+  try {
+   const auto=adapter.createAdapter({fetchPage:async href=>({ok:false,status:500,url:href+'&h=synthetic-secret#synthetic-secret',headers:new Headers({'content-type':'text/html; secret=synthetic-secret'})})});
+   await auto.inspectVillage({id:13186});
+   equal(automatic[0][0],'[EAS Cunhagem] academy GET','automatic diagnostic without Storage');
+   equal(JSON.stringify(automatic).includes('synthetic-secret'),false,'URL and header secrets excluded');
+  }finally{console.debug=originalDebug;}
+ }catch(error){failures.push(error.stack);}
+ document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
 })();
 </script></body></html>
