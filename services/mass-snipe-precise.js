@@ -182,7 +182,7 @@
                 scheduler = createScheduler({ ...plan, explicitlyEnabled: enabled.checked,
                     serverNow: service.getCurrentServerTimeMs, monotonicNow: () => performance.now(),
                     schedule: (callback, delay) => runtime.setTimeout(callback, delay),
-                    unschedule: (timer) => { clearTimeout(timer); runtime.resources.timers.delete(timer); },
+                    unschedule: (timer) => runtime.clearTimeout(timer),
                     canFire: validConfirmation,
                     claim: () => { if (consumedForms.has(confirmation.form)) return false; consumedForms.add(confirmation.form); return true; },
                     button: confirmation.button,

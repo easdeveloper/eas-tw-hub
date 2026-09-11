@@ -3,10 +3,11 @@
     const LOG_KEY = 'runtime.logs'; const USAGE_KEY = 'runtime.usage'; const LOG_LIMIT = 500;
     const storageGet = (key, fallback) => EAS.Storage?.get?.(key, fallback) ?? fallback;
     const storageSet = (key, value) => EAS.Storage?.set?.(key, value);
-    const pageContext = () => { try { const url = new URL(location.href); return { url: url.href, screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), try: url.searchParams.get('try'), villageId: String(window.game_data?.village?.id || url.searchParams.get('village') || '') }; } catch { return {}; } };
+    const pageContext = () => { try { const url = new URL(location.href); const safeUrl = new URL(url.origin + url.pathname); for (const key of ['screen', 'mode']) { const value = url.searchParams.get(key); if (value && /^[a-z_]{1,40}$/.test(value)) safeUrl.searchParams.set(key, value); } const village = url.searchParams.get('village'); if (/^\d+$/.test(village || '')) safeUrl.searchParams.set('village', village); return { url: safeUrl.href, screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), try: url.searchParams.get('try'), villageId: String(window.game_data?.village?.id || url.searchParams.get('village') || '') }; } catch { return {}; } };
     const serializeError = (error) => error ? { name: error.name || 'Error', message: error.message || String(error), stack: error.stack || '' } : null;
     const write = (level, module, action, data = {}, context = {}) => {
-        const entry = { timestamp: Date.now(), level, module, action, executionId: context.executionId || data.executionId || null, villageId: context.villageId || data.villageId || pageContext().villageId || null, page: pageContext(), state: context.state || data.state || null, data: { ...data }, error: serializeError(context.error || data.error) };
+        const page = pageContext();
+        const entry = { timestamp: Date.now(), level, module, action, executionId: context.executionId || data.executionId || null, villageId: context.villageId || data.villageId || page.villageId || null, page, state: context.state || data.state || null, data: { ...data }, error: serializeError(context.error || data.error) };
         if (entry.data.error) delete entry.data.error;
         const entries = storageGet(LOG_KEY, []); entries.push(entry); storageSet(LOG_KEY, entries.slice(-LOG_LIMIT));
         const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'info' ? 'info' : 'debug'; console[method](`[EAS ${module}] ${action}`, entry); return entry;
