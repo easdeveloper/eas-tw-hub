@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
     'use strict';
     EAS.Adapters ||= {};
     EAS.Selectors ||= {};
@@ -9,7 +9,7 @@
     // Only sanitized metadata is logged, never HTML or field values.
     const TEMPORARY_LIVE_DIAGNOSTICS = true;
     const createAdapter = ({ origin = location.origin, fetchPage = (...args) => fetch(...args), gameData = () => EAS.World.getGameData(),
-        onDiagnostic = detail => { if (TEMPORARY_LIVE_DIAGNOSTICS || EAS.Storage?.get?.('minting.diagnostics', false)) console.debug('[EAS Cunhagem] academy GET', detail); }
+        onDiagnostic = detail => { if (TEMPORARY_LIVE_DIAGNOSTICS || EAS.Storage?.get?.('minting.diagnostics', false)) console.debug('[EAS Cunhagem Debug] academy GET', detail); }
     } = {}) => {
         const pending = new Set();
         const safeUrl = value => {
@@ -24,6 +24,42 @@
                     + (['/game.php', '/index.php', '/'].includes(url.pathname) ? url.pathname : '/[redacted-path]')
                     + (query.size ? '?' + query : '');
             } catch { return '[invalid-url]'; }
+        };
+        const diagnosticUrl = value => EAS.Log?.sanitizeUrl?.(value) || '[sanitizer-unavailable]';
+        const describeForm = form => ({
+            actionSanitized: safeUrl(form.getAttribute('action')),
+            method: form.method.toUpperCase(),
+            fieldNames: [...new Set([...form.querySelectorAll('[name]')].map(field => /^[a-z_\[\]]{1,40}$/.test(field.getAttribute('name')) ? field.getAttribute('name') : '[redacted-name]'))],
+            hasH: Boolean(form.querySelector(selectors.token)),
+            hasCount: Boolean(form.querySelector('input[name="count"]')),
+            // Only known UI labels are safe to report; never input values or arbitrary text.
+            buttonTexts: [...form.querySelectorAll('button')].map(button => {
+                const text = button.textContent.replace(/\s+/g, ' ').trim();
+                return ['Ativar', 'Cancelar', 'Cunhar'].includes(text) ? text : '[redacted-text]';
+            })
+        });
+        const liveDiagnostic = (page, result, villageId, requestedUrl) => {
+            const doc = page.doc, forms = [...(doc?.querySelectorAll('table.auto-minting form') || [])];
+            const selected = result.diagnostics;
+            const candidates = action => forms.filter(form => { try { return new URL(form.getAttribute('action'), page.url).searchParams.get('action') === action; } catch { return false; } }).length;
+            return {
+                villageId: /^[1-9]\d*$/.test(String(villageId)) ? String(villageId) : '[invalid-id]',
+                requestedUrl, finalUrl: page.diagnostics?.finalUrl ?? null,
+                redirected: page.diagnostics?.redirected ?? null, status: page.diagnostics?.httpStatus ?? null,
+                ok: page.diagnostics?.ok ?? null, contentType: page.diagnostics?.contentType ?? null,
+                responseLength: page.diagnostics?.responseLength ?? null,
+                hasGoldOverview: Boolean(doc?.querySelector('#gold_overview')),
+                hasAutoMintingTable: Boolean(doc?.querySelector(selectors.table)),
+                totalForms: doc?.querySelectorAll('form').length ?? 0, autoMintingForms: forms.length,
+                forms: forms.map(describeForm), startAutoMintingCandidates: candidates(START), cancelAutoMintingCandidates: candidates(CANCEL),
+                selectedState: result.state, selectedFormAction: selected?.selectedAction ?? null,
+                selectedFormMethod: selected?.method ?? null, selectedFormFieldNames: selected?.fieldNames ?? [],
+                selectedFormHasH: Boolean(selected?.selectedHCount),
+                resultReason: result.reason,
+                hCounts: { document: doc?.querySelectorAll(selectors.token).length ?? 0,
+                    autoMintingTable: doc?.querySelectorAll('table.auto-minting input[name="h"]').length ?? 0,
+                    selectedForm: selected?.selectedHCount ?? 0 }
+            };
         };
         const sameContext = (url, villageId, action = null) => {
             if (url.origin !== origin || url.pathname !== '/game.php' || url.username || url.password || url.hash) return false;
@@ -80,23 +116,24 @@
                 const response = await fetchPage(String(url), { credentials: 'same-origin', mode: 'same-origin', cache: 'no-store', redirect: 'follow',
                     ...options, headers: { Accept: 'text/html', ...options.headers }, signal: abort.signal });
                 const mime = (response.headers.get('content-type') || '').toLowerCase().split(';')[0].trim();
-                const diagnostics = { finalGetUrl: safeUrl(response.url), redirected: Boolean(response.redirected), httpStatus: response.status,
+                const diagnostics = { finalGetUrl: safeUrl(response.url), finalUrl: diagnosticUrl(response.url), ok: Boolean(response.ok), responseLength: null, redirected: Boolean(response.redirected), httpStatus: response.status,
                     contentType: ['text/html', 'application/json', 'text/plain', 'application/xhtml+xml'].includes(mime) ? mime : '[other-or-missing]' };
                 if ([401, 403].includes(response.status)) return { state: 'SESSION_INVALID', reason: 'HTTP_SESSION_INVALID', diagnostics };
                 if (!response.ok || mime !== 'text/html') return { state: 'PARSE_FAILED', reason: !response.ok ? 'HTTP_ERROR' : 'INVALID_CONTENT_TYPE', diagnostics };
                 // Parse the fresh response directly. Detached scripts never execute.
-                return { doc: new DOMParser().parseFromString(await response.text(), 'text/html'), url: new URL(response.url), diagnostics };
+                const html = await response.text();
+                diagnostics.responseLength = html.length;
+                return { doc: new DOMParser().parseFromString(html, 'text/html'), url: new URL(response.url), diagnostics };
             } catch { return { state: 'PARSE_FAILED', reason: 'REQUEST_FAILED' }; }
             finally { clearTimeout(timeout); }
         };
         const inspectMinting = async villageId => {
             let page, requestedGetUrl = '[invalid-url]';
-            try { const url = academyUrl(villageId); requestedGetUrl = safeUrl(url); page = await requestDocument(url); }
+            try { const url = academyUrl(villageId); requestedGetUrl = diagnosticUrl(url); page = await requestDocument(url); }
             catch { page = { state: 'PARSE_FAILED', reason: 'INVALID_VILLAGE' }; }
             const result = page.doc ? parsePage(page.doc, page.url, villageId)
                 : { villageId: String(villageId), state: page.state, reason: page.reason, endTime: null, actionUrl: null, h: null };
-            try { onDiagnostic({ ...result.diagnostics, ...page.diagnostics, requestedGetUrl,
-                villageId: /^[1-9]\d*$/.test(String(villageId)) ? String(villageId) : '[invalid-id]', state: result.state, reason: result.reason }); } catch {}
+            try { onDiagnostic(liveDiagnostic(page, result, villageId, requestedGetUrl)); } catch {}
             return result;
         };
         const activateVillage = async (row, { beforePost = () => true } = {}) => {

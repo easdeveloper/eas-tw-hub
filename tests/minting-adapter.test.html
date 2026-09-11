@@ -1,5 +1,6 @@
-﻿<!doctype html><html><head><meta charset="utf-8"><title>Official auto-minting adapter tests</title></head><body><pre id="result">running</pre>
+<!doctype html><html><head><meta charset="utf-8"><title>Official auto-minting adapter tests</title></head><body><pre id="result">running</pre>
 <script>window.EAS={Adapters:{},Selectors:{},World:{getGameData:()=>({player:{id:1},village:{id:99}})}};</script>
+<script src="../core/observability.js"></script>
 <script src="../services/minting-adapter.js"></script>
 <script>
 (async()=>{
@@ -58,11 +59,41 @@
   m=mock({failPost:true});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','HTTP error uncertain');equal(m.posts,1,'HTTP error no retry');
   m=mock({throwPost:true});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','network error uncertain');equal(m.posts,1,'network error no retry');
   m=mock();await m.instance.activateVillage({villageId:13186},{beforePost:()=>false});equal(m.posts,0,'claim rejected no POST');
+  // Diagnostic-only GET: h exists elsewhere but not in the selected official form.
+  const diagnosticHTML = '<div id="gold_overview"></div><input type="hidden" name="h" value="synthetic-outside-secret">'
+   + '<table class="auto-minting"><tr><td><input type="hidden" name="h" value="synthetic-table-secret">'
+   + '<form method="post" action="/game.php?village=13186&amp;screen=snob&amp;action=start_auto_minting_session&amp;h=synthetic-url-secret"><button>Ativar</button><input name="count" value="synthetic-count-secret"></form>'
+   + '<form method="post" action="/game.php?village=13186&amp;screen=snob&amp;action=other"><button>synthetic-button-secret</button><input type="hidden" name="other" value="synthetic-hidden-secret"></form></td></tr></table>';
+  let diagnosticReport, diagnosticRequests=0, sanitizedCalls=0;
+  const nativeSanitizer=EAS.Log.sanitizeUrl;
+  EAS.Log.sanitizeUrl=value=>{sanitizedCalls++;return nativeSanitizer(value);};
+  try {
+   const diagnosticAdapter=adapter.createAdapter({onDiagnostic:detail=>{diagnosticReport=detail;},fetchPage:async(href,opts)=>{
+    diagnosticRequests++;equal(opts.method||'GET','GET','diagnostic never requests POST');
+    return {url:href+'&h=synthetic-final-secret',ok:true,status:200,redirected:true,headers:new Headers({'content-type':'text/html; secret=synthetic-header-secret'}),text:async()=>diagnosticHTML};
+   }});
+   const inspected=await diagnosticAdapter.inspectVillage({id:13186});
+   equal(inspected.reason,'NO_H_FIELD','diagnostics do not weaken missing h');
+   equal(diagnosticRequests,1,'one GET only');equal(sanitizedCalls,2,'requested and final URL use shared sanitizer');
+   equal(diagnosticReport.hCounts,{document:2,autoMintingTable:1,selectedForm:0},'three h count levels');
+   equal([diagnosticReport.totalForms,diagnosticReport.autoMintingForms,diagnosticReport.forms.length],[2,2,2],'all table forms reported');
+   equal([diagnosticReport.startAutoMintingCandidates,diagnosticReport.cancelAutoMintingCandidates],[1,0],'candidate counts');
+   equal([diagnosticReport.status,diagnosticReport.ok,diagnosticReport.redirected,diagnosticReport.contentType],[200,true,true,'text/html'],'transport metadata');
+   equal(diagnosticReport.responseLength,diagnosticHTML.length,'response character count without HTML');
+   equal([diagnosticReport.hasGoldOverview,diagnosticReport.hasAutoMintingTable],[true,true],'structural markers');
+   equal([diagnosticReport.selectedState,diagnosticReport.selectedFormMethod,diagnosticReport.selectedFormHasH],['PARSE_FAILED','POST',false],'actual parser selection');
+   equal(diagnosticReport.forms[0].fieldNames,['count'],'names only');equal(diagnosticReport.forms[0].hasCount,true,'count presence');
+   equal(diagnosticReport.forms.map(form=>form.buttonTexts),[['Ativar'],['[redacted-text]']],'unknown button text redacted');
+   equal(JSON.stringify(diagnosticReport).includes('synthetic-'),false,'all synthetic secrets excluded');
+   equal(JSON.stringify(diagnosticReport).includes('<'),false,'no HTML in report');
+   equal(diagnosticReport.requestedUrl,new URL('/game.php?screen=snob&village=13186',origin).href,'requested URL sanitized');
+   equal(diagnosticReport.finalUrl,diagnosticReport.requestedUrl,'final URL secret stripped');
+  } finally { EAS.Log.sanitizeUrl=nativeSanitizer; }
   const originalDebug=console.debug,automatic=[];console.debug=(...args)=>automatic.push(args);
   try {
    const auto=adapter.createAdapter({fetchPage:async href=>({ok:false,status:500,url:href+'&h=synthetic-secret#synthetic-secret',headers:new Headers({'content-type':'text/html; secret=synthetic-secret'})})});
    await auto.inspectVillage({id:13186});
-   equal(automatic[0][0],'[EAS Cunhagem] academy GET','automatic diagnostic without Storage');
+   equal(automatic[0][0],'[EAS Cunhagem Debug] academy GET','automatic diagnostic without Storage');
    equal(JSON.stringify(automatic).includes('synthetic-secret'),false,'URL and header secrets excluded');
   }finally{console.debug=originalDebug;}
  }catch(error){failures.push(error.stack);}
