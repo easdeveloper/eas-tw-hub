@@ -38,6 +38,48 @@
                 return ['Ativar', 'Cancelar', 'Cunhar'].includes(text) ? text : '[redacted-text]';
             })
         });
+        // TEMPORARY read-only comparison. Never use live fields as a parser/token fallback.
+        const compareLiveDocument = villageId => {
+            const comparison = { applicable: false, sameVillage: false, hasAutoMintingTable: false,
+                startCandidates: 0, cancelCandidates: 0,
+                hCounts: { document: 0, autoMintingTable: 0, matchingForm: 0 }, matchingFormFieldNames: [] };
+            try {
+                const url = new URL(location.href), currentVillage = gameData().village?.id;
+                comparison.sameVillage = url.searchParams.getAll('village').length === 1
+                    && url.searchParams.get('village') === String(villageId)
+                    && (currentVillage == null || String(currentVillage) === String(villageId));
+                comparison.applicable = comparison.sameVillage && url.origin === origin
+                    && url.searchParams.getAll('screen').length === 1 && url.searchParams.get('screen') === 'snob';
+                if (!comparison.applicable) return comparison;
+                const doc = document, forms = [...doc.querySelectorAll('table.auto-minting form')];
+                const matching = forms.filter(form => {
+                    try {
+                        const action = new URL(form.getAttribute('action'), url), kind = action.searchParams.get('action');
+                        if (![START, CANCEL].includes(kind) || !sameContext(action, villageId, kind)) return false;
+                        if (kind === START) comparison.startCandidates++; else comparison.cancelCandidates++;
+                        return true;
+                    } catch { return false; }
+                });
+                comparison.hasAutoMintingTable = Boolean(doc.querySelector(selectors.table));
+                comparison.hCounts.document = doc.querySelectorAll(selectors.token).length;
+                comparison.hCounts.autoMintingTable = doc.querySelectorAll('table.auto-minting input[name="h"]').length;
+                // Ambiguous matches are not selected, just as with the fetched document.
+                if (matching.length === 1) {
+                    comparison.hCounts.matchingForm = matching[0].querySelectorAll(selectors.token).length;
+                    comparison.matchingFormFieldNames = [...new Set([...matching[0].querySelectorAll('[name]')].map(field =>
+                        /^[a-z_\[\]]{1,40}$/.test(field.getAttribute('name')) ? field.getAttribute('name') : '[redacted-name]'))];
+                }
+            } catch { /* Diagnostic failure must never affect the fetched parser result. */ }
+            return comparison;
+        };
+        const rawMarkers = html => ({
+            // Lexical marker only: markup inside comments/scripts may also match. Never return excerpts.
+            containsHInputMarkup: [...html.matchAll(/<input\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)].some(([tag]) =>
+                [...tag.matchAll(/\s([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)].some(attribute =>
+                    attribute[1].toLowerCase() === 'name' && (attribute[2] ?? attribute[3] ?? attribute[4]) === 'h')),
+            containsStartAutoMintingAction: html.includes(START),
+            containsCancelAutoMintingAction: html.includes(CANCEL)
+        });
         const liveDiagnostic = (page, result, villageId, requestedUrl) => {
             const doc = page.doc, forms = [...(doc?.querySelectorAll('table.auto-minting form') || [])];
             const selected = result.diagnostics;
@@ -56,6 +98,8 @@
                 selectedFormMethod: selected?.method ?? null, selectedFormFieldNames: selected?.fieldNames ?? [],
                 selectedFormHasH: Boolean(selected?.selectedHCount),
                 resultReason: result.reason,
+                liveDocumentComparison: compareLiveDocument(villageId),
+                rawMarkers: page.diagnostics?.rawMarkers ?? { containsHInputMarkup: false, containsStartAutoMintingAction: false, containsCancelAutoMintingAction: false },
                 hCounts: { document: doc?.querySelectorAll(selectors.token).length ?? 0,
                     autoMintingTable: doc?.querySelectorAll('table.auto-minting input[name="h"]').length ?? 0,
                     selectedForm: selected?.selectedHCount ?? 0 }
@@ -123,6 +167,7 @@
                 // Parse the fresh response directly. Detached scripts never execute.
                 const html = await response.text();
                 diagnostics.responseLength = html.length;
+                diagnostics.rawMarkers = rawMarkers(html);
                 return { doc: new DOMParser().parseFromString(html, 'text/html'), url: new URL(response.url), diagnostics };
             } catch { return { state: 'PARSE_FAILED', reason: 'REQUEST_FAILED' }; }
             finally { clearTimeout(timeout); }

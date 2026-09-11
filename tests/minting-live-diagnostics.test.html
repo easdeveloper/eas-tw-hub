@@ -1,0 +1,40 @@
+﻿<!doctype html><html><head><meta charset="utf-8"><title>Cunhagem live comparison tests</title></head><body><pre id="result">running</pre><div id="live-fixture"></div>
+<script>window.EAS={World:{getGameData:()=>({player:{id:1},village:{id:13186}})}};</script>
+<script src="../core/observability.js"></script><script src="../services/minting-adapter.js"></script>
+<script>
+(async()=>{
+ const failures=[];let assertions=0,requests=0,report;
+ const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual));};
+ const previousUrl=location.href,fixture=document.getElementById('live-fixture');
+ const form=action=>`<table class="auto-minting"><tr><td><form action="/game.php?village=13186&screen=snob&action=${action}_auto_minting_session" method="post"><button>${action==='start'?'Ativar':'Cancelar'}</button></form></td></tr></table>`;
+ let html=form('start');
+ const adapter=EAS.Adapters.Minting.createAdapter({onDiagnostic:detail=>{report=detail;},fetchPage:async(href,options)=>{
+  requests++;equal(options.method||'GET','GET','read-only requests');
+  return {ok:true,status:200,url:href,redirected:false,headers:new Headers({'content-type':'text/html'}),text:async()=>html};
+ }});
+ try{
+  history.replaceState(null,'','/game.php?screen=snob&village=13186');
+  fixture.innerHTML=form('start');const input=document.createElement('input');input.type='hidden';input.name='h';input.value='synthetic-live-secret';fixture.querySelector('form').appendChild(input);
+  let value=await adapter.inspectVillage({id:13186});
+  equal(value.reason,'NO_H_FIELD','live h never repairs fetched parser');
+  equal(report.hCounts.document,0,'fetched document contains no h');
+  equal(report.rawMarkers,{containsHInputMarkup:false,containsStartAutoMintingAction:true,containsCancelAutoMintingAction:false},'raw OFF markers');
+  equal(report.liveDocumentComparison,{applicable:true,sameVillage:true,hasAutoMintingTable:true,startCandidates:1,cancelCandidates:0,hCounts:{document:1,autoMintingTable:1,matchingForm:1},matchingFormFieldNames:['h']},'live comparison');
+  equal(JSON.stringify(report).includes('synthetic-live-secret'),false,'live token never exposed');
+  equal(JSON.stringify(report).includes('<'),false,'HTML never exposed');
+  history.replaceState(null,'','/game.php?screen=snob&village=99');await adapter.inspectVillage({id:13186});
+  equal([report.liveDocumentComparison.applicable,report.liveDocumentComparison.sameVillage,report.liveDocumentComparison.hCounts.document],[false,false,0],'other village excluded');
+  history.replaceState(null,'','/game.php?screen=overview&village=13186');await adapter.inspectVillage({id:13186});
+  equal([report.liveDocumentComparison.applicable,report.liveDocumentComparison.sameVillage,report.liveDocumentComparison.hCounts.document],[false,true,0],'other screen excluded');
+  history.replaceState(null,'','/game.php?screen=snob&village=13186');fixture.innerHTML=form('cancel');fixture.querySelector('form').appendChild(input);html=form('cancel');await adapter.inspectVillage({id:13186});
+  equal([report.liveDocumentComparison.startCandidates,report.liveDocumentComparison.cancelCandidates,report.liveDocumentComparison.hCounts.matchingForm],[0,1,1],'live ON form');
+  equal(report.rawMarkers,{containsHInputMarkup:false,containsStartAutoMintingAction:false,containsCancelAutoMintingAction:true},'raw ON markers');
+  for(const markup of ['<input type="hidden" name="h" value="synthetic-raw-secret">',"<INPUT NAME='h' value='synthetic-raw-secret'>",'<input name=h value=synthetic-raw-secret>']){
+   html=form('start').replace('</form>',markup+'</form>');await adapter.inspectVillage({id:13186});equal(report.rawMarkers.containsHInputMarkup,true,'quoted and unquoted marker');equal(JSON.stringify(report).includes('synthetic-raw-secret'),false,'raw secret never exposed');
+  }
+  html=form('start').replace('</form>','<input data-name="h" value=" name=h "></form>');await adapter.inspectVillage({id:13186});equal(report.rawMarkers.containsHInputMarkup,false,'attribute values and data-name do not count');
+  equal(requests,8,'one GET per inspection without extra requests');
+ }catch(error){failures.push(error.stack);}finally{history.replaceState(null,'',previousUrl);fixture.replaceChildren();}
+ document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;
+})();
+</script></body></html>
