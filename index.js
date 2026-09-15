@@ -109,6 +109,11 @@
     window.initializeAttackPreparationIfNeeded = initializeAttackPreparationIfNeeded;
     const loaderLog = (event, details = {}) => console.info(`[EAS TW Loader] ${event}`, details);
     const resumeEASRuntimeIfNeeded = async () => {
+        // A cached bootstrap is not a lock for every command in a Fake queue.
+        if (window.__EAS_TW_RUNTIME_RESUMED__ && window.EAS.FakesExecution?.resume?.()) {
+            window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
+            return true;
+        }
         if (window.__EAS_TW_RUNTIME_RESUMED__) return Boolean(window.__EAS_TW_RUNTIME_RESUMED__.active);
         loaderLog('eas-loader-runtime-resume-start', { url: location.href });
         const url = new URL(location.href);

@@ -27,7 +27,8 @@ function fixture(size = 3) {
             Place:{getCommandForm:()=>form, fillCommandTarget(target){preparations++;events.push('prepare');assert.equal(read().queue[read().currentIndex].status,'preparing');input.value=target;return true;},
                 buildPlaceUrl:id=>`https://test/game.php?screen=place&village=${id}`}}
     };
-    function navigate(stage='place', village=9) {
+    function navigate(stage='place', village=9, sameDocument=false) {
+        const previousDocument = document;
         nodes.clear();error=null;
         document = {readyState:'complete',createElement:element,getElementById:id=>nodes.get(id)||null,body:element('body'),
             querySelector(selector){
@@ -45,6 +46,7 @@ function fixture(size = 3) {
             if(selector==='button[name="attack"]')return attackButton;
             return null;
         }};
+        if (sameDocument && previousDocument) document = previousDocument;
         window.document=document;sandbox.document=document;
         window.location.href=`https://test/game.php?screen=place&village=${village}${stage==='confirm'?'&try=confirm':stage==='success'?'&command_id=123':''}`;
     }
@@ -142,4 +144,54 @@ test('a new execution invalidates the previous controller before any action',()=
 });
 test('storage failure before preparation blocks all game actions',()=>{
     const f=fixture();f.run();f.sandbox.localStorage.setItem=()=>{throw Error('quota');};f.tick();assert.equal(f.counts().preparations,0);assert.equal(f.counts().attacks,0);assert.equal(f.timers.size,0);
+});
+
+// Exercise the actual bootstrap cache guard, retaining the Window and Document
+// across command transitions (the old fixture always replaced the Document).
+function cachedBootstrap(f) {
+    const index = fs.readFileSync('index.js', 'utf8');
+    const start = index.indexOf('    const resumeEASRuntimeIfNeeded = async () => {');
+    const end = index.indexOf('    window.resumeEASRuntimeIfNeeded = resumeEASRuntimeIfNeeded;', start);
+    f.window.EAS = f.sandbox.EAS;
+    f.window.__EAS_TW_RUNTIME_RESUMED__ = {active:true,type:'fakes'};
+    vm.runInContext(index.slice(start,end) + '\nwindow.testBootstrap = resumeEASRuntimeIfNeeded;', f.sandbox);
+    return () => f.window.testBootstrap();
+}
+test('three commands rearm confirmation through cached bootstrap; duplicate command2 bootstrap clicks once',async()=>{
+    const f=fixture(3), bootstrap=cachedBootstrap(f), attempts=[];
+    // Identical origins and targets still have distinct queue command identities.
+    const c=f.read();c.queue.forEach(entry=>entry.villageId=9);f.write(c);
+    await bootstrap();
+    for(let i=0;i<3;i++) {
+        f.tick();f.tick();
+        f.navigate('confirm',9,true);
+        await bootstrap();await bootstrap();assert.equal(f.timers.size,1);
+        f.tick();
+        const attempt=f.read().queue[i].confirmationAttempt;
+        assert.equal(attempt.commandId,`${i}:9:501|501`);assert.equal(attempt.state,'confirming');attempts.push(attempt.attemptId);
+        await bootstrap();await bootstrap();f.tick();assert.equal(f.counts().confirmations,i+1);
+        if(i>0)assert.equal(f.read().queue[i-1].confirmationAttempt.state,'completed');
+        f.navigate('success',9,true);await bootstrap();f.tick();
+        if(i<2){f.navigate('place',9,true);await bootstrap();}
+    }
+    assert.equal(f.counts().confirmations,3);assert.equal(new Set(attempts).size,3);
+    assert.equal(f.read(),null);assert.ok(f.summary().queue.every(entry=>entry.confirmationAttempt.state==='completed'));
+});
+test('a stale previous-command runtime cannot suppress or process the next confirmation',()=>{
+    const f=fixture(3);f.run();f.tick();f.tick();f.confirmation();
+    const oldRuntime=f.window.__easFakesAuto;
+    const c=f.read();c.queue[0].status='completed';c.queue[0].confirmationAttempt={...c.queue[0].confirmationAttempt,state:'completed'};
+    c.completed=['0:9:501|501'];c.currentIndex=1;c.forwardingIndex=1;c.queue[1].villageId=9;c.queue[1].status='attacking';f.write(c);
+    f.run();assert.equal(oldRuntime.stopped,true);assert.notEqual(f.window.__easFakesAuto,oldRuntime);
+    f.tick();assert.equal(f.counts().confirmations,2);assert.notEqual(f.read().queue[0].confirmationAttempt.attemptId,f.read().queue[1].confirmationAttempt.attemptId);
+});
+test('consumed command attempt blocks resubmit even if its status is accidentally reset',()=>{
+    const f=fixture();f.run();f.tick();f.tick();f.confirmation();
+    const c=f.read();const attemptId=c.queue[0].confirmationAttempt.attemptId;c.queue[0].status='confirm-page';f.write(c);
+    f.api().resumeConfirmation(f.window);assert.equal(f.counts().confirmations,1);assert.equal(f.read().queue[0].confirmationAttempt.attemptId,attemptId);
+});
+test('completed attempt never confirms again when reopened',()=>{
+    const f=fixture();f.run();f.tick();f.tick();f.confirmation();f.success();
+    const c=f.read();c.currentIndex=0;c.forwardingIndex=0;f.write(c);f.navigate('confirm',9);f.api().resumeConfirmation(f.window);
+    assert.equal(f.counts().confirmations,1);assert.equal(f.read().queue[0].confirmationAttempt.state,'completed');
 });

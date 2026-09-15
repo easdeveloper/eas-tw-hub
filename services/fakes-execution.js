@@ -638,6 +638,11 @@
         if (entry) {
             entry.status = 'completed';
             entry.executedCommandType = executedCommandType;
+            if (entry.confirmationAttempt?.commandId === commandKey) {
+                entry.confirmationAttempt.state = 'completed';
+                entry.confirmationAttempt.completedAt = Date.now();
+            }
+            confirmationTrace(context, entryIndex, 'completed');
         }
 
         if (context.currentIndex === entryIndex) {
@@ -648,9 +653,16 @@
         context.forwardingCommandType = null;
         context.lastPopulationRejection = null;
         saveContext(context);
+        confirmationTrace(context, context.currentIndex, `advancing to=${getCurrentEntry(context) ? getCommandKey(getCurrentEntry(context), context.currentIndex) : 'finished'}`);
     };
 
     const confirmLog = (message) => console.debug(`[fake.exec.confirm] ${message}`);
+    const confirmationTrace = (context, index, event) => {
+        const entry = context?.queue?.[index];
+        const attempt = entry?.confirmationAttempt;
+        console.debug(`[fake.confirm] executionId=${context?.executionTab || 'none'} currentCommandId=${entry ? getCommandKey(entry, index) : 'none'} attemptId=${attempt?.attemptId || 'none'} previousCommandId=${index > 0 ? getCommandKey(context.queue[index - 1], index - 1) : 'none'} lock=${JSON.stringify(attempt || null)} ${event}`);
+    };
+
 
     // window.name survives same-origin navigation and is not shared by manual tabs.
     const bindExecutionTab = (context, targetWindow) => {
@@ -663,13 +675,17 @@
         if (!stored || !stored.executionTab || targetWindow.name !== stored.executionTab ||
             stored.endedAt || stored.finishedAt || !isMatchingPlace(stored, targetWindow)) {
             confirmLog('invalid context');
+            confirmationTrace(stored, stored?.currentIndex, 'allowed=false blocked reason=inactive-or-wrong-tab/page');
             return false;
         }
         const context = normalizeContext(stored);
         const index = context.forwardingIndex;
         const entry = context.queue[index];
         if (!Number.isInteger(index) || index !== context.currentIndex || !entry ||
-            Number(entry.villageId) !== getScreen(targetWindow).villageId) return false;
+            Number(entry.villageId) !== getScreen(targetWindow).villageId) {
+            confirmationTrace(context, context.currentIndex, 'allowed=false blocked reason=current-command-mismatch');
+            return false;
+        }
         const doc = targetWindow.document;
         const url = new URL(targetWindow.location.href);
         const form = doc.querySelector('#command-data-form');
@@ -681,19 +697,33 @@
             if (form) confirmLog('form found');
             if (submit) confirmLog('button found');
             confirmLog('validating');
-            if (['confirming', 'submitted', 'completed'].includes(entry.status)) {
+            const commandId = getCommandKey(entry, index);
+            const attempt = entry.confirmationAttempt;
+            if (['confirming', 'submitted', 'completed'].includes(entry.status) ||
+                (attempt?.commandId === commandId && ['confirming', 'submitted', 'completed'].includes(attempt.state))) {
                 confirmLog('duplicate blocked');
+                confirmationTrace(context, index, 'allowed=false blocked reason=command-attempt-already-consumed');
                 return true;
             }
             if (!['forwarding', 'prepared', 'confirm-page'].includes(entry.status) ||
                 !form || !submit || submit.disabled || submit.matches?.(':disabled') ||
                 context.completed.includes(getCommandKey(entry, index))) {
                 confirmLog('invalid context');
+                confirmationTrace(context, index, `allowed=false blocked reason=${!form ? 'missing-form' : !submit ? 'missing-button' : submit.disabled || submit.matches?.(':disabled') ? 'disabled-button' : 'command-state:' + entry.status}`);
                 return true;
             }
+            // The attempt belongs to this queue entry, including repeated targets/origins.
+            // Never borrow a consumed attempt from the previous command.
+            entry.confirmationAttempt = { commandId,
+                attemptId: `${context.executionTab}:${commandId}:${Date.now()}:${Math.random()}`,
+                state: 'confirming', startedAt: Date.now() };
             entry.status = 'confirming';
             entry.confirmationUrl = targetWindow.location.href;
-            if (!saveContext(context)) return true;
+            if (!saveContext(context)) {
+                confirmationTrace(context, index, 'allowed=false blocked reason=persistence-failed');
+                return true;
+            }
+            confirmationTrace(context, index, 'allowed=true submit');
             confirmLog('submitting');
             submit.click();
             return true;
@@ -828,10 +858,16 @@
         const stored = readContext();
         if (!stored?.autoMode || !stored.executionTab || stored.executionTab !== targetWindow.name ||
             stored.finishedAt || stored.endedAt || getScreen(targetWindow).screen !== 'place') return false;
+        const commandId = getCommandKey(stored.queue?.[stored.currentIndex], stored.currentIndex);
+        const attemptId = stored.queue?.[stored.currentIndex]?.confirmationAttempt?.attemptId || null;
+        const confirmationPage = new URL(targetWindow.location.href).searchParams.get('try') === 'confirm';
         const previous = targetWindow.__easFakesAuto;
-        if (previous?.document === targetWindow.document && previous.executionTab === stored.executionTab && !previous.stopped) return true;
+        if (previous?.document === targetWindow.document && previous.executionTab === stored.executionTab &&
+            previous.commandId === commandId && previous.attemptId === attemptId &&
+            previous.confirmationPage === confirmationPage && !previous.stopped) return true;
         previous?.stop();
         const runtime = { document: targetWindow.document, executionTab: stored.executionTab,
+            commandId, attemptId, confirmationPage,
             timer: null, stopped: false, preparedKey: null,
             stop() { this.stopped = true; clearTimeout(this.timer); } };
         targetWindow.__easFakesAuto = runtime;
@@ -840,6 +876,11 @@
             if (runtime.stopped || runtime.document !== targetWindow.document) return runtime.stop();
             const saved = readContext();
             if (!saved?.autoMode || saved.executionTab !== runtime.executionTab || targetWindow.name !== saved.executionTab) return runtime.stop();
+            if (getCommandKey(saved.queue?.[saved.currentIndex], saved.currentIndex) !== runtime.commandId) {
+                runtime.stop();
+                resumeAutomatic(targetWindow);
+                return;
+            }
             const context = normalizeContext(saved);
             let entry = getCurrentEntry(context);
             renderAutomatic(context, targetWindow);
@@ -851,7 +892,8 @@
             if (TERMINAL_STATES.includes(entry.status)) {
                 context.currentIndex++;
                 if (!saveContext(context)) return runtime.stop();
-                schedule(AUTO_STEP_MS);
+                runtime.stop();
+                resumeAutomatic(targetWindow);
                 return;
             }
             if (getScreen(targetWindow).villageId !== Number(entry.villageId)) return runtime.stop();
@@ -865,6 +907,8 @@
                     const beforeUrl = targetWindow.location.href;
                     resumeConfirmation(targetWindow);
                     const after = readContext();
+                    runtime.attemptId = after?.queue?.[context.currentIndex]?.confirmationAttempt?.attemptId || null;
+                    runtime.confirmationPage = confirmationPage;
                     if (!after || after.currentIndex !== context.currentIndex || beforeUrl !== targetWindow.location.href) return runtime.stop();
                     const rejected = EAS.CommandRules.scanCommandRuleErrors(targetWindow.document)[0];
                     const genericError = targetWindow.document.querySelector('.error_box, .error');
