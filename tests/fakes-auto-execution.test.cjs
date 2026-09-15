@@ -195,3 +195,20 @@ test('completed attempt never confirms again when reopened',()=>{
     const c=f.read();c.currentIndex=0;c.forwardingIndex=0;f.write(c);f.navigate('confirm',9);f.api().resumeConfirmation(f.window);
     assert.equal(f.counts().confirmations,1);assert.equal(f.read().queue[0].confirmationAttempt.state,'completed');
 });
+
+test('manual diagnostic cannot mutate live runtime, bootstrap or a consumed attempt',()=>{
+    const f=fixture();f.run();f.tick();f.tick();f.confirmation();
+    f.window.__EAS_TW_RUNTIME_RESUMED__={active:true,type:'fakes'};
+    const before=[...f.storage.entries()],timerCount=f.timers.size,counts=f.counts();
+    const snapshot=f.window.EASFakeDebug();snapshot.runtime.stopped=true;snapshot.bootstrapState.active=false;snapshot.confirmationLock.state='pending';
+    assert.equal(f.window.__easFakesAuto.stopped,false);assert.equal(f.window.__EAS_TW_RUNTIME_RESUMED__.active,true);
+    assert.deepEqual([...f.storage.entries()],before);assert.equal(f.timers.size,timerCount);assert.deepEqual(f.counts(),counts);
+});
+test('bootstrap diagnostic records whether resume was actually called',async()=>{
+    const f=fixture(),events=[];const bootstrap=cachedBootstrap(f);
+    f.sandbox.console.log=(label,data)=>{if(label==='[EAS][FAKE][BOOTSTRAP]')events.push(data);};
+    f.navigate('confirm');await bootstrap();
+    assert.equal(events[0].resumeCalled,false);assert.equal(events.at(-1).resumeCalled,true);
+    delete f.sandbox.EAS.FakesExecution.resume;events.length=0;await bootstrap();
+    assert.equal(events.at(-1).event,'RESUME_EXIT');assert.equal(events.at(-1).resumeCalled,false);assert.equal(events.at(-1).resumeAvailable,false);
+});

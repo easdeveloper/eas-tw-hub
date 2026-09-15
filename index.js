@@ -1,6 +1,16 @@
 (() => {
     'use strict';
 
+    // Temporary diagnostic emitted before any asynchronous dependency loading.
+    try {
+        const page = new URL(window.location.href);
+        if (page.searchParams.get('screen') === 'place' && page.searchParams.get('try') === 'confirm') {
+            console.log?.('[EAS][FAKE][BOOTSTRAP]', { event: 'SCRIPT_ENTER', url: page.href,
+                fakeExecutionDetected: Boolean(JSON.parse(localStorage.getItem('eas_tw_fakes_execution') || 'null')),
+                confirmPageDetected: true, resumeCalled: false, resumeAvailable: Boolean(window.EAS?.FakesExecution?.resume) });
+        }
+    } catch (error) { console.log?.('[EAS][FAKE][BOOTSTRAP]', { event: 'SCRIPT_ENTER_DIAGNOSTIC_ERROR', error: String(error) }); }
+
     const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
     const loadedScripts = new Set();
@@ -109,49 +119,68 @@
     window.initializeAttackPreparationIfNeeded = initializeAttackPreparationIfNeeded;
     const loaderLog = (event, details = {}) => console.info(`[EAS TW Loader] ${event}`, details);
     const resumeEASRuntimeIfNeeded = async () => {
-        // A cached bootstrap is not a lock for every command in a Fake queue.
-        if (window.__EAS_TW_RUNTIME_RESUMED__ && window.EAS.FakesExecution?.resume?.()) {
-            window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
-            return true;
-        }
-        if (window.__EAS_TW_RUNTIME_RESUMED__) return Boolean(window.__EAS_TW_RUNTIME_RESUMED__.active);
-        loaderLog('eas-loader-runtime-resume-start', { url: location.href });
-        const url = new URL(location.href);
-        if (shouldInitializeMassFarmExecution()) { const active=Boolean(window.EAS?.MassFarmExecution?.initialize?.());if(active){window.__EAS_TW_RUNTIME_RESUMED__={active:true,type:'mass-farm'};loaderLog('eas-loader-main-menu-suppressed',window.__EAS_TW_RUNTIME_RESUMED__);return true;} }
-        if (url.searchParams.get('screen') === 'place' && (url.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId)) {
-            loaderLog('eas-loader-scheduled-mission-detected', { missionId: url.searchParams.get('eas_mission'), stage: url.searchParams.get('try') === 'confirm' ? 'confirmation' : 'preparation' });
-            const confirmation = await initializeScheduledMissionConfirmationIfNeeded();
-            const preparation = confirmation ? false : await initializeScheduledMissionPreparationIfNeeded();
-            if (confirmation || preparation) {
-                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: confirmation ? 'scheduled-confirmation' : 'scheduled-preparation' };
-                loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+        let resumeCalled = false;
+        const bootstrapDiagnostic = (event) => {
+            try {
+                const page = new URL(window.location.href);
+                if (page.searchParams.get('screen') !== 'place' || page.searchParams.get('try') !== 'confirm') return;
+                console.log?.('[EAS][FAKE][BOOTSTRAP]', { event, url: page.href,
+                    fakeExecutionDetected: Boolean(JSON.parse(localStorage.getItem('eas_tw_fakes_execution') || 'null')),
+                    confirmPageDetected: true, resumeCalled, resumeAvailable: Boolean(window.EAS?.FakesExecution?.resume),
+                    cachedRuntime: window.__EAS_TW_RUNTIME_RESUMED__ || null });
+            } catch (error) { console.log?.('[EAS][FAKE][BOOTSTRAP]', { event, diagnosticError: String(error) }); }
+        };
+        const resumeWithDiagnostic = () => {
+            resumeCalled = typeof window.EAS.FakesExecution?.resume === 'function';
+            bootstrapDiagnostic('BEFORE_FAKE_RESUME');
+            return window.EAS.FakesExecution?.resume?.();
+        };
+        bootstrapDiagnostic('RESUME_ENTER');
+        try {
+            // A cached bootstrap is not a lock for every command in a Fake queue.
+            if (window.__EAS_TW_RUNTIME_RESUMED__ && resumeWithDiagnostic()) {
+                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
                 return true;
             }
-        }
-        if (window.EAS.FakesExecution?.resume?.()) {
-            window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
-            return true;
-        }
-        const marketRuntimes = [
-            ['coordinated-market', shouldInitializeMarketTargetExecution, () => window.EAS.MarketTargetExecution?.initialize?.()],
-            ['market-offers', shouldInitializeMarketOfferExecution, () => window.EAS.MarketOffersExecution?.initialize?.()],
-            ['market-balance', shouldInitializeMarketBalanceExecution, () => window.EAS.MarketBalanceExecution?.initialize?.()]
-        ];
-        for (const [type, shouldResume, initialize] of marketRuntimes) {
-            if (!shouldResume()) continue;
-            loaderLog('eas-loader-market-execution-detected', { type, url: location.href });
-            const active = Boolean(await initialize());
-            if (active) {
-                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type };
-                loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+            if (window.__EAS_TW_RUNTIME_RESUMED__) return Boolean(window.__EAS_TW_RUNTIME_RESUMED__.active);
+            loaderLog('eas-loader-runtime-resume-start', { url: location.href });
+            const url = new URL(location.href);
+            if (shouldInitializeMassFarmExecution()) { const active=Boolean(window.EAS?.MassFarmExecution?.initialize?.());if(active){window.__EAS_TW_RUNTIME_RESUMED__={active:true,type:'mass-farm'};loaderLog('eas-loader-main-menu-suppressed',window.__EAS_TW_RUNTIME_RESUMED__);return true;} }
+            if (url.searchParams.get('screen') === 'place' && (url.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId)) {
+                loaderLog('eas-loader-scheduled-mission-detected', { missionId: url.searchParams.get('eas_mission'), stage: url.searchParams.get('try') === 'confirm' ? 'confirmation' : 'preparation' });
+                const confirmation = await initializeScheduledMissionConfirmationIfNeeded();
+                const preparation = confirmation ? false : await initializeScheduledMissionPreparationIfNeeded();
+                if (confirmation || preparation) {
+                    window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: confirmation ? 'scheduled-confirmation' : 'scheduled-preparation' };
+                    loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+                    return true;
+                }
+            }
+            if (resumeWithDiagnostic()) {
+                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
                 return true;
             }
-        }
-        const preparation = initializeAttackPreparationIfNeeded();
-        window.__EAS_TW_RUNTIME_RESUMED__ = { active: Boolean(preparation), type: preparation ? 'attack-preparation' : null };
-        if (preparation) loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
-        else loaderLog('eas-loader-no-active-runtime', { url: location.href });
-        return Boolean(preparation);
+            const marketRuntimes = [
+                ['coordinated-market', shouldInitializeMarketTargetExecution, () => window.EAS.MarketTargetExecution?.initialize?.()],
+                ['market-offers', shouldInitializeMarketOfferExecution, () => window.EAS.MarketOffersExecution?.initialize?.()],
+                ['market-balance', shouldInitializeMarketBalanceExecution, () => window.EAS.MarketBalanceExecution?.initialize?.()]
+            ];
+            for (const [type, shouldResume, initialize] of marketRuntimes) {
+                if (!shouldResume()) continue;
+                loaderLog('eas-loader-market-execution-detected', { type, url: location.href });
+                const active = Boolean(await initialize());
+                if (active) {
+                    window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type };
+                    loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+                    return true;
+                }
+            }
+            const preparation = initializeAttackPreparationIfNeeded();
+            window.__EAS_TW_RUNTIME_RESUMED__ = { active: Boolean(preparation), type: preparation ? 'attack-preparation' : null };
+            if (preparation) loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+            else loaderLog('eas-loader-no-active-runtime', { url: location.href });
+            return Boolean(preparation);
+        } finally { bootstrapDiagnostic('RESUME_EXIT'); }
     };
     window.resumeEASRuntimeIfNeeded = resumeEASRuntimeIfNeeded;
 

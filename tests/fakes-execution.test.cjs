@@ -43,3 +43,34 @@ test('confirmation alone does not complete; successful response advances exactly
 });
 test('last successful command removes active execution',()=>{const f=fixture();f.run();f.window.location.href='https://test/game.php?screen=place&village=9&command_id=123';f.run();assert.equal(f.read(),null);f.run();assert.equal(f.clicks(),1);});
 test('unrecognized response does not advance or retry',()=>{const f=fixture();f.run();f.window.location.href='https://test/game.php?screen=place&village=9';f.run();assert.equal(f.read().currentIndex,0);assert.equal(f.clicks(),1);});
+
+test('EASFakeDebug is read-only, including nested returned state, storage and clicks',()=>{
+    const f=fixture();
+    const before=f.read();let writes=0;
+    f.sandbox.localStorage.setItem=()=>{writes++;throw Error('diagnostic must not write');};
+    f.sandbox.localStorage.removeItem=()=>{writes++;throw Error('diagnostic must not remove');};
+    const snapshot=f.window.EASFakeDebug();
+    assert.equal(snapshot.executionFound,true);assert.equal(snapshot.tabAuthorized,true);
+    assert.equal(snapshot.currentCommandId,'0:9:501|501');assert.equal(snapshot.commandState,'forwarding');
+    assert.equal(snapshot.formFound,true);assert.equal(snapshot.buttonFound,true);assert.equal(snapshot.canConfirm,true);
+    snapshot.currentCommand.status='completed';
+    assert.deepEqual(f.read(),before);assert.equal(writes,0);assert.equal(f.clicks(),0);
+});
+for(const [scenario,reason] of [['inactive','NO_ACTIVE_EXECUTION'],['tab','TAB_NOT_AUTHORIZED'],['no-forwarding','NO_FORWARDING_COMMAND'],['missing-form','FORM_NOT_FOUND'],['missing-button','BUTTON_NOT_FOUND'],['disabled','BUTTON_DISABLED'],['consumed','COMMAND_ALREADY_SUBMITTED'],['lock','CONFIRMATION_LOCK']])test(`diagnostic names exact guard: ${reason}`,()=>{
+    const f=fixture();
+    if(scenario==='inactive')f.write(null);
+    if(scenario==='tab')f.window.name='manual';
+    if(scenario==='no-forwarding'){const c=f.read();c.forwardingIndex=null;f.write(c);}
+    if(scenario==='missing-form')f.document.querySelector=()=>null;
+    if(scenario==='missing-button')f.form.querySelector=()=>null;
+    if(scenario==='disabled')f.button.disabled=true;
+    if(scenario==='consumed'){const c=f.read();c.queue[0].status='confirming';f.write(c);}
+    if(scenario==='lock'){const c=f.read();c.queue[0].confirmationAttempt={commandId:'0:9:501|501',attemptId:'A',state:'confirming'};f.write(c);}
+    const snapshot=f.window.EASFakeDebug();assert.equal(snapshot.blockedReason,reason);assert.equal(snapshot.canConfirm,false);assert.equal(f.clicks(),0);
+});
+test('confirmation logs ALLOWED, CLICKING and CLICK_DISPATCHED around one native click',()=>{
+    const f=fixture(),events=[];f.sandbox.console.log=(label)=>{if(label.startsWith('[EAS][FAKE][CONFIRM]'))events.push(label);};
+    const click=f.button.click;f.button.click=()=>{events.push('native click');click();};f.run();
+    assert.deepEqual(events,['[EAS][FAKE][CONFIRM] ALLOWED','[EAS][FAKE][CONFIRM] CLICKING','native click','[EAS][FAKE][CONFIRM] CLICK_DISPATCHED']);
+    assert.equal(f.clicks(),1);
+});

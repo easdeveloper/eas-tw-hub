@@ -642,6 +642,7 @@
                 entry.confirmationAttempt.state = 'completed';
                 entry.confirmationAttempt.completedAt = Date.now();
             }
+            console.log?.('[EAS][FAKE][QUEUE] command completed', { oldCommandId: commandKey, confirmationAttempt: JSON.parse(JSON.stringify(entry.confirmationAttempt || null)) });
             confirmationTrace(context, entryIndex, 'completed');
         }
 
@@ -653,6 +654,8 @@
         context.forwardingCommandType = null;
         context.lastPopulationRejection = null;
         saveContext(context);
+        console.log?.('[EAS][FAKE][QUEUE] advancing', { oldCommandId: commandKey, newCommandId: getCurrentEntry(context) ? getCommandKey(getCurrentEntry(context), context.currentIndex) : null });
+        console.log?.('[EAS][FAKE][QUEUE] confirmation state after advance', JSON.parse(JSON.stringify({ currentIndex: context.currentIndex, forwardingIndex: context.forwardingIndex, currentCommand: getCurrentEntry(context), previousAttempt: entry?.confirmationAttempt || null })));
         confirmationTrace(context, context.currentIndex, `advancing to=${getCurrentEntry(context) ? getCommandKey(getCurrentEntry(context), context.currentIndex) : 'finished'}`);
     };
 
@@ -664,6 +667,83 @@
     };
 
 
+    // Temporary DEV diagnostics. Read existing state only; never used to authorize actions.
+    const confirmationDiagnostic = (targetWindow = window, event = 'MANUAL', guardReason = null) => {
+        try {
+            const raw = readContext();
+            const context = raw ? normalizeContext(raw) : null;
+            const entry = context?.queue?.[context.currentIndex];
+            const id = entry ? getCommandKey(entry, context.currentIndex) : null;
+            const attempt = entry?.confirmationAttempt || null;
+            const url = new URL(targetWindow.location.href);
+            const form = targetWindow.document.querySelector('#command-data-form');
+            const button = form?.querySelector('#troop_confirm_submit');
+            const confirmPageDetected = url.searchParams.get('screen') === 'place' && url.searchParams.get('try') === 'confirm';
+            const tabAuthorized = Boolean(context?.executionTab && context.executionTab === targetWindow.name);
+            let blockedReason = !context ? 'NO_ACTIVE_EXECUTION'
+                : !context.executionTab ? 'NO_EXECUTION_TAB'
+                : !tabAuthorized ? 'TAB_NOT_AUTHORIZED'
+                : context.endedAt || context.finishedAt ? 'EXECUTION_ENDED'
+                : !isMatchingPlace(context, targetWindow) ? 'PLACE_OR_VILLAGE_MISMATCH'
+                : !entry ? 'NO_CURRENT_COMMAND'
+                : !Number.isInteger(context.forwardingIndex) ? 'NO_FORWARDING_COMMAND'
+                : context.forwardingIndex !== context.currentIndex ? 'FORWARDING_INDEX_MISMATCH'
+                : Number(entry.villageId) !== getScreen(targetWindow).villageId ? 'CURRENT_VILLAGE_MISMATCH'
+                : !confirmPageDetected ? 'NOT_CONFIRM_PAGE'
+                : ['confirming', 'submitted', 'completed'].includes(entry.status) ? 'COMMAND_ALREADY_SUBMITTED'
+                : attempt?.commandId === id && ['confirming', 'submitted', 'completed'].includes(attempt.state) ? 'CONFIRMATION_LOCK'
+                : !['forwarding', 'prepared', 'confirm-page'].includes(entry.status) ? 'COMMAND_STATE_NOT_CONFIRMABLE'
+                : !form ? 'FORM_NOT_FOUND'
+                : !button ? 'BUTTON_NOT_FOUND'
+                : button.disabled ? 'BUTTON_DISABLED'
+                : button.matches?.(':disabled') ? 'BUTTON_EFFECTIVELY_DISABLED'
+                : context.completed.includes(id) ? 'COMMAND_ALREADY_COMPLETED' : null;
+            const runtime = targetWindow.__easFakesAuto;
+            const snapshot = {
+                event, url: url.href, executionFound: Boolean(raw), executionId: context?.executionTab || null,
+                tabAuthorized, tabId: targetWindow.name, currentCommand: entry || null,
+                currentCommandId: id, commandState: entry?.status || null,
+                currentIndex: context?.currentIndex, forwardingIndex: context?.forwardingIndex,
+                forwardingStartedAt: context?.forwardingStartedAt,
+                autoMode: context?.autoMode, paused: context?.paused,
+                endedAt: context?.endedAt || null, finishedAt: context?.finishedAt || null,
+                executionErrors: context?.errors || [], documentReadyState: targetWindow.document.readyState,
+                pageVillageId: getScreen(targetWindow).villageId,
+                elapsedSinceForwardingMs: context?.forwardingStartedAt ? Date.now() - context.forwardingStartedAt : null,
+                attemptId: attempt?.attemptId || null, confirmationLock: attempt,
+                lastConfirmation: context?.queue?.slice(0, context.currentIndex).reverse().find(item => item.confirmationAttempt)?.confirmationAttempt || null,
+                confirmPageDetected, formFound: Boolean(form), buttonFound: Boolean(button),
+                buttonDisabled: button?.disabled ?? null, buttonEffectivelyDisabled: button?.matches?.(':disabled') ?? null,
+                buttonValue: button?.value ?? null,
+                bootstrapExecuted: Boolean(targetWindow.__EAS_TW_BOOTSTRAPPED__ || targetWindow.__EAS_TW_RUNTIME_RESUMED__),
+                bootstrapState: targetWindow.__EAS_TW_RUNTIME_RESUMED__ || null,
+                bootstrapInitializing: targetWindow.__EAS_TW_INITIALIZING__ ?? null,
+                bootstrapSilent: targetWindow.__EAS_TW_SILENT_BOOTSTRAP__ ?? null,
+                runtime: runtime ? { commandId: runtime.commandId, attemptId: runtime.attemptId,
+                    executionTab: runtime.executionTab, stopped: runtime.stopped,
+                    sameDocument: runtime.document === targetWindow.document,
+                    confirmationPage: runtime.confirmationPage, timerPresent: runtime.timer != null } : null,
+                canConfirm: !blockedReason && !guardReason,
+                blockedReason: guardReason || blockedReason,
+                confirmationGuardReason: blockedReason
+            };
+            // Detach every returned object from live runtime/bootstrap references.
+            const detached = JSON.parse(JSON.stringify(snapshot));
+            if (confirmPageDetected || event === 'MANUAL') {
+                console.group?.('[EAS][FAKE][CONFIRM DIAGNOSTIC]');
+                for (const [key, value] of Object.entries(detached)) console.log?.(key, value);
+                console.groupEnd?.();
+            } else {
+                console.log?.('[EAS][FAKE][CONFIRM]', { event, blockedReason: detached.blockedReason, url: url.href });
+            }
+            return detached;
+        } catch (error) {
+            // Logging must never interrupt the executor, even with incomplete DOM/storage.
+            console.log?.('[EAS][FAKE][CONFIRM DIAGNOSTIC]', { event, diagnosticError: String(error) });
+            return { event, canConfirm: false, blockedReason: 'DIAGNOSTIC_READ_ERROR', diagnosticError: String(error) };
+        }
+    };
+
     // window.name survives same-origin navigation and is not shared by manual tabs.
     const bindExecutionTab = (context, targetWindow) => {
         context.executionTab = context.executionTab || `eas-fakes:${Date.now()}:${Math.random()}`;
@@ -671,9 +751,11 @@
     };
 
     const resumeConfirmation = (targetWindow = window) => {
+        confirmationDiagnostic(targetWindow, 'CONFIRM_HANDLER_ENTER');
         const stored = readContext();
         if (!stored || !stored.executionTab || targetWindow.name !== stored.executionTab ||
             stored.endedAt || stored.finishedAt || !isMatchingPlace(stored, targetWindow)) {
+            confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD');
             confirmLog('invalid context');
             confirmationTrace(stored, stored?.currentIndex, 'allowed=false blocked reason=inactive-or-wrong-tab/page');
             return false;
@@ -683,6 +765,7 @@
         const entry = context.queue[index];
         if (!Number.isInteger(index) || index !== context.currentIndex || !entry ||
             Number(entry.villageId) !== getScreen(targetWindow).villageId) {
+            confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD');
             confirmationTrace(context, context.currentIndex, 'allowed=false blocked reason=current-command-mismatch');
             return false;
         }
@@ -701,6 +784,7 @@
             const attempt = entry.confirmationAttempt;
             if (['confirming', 'submitted', 'completed'].includes(entry.status) ||
                 (attempt?.commandId === commandId && ['confirming', 'submitted', 'completed'].includes(attempt.state))) {
+                confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD');
                 confirmLog('duplicate blocked');
                 confirmationTrace(context, index, 'allowed=false blocked reason=command-attempt-already-consumed');
                 return true;
@@ -708,6 +792,7 @@
             if (!['forwarding', 'prepared', 'confirm-page'].includes(entry.status) ||
                 !form || !submit || submit.disabled || submit.matches?.(':disabled') ||
                 context.completed.includes(getCommandKey(entry, index))) {
+                confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD');
                 confirmLog('invalid context');
                 confirmationTrace(context, index, `allowed=false blocked reason=${!form ? 'missing-form' : !submit ? 'missing-button' : submit.disabled || submit.matches?.(':disabled') ? 'disabled-button' : 'command-state:' + entry.status}`);
                 return true;
@@ -720,12 +805,16 @@
             entry.status = 'confirming';
             entry.confirmationUrl = targetWindow.location.href;
             if (!saveContext(context)) {
+                confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD', 'PERSISTENCE_FAILED');
                 confirmationTrace(context, index, 'allowed=false blocked reason=persistence-failed');
                 return true;
             }
+            console.log?.('[EAS][FAKE][CONFIRM] ALLOWED', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             confirmationTrace(context, index, 'allowed=true submit');
             confirmLog('submitting');
+            console.log?.('[EAS][FAKE][CONFIRM] CLICKING', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             submit.click();
+            console.log?.('[EAS][FAKE][CONFIRM] CLICK_DISPATCHED', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             return true;
         }
         // The normal successful POST redirects to place with a command_id. Merely
@@ -745,6 +834,7 @@
             targetWindow.location.href = String(EAS.Place.buildPlaceUrl(getCurrentEntry(context).villageId));
             return true;
         }
+        confirmationDiagnostic(targetWindow, 'CONFIRM_RETURN', 'NOT_CONFIRM_PAGE');
         return ['confirming', 'submitted'].includes(entry.status);
     };
 
@@ -855,16 +945,23 @@
     };
 
     const resumeAutomatic = (targetWindow = window) => {
+        confirmationDiagnostic(targetWindow, 'AUTO_RESUME_ENTER');
         const stored = readContext();
         if (!stored?.autoMode || !stored.executionTab || stored.executionTab !== targetWindow.name ||
-            stored.finishedAt || stored.endedAt || getScreen(targetWindow).screen !== 'place') return false;
+            stored.finishedAt || stored.endedAt || getScreen(targetWindow).screen !== 'place') {
+            confirmationDiagnostic(targetWindow, 'AUTO_RESUME_GUARD', !stored?.autoMode ? 'AUTO_MODE_INACTIVE' : !stored.executionTab ? 'NO_EXECUTION_TAB' : stored.executionTab !== targetWindow.name ? 'TAB_NOT_AUTHORIZED' : stored.finishedAt || stored.endedAt ? 'EXECUTION_ENDED' : 'NOT_PLACE_PAGE');
+            return false;
+        }
         const commandId = getCommandKey(stored.queue?.[stored.currentIndex], stored.currentIndex);
         const attemptId = stored.queue?.[stored.currentIndex]?.confirmationAttempt?.attemptId || null;
         const confirmationPage = new URL(targetWindow.location.href).searchParams.get('try') === 'confirm';
         const previous = targetWindow.__easFakesAuto;
         if (previous?.document === targetWindow.document && previous.executionTab === stored.executionTab &&
             previous.commandId === commandId && previous.attemptId === attemptId &&
-            previous.confirmationPage === confirmationPage && !previous.stopped) return true;
+            previous.confirmationPage === confirmationPage && !previous.stopped) {
+            confirmationDiagnostic(targetWindow, 'AUTO_RESUME_GUARD', 'RUNTIME_REUSED_NO_NEW_HANDLER');
+            return true;
+        }
         previous?.stop();
         const runtime = { document: targetWindow.document, executionTab: stored.executionTab,
             commandId, attemptId, confirmationPage,
@@ -873,10 +970,17 @@
         targetWindow.__easFakesAuto = runtime;
         const schedule = (delay) => { if (!runtime.stopped) runtime.timer = setTimeout(tick, delay); };
         const tick = () => {
-            if (runtime.stopped || runtime.document !== targetWindow.document) return runtime.stop();
+            if (runtime.stopped || runtime.document !== targetWindow.document) {
+                confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', runtime.stopped ? 'RUNTIME_STOPPED' : 'RUNTIME_DOCUMENT_CHANGED');
+                return runtime.stop();
+            }
             const saved = readContext();
-            if (!saved?.autoMode || saved.executionTab !== runtime.executionTab || targetWindow.name !== saved.executionTab) return runtime.stop();
+            if (!saved?.autoMode || saved.executionTab !== runtime.executionTab || targetWindow.name !== saved.executionTab) {
+                confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', !saved?.autoMode ? 'AUTO_MODE_INACTIVE' : saved.executionTab !== runtime.executionTab ? 'RUNTIME_EXECUTION_CHANGED' : 'TAB_NOT_AUTHORIZED');
+                return runtime.stop();
+            }
             if (getCommandKey(saved.queue?.[saved.currentIndex], saved.currentIndex) !== runtime.commandId) {
+                confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', 'RUNTIME_COMMAND_CHANGED');
                 runtime.stop();
                 resumeAutomatic(targetWindow);
                 return;
@@ -885,6 +989,7 @@
             let entry = getCurrentEntry(context);
             renderAutomatic(context, targetWindow);
             if (context.paused) {
+                confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', 'EXECUTION_PAUSED');
                 if (executionCounts(context).remaining === 0) finishExecution(context, targetWindow);
                 return runtime.stop();
             }
@@ -896,12 +1001,19 @@
                 resumeAutomatic(targetWindow);
                 return;
             }
-            if (getScreen(targetWindow).villageId !== Number(entry.villageId)) return runtime.stop();
+            if (getScreen(targetWindow).villageId !== Number(entry.villageId)) {
+                confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', 'CURRENT_VILLAGE_MISMATCH');
+                return runtime.stop();
+            }
             try {
                 const confirmationPage = new URL(targetWindow.location.href).searchParams.get('try') === 'confirm';
+                if (confirmationPage) confirmationDiagnostic(targetWindow, 'AUTO_TICK_CONFIRM_PAGE');
                 if (entry.status === 'attacking' && confirmationPage) {
                     entry.status = 'confirm-page';
-                    if (!saveContext(context)) return runtime.stop();
+                    if (!saveContext(context)) {
+                        confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', 'CONFIRM_PAGE_PERSISTENCE_FAILED');
+                        return runtime.stop();
+                    }
                 }
                 if (['attacking', 'forwarding', 'confirm-page', 'confirming', 'submitted'].includes(entry.status)) {
                     const beforeUrl = targetWindow.location.href;
@@ -909,10 +1021,14 @@
                     const after = readContext();
                     runtime.attemptId = after?.queue?.[context.currentIndex]?.confirmationAttempt?.attemptId || null;
                     runtime.confirmationPage = confirmationPage;
-                    if (!after || after.currentIndex !== context.currentIndex || beforeUrl !== targetWindow.location.href) return runtime.stop();
+                    if (!after || after.currentIndex !== context.currentIndex || beforeUrl !== targetWindow.location.href) {
+                        confirmationDiagnostic(targetWindow, 'AUTO_TICK_RETURN', !after ? 'EXECUTION_CLEARED' : after.currentIndex !== context.currentIndex ? 'QUEUE_ADVANCED' : 'NAVIGATION_STARTED');
+                        return runtime.stop();
+                    }
                     const rejected = EAS.CommandRules.scanCommandRuleErrors(targetWindow.document)[0];
                     const genericError = targetWindow.document.querySelector('.error_box, .error');
                     if (rejected || genericError || Date.now() - (context.forwardingStartedAt || 0) >= OPEN_TIMEOUT_MS) {
+                        confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', rejected ? 'COMMAND_RULE_REJECTED' : genericError ? 'GAME_ERROR' : 'RESULT_TIMEOUT');
                         if (rejected) rejectForCommandRule(context, context.currentIndex, rejected);
                         failAutomatic(normalizeContext(readContext()), rejected?.message || genericError?.textContent || 'Resposta incerta. Verifique o jogo antes de pular; o comando não será reenviado.');
                         const failed = normalizeContext(readContext());
@@ -947,6 +1063,7 @@
                 }
                 throw new Error(`Estado inesperado: ${entry.status}`);
             } catch (error) {
+                confirmationDiagnostic(targetWindow, 'AUTO_TICK_EXCEPTION', String(error?.message || error));
                 const latest = readContext();
                 if (latest?.executionTab === runtime.executionTab) {
                     failAutomatic(normalizeContext(latest), error);
@@ -1574,6 +1691,9 @@
     EAS.FakesExecution.automaticControl = automaticControl;
     EAS.FakesExecution.executionCounts = executionCounts;
     EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
+    // Temporary DEV helper, intentionally available without changing persisted settings.
+    window.EASFakeDebug = () => confirmationDiagnostic(window);
+    confirmationDiagnostic(window, 'SERVICE_LOADED');
     EAS.FakesExecution.mountPanel = mountPanel;
     EAS.FakesExecution.readContext = readContext;
     EAS.FakesExecution.parseMinimumPopulationError = parseMinimumPopulationError;
