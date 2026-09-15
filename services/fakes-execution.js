@@ -447,9 +447,16 @@
             };
         }
 
+        if (context.autoMode) {
+            const latest = readContext();
+            if (!latest || latest.executionTab !== context.executionTab ||
+                latest.currentIndex !== context.currentIndex || latest.queue[context.currentIndex]?.status !== 'preparing') {
+                return { valid: false, message: 'Execução interrompida durante a preparação.' };
+            }
+        }
         uniquePush(context.prepared, validation.commandKey);
         validation.entry.status = 'prepared';
-        saveContext(context);
+        if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir a prepara\u00e7\u00e3o.' };
 
         return validation;
     };
@@ -489,6 +496,36 @@
 
             return labels.includes(text);
         }) || null;
+    };
+
+    const attackCurrent = (context, targetWindow, commandType, beforeClick = () => {}) => {
+        const current = readContext();
+        const entry = getCurrentEntry(context);
+        if (!current || current.currentIndex !== context.currentIndex ||
+            current.createdAt !== context.createdAt || current.queue?.[context.currentIndex]?.status !== entry?.status ||
+            !['pending', 'prepared'].includes(entry?.status)) {
+            return { valid: false, message: 'Contexto do comando alterado.' };
+        }
+        const result = entry.status === 'prepared'
+            ? validateCurrent(context, targetWindow, { commandType })
+            : prepareCurrent(context, targetWindow, commandType);
+        const button = result.valid ? findCommandButton(result.form, commandType) : null;
+        if (!result.valid || !button || button.disabled) {
+            return { valid: false, message: result.message || 'Botão de comando indisponível.' };
+        }
+        if (context.autoMode && (result.requiredTroops.some(([unit, quantity]) => Number(result.inputs[unit].value) !== Number(quantity)) ||
+            result.form.querySelector('input[name="input"]')?.value !== result.target)) {
+            return { valid: false, message: 'Campos preparados foram alterados. Verifique tropas e alvo.' };
+        }
+        bindExecutionTab(context, targetWindow);
+        context.forwardingIndex = context.currentIndex;
+        context.forwardingCommandType = commandType;
+        context.forwardingStartedAt = Date.now();
+        result.entry.status = context.autoMode ? 'attacking' : 'forwarding';
+        if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir ataque.' };
+        beforeClick();
+        button.click();
+        return result;
     };
 
     const normalizeMessageText = (value) => {
@@ -670,13 +707,7 @@
             confirmLog('submitted');
             completeForwardedTarget(context, index, context.forwardingCommandType);
             if (!getCurrentEntry(context)) {
-                removeContext();
-                const summary = doc.createElement('aside');
-                summary.id = PANEL_ID;
-                summary.className = 'fake-execution-panel';
-                summary.textContent = `Execu??o conclu?da. Fakes enviados: ${context.completed.length}. Pulados: ${context.skipped.length}. Erros: ${context.errors.length}.`;
-                doc.getElementById(PANEL_ID)?.remove();
-                doc.body.appendChild(summary);
+                finishExecution(context, targetWindow);
                 return true;
             }
             context.continueQueue = true;
@@ -685,6 +716,206 @@
             return true;
         }
         return ['confirming', 'submitted'].includes(entry.status);
+    };
+
+    const AUTO_STEP_MS = 400;
+    const TERMINAL_STATES = ['completed', 'skipped', 'error'];
+    const executionCounts = (context) => {
+        const queue = context.queue || [];
+        const count = (status) => queue.filter((entry) => entry.status === status).length;
+        return { total: queue.length, completed: count('completed'), skipped: count('skipped'),
+            errors: count('error'), remaining: queue.filter((entry) => !TERMINAL_STATES.includes(entry.status)).length };
+    };
+
+    const finishExecution = (context, targetWindow, stopped = false) => {
+        targetWindow.__easFakesAuto?.stop();
+        const summary = { ...context, counts: executionCounts(context), finishedAt: Date.now(), stopped };
+        // Persist the terminal state first, so a stopped run cannot resume on reload.
+        if (!saveContext(summary)) return false;
+        summary.elapsedMs = Math.max(0, summary.finishedAt - (context.createdAt || summary.finishedAt));
+        // Keep the full authorized queue and command errors for local auditing.
+        try { localStorage.setItem('eas_tw_fakes_execution_summary', JSON.stringify(summary)); }
+        catch { return false; }
+        targetWindow.__easFakesAuto?.stop();
+        removeContext();
+        const doc = targetWindow.document;
+        const panel = doc.createElement('aside');
+        panel.id = PANEL_ID;
+        panel.className = 'fake-execution-panel';
+        panel.textContent = `${stopped ? 'Execução parada' : 'Execução concluída'}. Planejados: ${summary.counts.total}. Enviados: ${summary.counts.completed}. Pulados: ${summary.counts.skipped}. Erros: ${summary.counts.errors}. Tempo total: ${Math.round(summary.elapsedMs / 1000)}s.`;
+        doc.getElementById(PANEL_ID)?.remove();
+        doc.body.appendChild(panel);
+        return true;
+    };
+
+    const failAutomatic = (context, error) => {
+        const entry = getCurrentEntry(context);
+        if (!entry) return;
+        const detail = { commandKey: getCommandKey(entry, context.currentIndex),
+            villageId: entry.villageId, target: entry.target, state: entry.status,
+            reason: String(error?.message || error), detectedAt: Date.now() };
+        entry.status = 'error';
+        context.paused = true;
+        context.errors = context.errors.filter((item) => item.commandKey !== detail.commandKey);
+        context.errors.push(detail);
+        saveContext(context);
+        console.error('[fake.exec] paused', detail);
+    };
+
+    const automaticControl = (targetWindow, action) => {
+        const stored = readContext();
+        if (!stored?.autoMode || stored.executionTab !== targetWindow.name) return false;
+        const context = normalizeContext(stored);
+        if (action === 'stop') return finishExecution(context, targetWindow, true);
+        const entry = getCurrentEntry(context);
+        // Recovery never resends an uncertain command. Skip must be an explicit choice.
+        if (!entry || (!context.paused && !['pending', 'prepared'].includes(entry.status))) return false;
+        const key = getCommandKey(entry, context.currentIndex);
+        if (!['skip', 'error'].includes(action)) return false;
+        if (action === 'error') {
+            failAutomatic(context, 'Erro marcado pelo usuário.');
+        } else if (entry.status !== 'error') {
+            entry.status = 'skipped';
+            uniquePush(context.skipped, key);
+        }
+        context.currentIndex++;
+        context.forwardingIndex = null;
+        context.forwardingCommandType = null;
+        context.paused = false;
+        context.continueQueue = true;
+        if (!saveContext(context)) return false;
+        targetWindow.__easFakesAuto?.stop();
+        if (!getCurrentEntry(context)) return finishExecution(context, targetWindow);
+        targetWindow.location.href = String(EAS.Place.buildPlaceUrl(getCurrentEntry(context).villageId));
+        return true;
+    };
+
+    const renderAutomatic = (context, targetWindow) => {
+        const doc = targetWindow.document;
+        let panel = doc.getElementById(PANEL_ID);
+        if (!panel) {
+            panel = doc.createElement('aside');
+            panel.id = PANEL_ID;
+            panel.className = 'fake-execution-panel';
+            doc.body.appendChild(panel);
+        }
+        const entry = getCurrentEntry(context);
+        const counts = executionCounts(context);
+        const labels = { pending: 'Aguardando', preparing: 'Preparando...', prepared: 'Preparado',
+            attacking: 'Atacando...', 'confirm-page': 'Confirmando...', confirming: 'Confirmando...',
+            submitted: 'Enviado', error: 'Pausado por erro' };
+        const text = `Execução automática | Atual: ${entry?.villageName || entry?.villageId || '-'} \u2192 ${entry?.target || '-'} | Estado: ${labels[entry?.status] || entry?.status || 'Concluído'} | Total: ${counts.total} | Concluídos: ${counts.completed} | Restantes: ${counts.remaining} | Erros: ${counts.errors} | Pulados: ${counts.skipped}${context.paused ? ' | ' + (context.errors.at(-1)?.reason || '') : ''}`;
+        if (panel.dataset.autoText === text) return;
+        panel.dataset.autoText = text;
+        panel.textContent = '';
+        for (const line of text.split(' | ')) {
+            const row = doc.createElement('div');
+            row.textContent = line;
+            panel.appendChild(row);
+        }
+        for (const [action, label] of [['stop', 'Parar'], ['skip', 'Pular alvo'], ['error', 'Marcar erro e pular']]) {
+            const button = doc.createElement('button');
+            button.type = 'button';
+            button.className = 'eas-button eas-button--secondary';
+            button.textContent = label;
+            button.disabled = action !== 'stop' && !context.paused && !['pending', 'prepared'].includes(entry?.status);
+            button.addEventListener('click', () => automaticControl(targetWindow, action));
+            panel.appendChild(button);
+        }
+    };
+
+    const resumeAutomatic = (targetWindow = window) => {
+        const stored = readContext();
+        if (!stored?.autoMode || !stored.executionTab || stored.executionTab !== targetWindow.name ||
+            stored.finishedAt || stored.endedAt || getScreen(targetWindow).screen !== 'place') return false;
+        const previous = targetWindow.__easFakesAuto;
+        if (previous?.document === targetWindow.document && previous.executionTab === stored.executionTab && !previous.stopped) return true;
+        previous?.stop();
+        const runtime = { document: targetWindow.document, executionTab: stored.executionTab,
+            timer: null, stopped: false, preparedKey: null,
+            stop() { this.stopped = true; clearTimeout(this.timer); } };
+        targetWindow.__easFakesAuto = runtime;
+        const schedule = (delay) => { if (!runtime.stopped) runtime.timer = setTimeout(tick, delay); };
+        const tick = () => {
+            if (runtime.stopped || runtime.document !== targetWindow.document) return runtime.stop();
+            const saved = readContext();
+            if (!saved?.autoMode || saved.executionTab !== runtime.executionTab || targetWindow.name !== saved.executionTab) return runtime.stop();
+            const context = normalizeContext(saved);
+            let entry = getCurrentEntry(context);
+            renderAutomatic(context, targetWindow);
+            if (context.paused) {
+                if (executionCounts(context).remaining === 0) finishExecution(context, targetWindow);
+                return runtime.stop();
+            }
+            if (!entry) { finishExecution(context, targetWindow); return; }
+            if (TERMINAL_STATES.includes(entry.status)) {
+                context.currentIndex++;
+                if (!saveContext(context)) return runtime.stop();
+                schedule(AUTO_STEP_MS);
+                return;
+            }
+            if (getScreen(targetWindow).villageId !== Number(entry.villageId)) return runtime.stop();
+            try {
+                const confirmationPage = new URL(targetWindow.location.href).searchParams.get('try') === 'confirm';
+                if (entry.status === 'attacking' && confirmationPage) {
+                    entry.status = 'confirm-page';
+                    if (!saveContext(context)) return runtime.stop();
+                }
+                if (['attacking', 'forwarding', 'confirm-page', 'confirming', 'submitted'].includes(entry.status)) {
+                    const beforeUrl = targetWindow.location.href;
+                    resumeConfirmation(targetWindow);
+                    const after = readContext();
+                    if (!after || after.currentIndex !== context.currentIndex || beforeUrl !== targetWindow.location.href) return runtime.stop();
+                    const rejected = EAS.CommandRules.scanCommandRuleErrors(targetWindow.document)[0];
+                    const genericError = targetWindow.document.querySelector('.error_box, .error');
+                    if (rejected || genericError || Date.now() - (context.forwardingStartedAt || 0) >= OPEN_TIMEOUT_MS) {
+                        if (rejected) rejectForCommandRule(context, context.currentIndex, rejected);
+                        failAutomatic(normalizeContext(readContext()), rejected?.message || genericError?.textContent || 'Resposta incerta. Verifique o jogo antes de pular; o comando não será reenviado.');
+                        const failed = normalizeContext(readContext());
+                        renderAutomatic(failed, targetWindow);
+                        if (executionCounts(failed).remaining === 0) finishExecution(failed, targetWindow);
+                        return runtime.stop();
+                    }
+                    schedule(POLL_INTERVAL_MS);
+                    return;
+                }
+                if (confirmationPage) throw new Error('Página inesperada para preparar o comando.');
+                if (entry.status === 'preparing') throw new Error('Preparação interrompida por reload. Verifique o comando; não será repetido.');
+                if (entry.status === 'pending') {
+                    if (Number(entry.recommendedActionTime) > Date.now()) { schedule(AUTO_STEP_MS); return; }
+                    entry.status = 'preparing';
+                    if (!saveContext(context)) return runtime.stop();
+                    renderAutomatic(context, targetWindow);
+                    const result = prepareCurrent(context, targetWindow, context.commandType);
+                    if (!result.valid) throw new Error(result.message);
+                    runtime.preparedKey = getCommandKey(entry, context.currentIndex);
+                    renderAutomatic(context, targetWindow);
+                    schedule(AUTO_STEP_MS);
+                    return;
+                }
+                if (entry.status === 'prepared') {
+                    if (runtime.preparedKey !== getCommandKey(entry, context.currentIndex)) throw new Error('Preparação não verificada nesta pagina. O comando não será reenviado.');
+                    const result = attackCurrent(context, targetWindow, context.commandType);
+                    if (!result.valid) throw new Error(result.message);
+                    renderAutomatic(context, targetWindow);
+                    schedule(POLL_INTERVAL_MS);
+                    return;
+                }
+                throw new Error(`Estado inesperado: ${entry.status}`);
+            } catch (error) {
+                const latest = readContext();
+                if (latest?.executionTab === runtime.executionTab) {
+                    failAutomatic(normalizeContext(latest), error);
+                    const failed = normalizeContext(readContext());
+                    renderAutomatic(failed, targetWindow);
+                    if (executionCounts(failed).remaining === 0) finishExecution(failed, targetWindow);
+                }
+                runtime.stop();
+            }
+        };
+        renderAutomatic(normalizeContext(stored), targetWindow);
+        schedule(Math.max(AUTO_STEP_MS, Number(stored.intervalMs) || 0));
+        return true;
     };
 
     const watchCommandResult = ({
@@ -813,6 +1044,7 @@
     };
 
     const mountPanel = (targetWindow = window) => {
+        if (readContext()?.autoMode) return resumeAutomatic(targetWindow);
         const stored = readContext();
 
         if (!stored || !isMatchingPlace(stored, targetWindow)) {
@@ -1022,55 +1254,29 @@
                     : attackValidation.message ||
                         'O tipo padrão da operação é Apoio.',
                 onClick: () => {
-                    const result = prepareCurrent(
-                        context,
-                        targetWindow,
-                        'attack'
-                    );
-                    const commandButton = result.valid
-                        ? findCommandButton(result.form, 'attack')
-                        : null;
-
-                    if (!result.valid || !commandButton) {
-                        render(
-                            result.valid
-                                ? 'Botão de ataque não encontrado.'
-                                : result.message,
-                            'error'
-                        );
-                        return;
-                    }
-
-                    bindExecutionTab(context, targetWindow);
-                    context.forwardingIndex = context.currentIndex;
-                    context.forwardingCommandType = 'attack';
-                    context.forwardingStartedAt = Date.now();
-                    result.entry.status = 'forwarding';
-                    if (!saveContext(context)) return;
-                    render(
-                        'Encaminhando ataque. Aguardando resposta do jogo...',
-                        'info'
-                    );
-                    stopResultWatcher = watchCommandResult({
-                        context,
-                        entryIndex: context.currentIndex,
-                        targetWindow,
-                        onRejected: (detected) => render(
-                            detected.type === 'minimum-attack-population'
-                                ? `Regra desta aldeia detectada: mínimo ${detected.minimumPopulation} de população; tentativa ${detected.attemptedPopulation}. Reanalise ou ajuste as tropas.`
-                                : `Regra de unidade detectada: mínimo ${detected.minimumQuantity} de ${detected.unit}. Reanalise ou ajuste as tropas.`,
-                            'error'
-                        ),
-                        onConfirmed: () => render(
-                            'Ataque encaminhado para confirmação. O próximo alvo não foi preparado.',
-                            'success'
-                        ),
-                        onTimeout: () => render(
-                            'Não foi possível confirmar o avanço. O alvo atual foi mantido.',
-                            'error'
-                        )
+                    const result = attackCurrent(context, targetWindow, 'attack', () => {
+                        stopResultWatcher = watchCommandResult({
+                            context,
+                            entryIndex: context.currentIndex,
+                            targetWindow,
+                            onRejected: (detected) => render(
+                                detected.type === 'minimum-attack-population'
+                                    ? `Regra desta aldeia detectada: mínimo ${detected.minimumPopulation} de população; tentativa ${detected.attemptedPopulation}. Reanalise ou ajuste as tropas.`
+                                    : `Regra de unidade detectada: mínimo ${detected.minimumQuantity} de ${detected.unit}. Reanalise ou ajuste as tropas.`,
+                                'error'
+                            ),
+                            onConfirmed: () => render(
+                                'Ataque encaminhado para confirmação. O próximo alvo não foi preparado.',
+                                'success'
+                            ),
+                            onTimeout: () => render(
+                                'Não foi possível confirmar o avanço. O alvo atual foi mantido.',
+                                'error'
+                            )
+                        });
                     });
-                    commandButton.click();
+                    render(result.valid ? 'Aguardando resposta do jogo...' : result.message,
+                        result.valid ? 'info' : 'error');
                 }
             });
             if (!['fake_nt', 'anti_snipe'].includes(context.preset)) addButton({
@@ -1081,53 +1287,27 @@
                     : supportValidation.message ||
                         'O tipo padrão da operação é Ataque.',
                 onClick: () => {
-                    const result = prepareCurrent(
-                        context,
-                        targetWindow,
-                        'support'
-                    );
-                    const commandButton = result.valid
-                        ? findCommandButton(result.form, 'support')
-                        : null;
-
-                    if (!result.valid || !commandButton) {
-                        render(
-                            result.valid
-                                ? 'Botão de apoio não encontrado.'
-                                : result.message,
-                            'error'
-                        );
-                        return;
-                    }
-
-                    bindExecutionTab(context, targetWindow);
-                    context.forwardingIndex = context.currentIndex;
-                    context.forwardingCommandType = 'support';
-                    context.forwardingStartedAt = Date.now();
-                    result.entry.status = 'forwarding';
-                    if (!saveContext(context)) return;
-                    render(
-                        'Encaminhando apoio. Aguardando resposta do jogo...',
-                        'info'
-                    );
-                    stopResultWatcher = watchCommandResult({
-                        context,
-                        entryIndex: context.currentIndex,
-                        targetWindow,
-                        onRejected: () => render(
-                            'O apoio foi rejeitado pelo jogo. O alvo atual foi mantido.',
-                            'error'
-                        ),
-                        onConfirmed: () => render(
-                            'Apoio encaminhado para confirmação. O próximo alvo não foi preparado.',
-                            'success'
-                        ),
-                        onTimeout: () => render(
-                            'Não foi possível confirmar o avanço. O alvo atual foi mantido.',
-                            'error'
-                        )
+                    const result = attackCurrent(context, targetWindow, 'support', () => {
+                        stopResultWatcher = watchCommandResult({
+                            context,
+                            entryIndex: context.currentIndex,
+                            targetWindow,
+                            onRejected: () => render(
+                                'O apoio foi rejeitado pelo jogo. O alvo atual foi mantido.',
+                                'error'
+                            ),
+                            onConfirmed: () => render(
+                                'Apoio encaminhado para confirmação. O próximo alvo não foi preparado.',
+                                'success'
+                            ),
+                            onTimeout: () => render(
+                                'Não foi possível confirmar o avanço. O alvo atual foi mantido.',
+                                'error'
+                            )
+                        });
                     });
-                    commandButton.click();
+                    render(result.valid ? 'Aguardando resposta do jogo...' : result.message,
+                        result.valid ? 'info' : 'error');
                 }
             });
             if (context.lastPopulationRejection) {
@@ -1263,24 +1443,22 @@
         };
 
         render();
-        if (context.continueQueue && targetWindow.name === context.executionTab) {
-            context.continueQueue = false;
-            if (saveContext(context)) {
-                const buttons = Array.from(content.querySelectorAll('button'));
-                const next = buttons.find((button) => button.textContent === (context.commandType === 'support' ? 'Apoiar' : 'Atacar'));
-                if (next && !next.disabled) next.click();
-            }
-        }
         return true;
     };
 
     const openCurrentVillage = (providedContext = null) => {
         const execution = normalizeContext(providedContext || readContext());
         const entry = getCurrentEntry(execution);
+        if (!entry) return Promise.resolve(finishExecution(execution, window));
         const childWindow = EAS.Place.openVillagePlace(entry?.villageId);
 
         if (!childWindow) {
             return Promise.resolve(false);
+        }
+
+        if (execution.autoMode) {
+            bindExecutionTab(execution, childWindow);
+            if (!saveContext(execution)) return Promise.resolve(false);
         }
 
         return new Promise((resolve) => {
@@ -1316,6 +1494,11 @@
     EAS.FakesExecution.start = (context) => {
         const execution = normalizeContext({
             ...context,
+            autoMode: true,
+            executionTab: null,
+            forwardingIndex: null,
+            forwardingCommandType: null,
+            paused: false,
             currentIndex: 0,
             prepared: [],
             skipped: [],
@@ -1336,11 +1519,16 @@
     EAS.FakesExecution.initialize = () => {
         const context = readContext();
 
+        if (context?.autoMode) return resumeAutomatic(window);
         return context && isMatchingPlace(context, window)
             ? mountPanel(window)
             : false;
     };
 
+    EAS.FakesExecution.resume = (targetWindow = window) => readContext()?.autoMode
+        ? resumeAutomatic(targetWindow) : resumeConfirmation(targetWindow);
+    EAS.FakesExecution.automaticControl = automaticControl;
+    EAS.FakesExecution.executionCounts = executionCounts;
     EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
     EAS.FakesExecution.mountPanel = mountPanel;
     EAS.FakesExecution.readContext = readContext;

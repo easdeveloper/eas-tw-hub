@@ -123,7 +123,7 @@
                 return true;
             }
         }
-        if (window.EAS.FakesExecution?.resumeConfirmation?.()) {
+        if (window.EAS.FakesExecution?.resume?.()) {
             window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
             return true;
         }
