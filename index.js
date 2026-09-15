@@ -273,7 +273,7 @@
         window.__EASFakeBootstrapMark?.('activeFakeDependenciesRequested');
         if (!window.EAS.Units?.calculateCommandPopulation) await loadScript('core/units.js');
         if (!window.EAS.CommandRules?.scanCommandRuleErrors) await loadScript('core/world-rules.js');
-        if (!window.EAS.Place?.getCommandForm) await loadScript('services/place.js');
+        if (!window.EAS.Place?.ensureCommandTarget) await loadScript('services/place.js');
         if (!window.EAS.FakesExecution?.resume) await loadScript('services/fakes-execution.js');
     };
 

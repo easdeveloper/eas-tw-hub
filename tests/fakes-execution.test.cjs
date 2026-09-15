@@ -2,13 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
+const outgoingRow = require('./outgoing-dom.cjs').row;
 const source = fs.readFileSync('services/fakes-execution.js', 'utf8');
 function fixture(status = 'forwarding') {
     let clicks = 0;
     const storage = new Map();
     const button = { disabled: false, click() { clicks++; assert.equal(read().queue[0].status, 'confirming'); } };
     const form = { querySelector: () => button };
-    const document = { createElement: () => ({}), getElementById: () => null, body: { appendChild() {} }, querySelector: selector => selector === '#command-data-form' ? form : null };
+    const document = { createElement: () => ({}), getElementById: () => null, body: { appendChild() {} }, querySelector: selector => selector === '#commands_outgoings' ? {querySelectorAll:()=>window.location.href.includes('command_id=123')?[outgoingRow()]:[]} : selector === '#command-data-form' ? form : null };
     const window = { name: 'test-tab', document, location: { href: 'https://test/game.php?screen=place&village=9&try=confirm' } };
     const sandbox = { window, document, URL, console: { debug() {} }, localStorage: { getItem: k => storage.get(k) || null, setItem: (k,v) => storage.set(k,v), removeItem: k => storage.delete(k) }, EAS: { Place: { buildPlaceUrl: id => `https://test/game.php?screen=place&village=${id}` } } };
     const context = { executionTab: 'test-tab', currentIndex: 0, forwardingIndex: 0, forwardingCommandType: 'attack', queue: [{villageId:9,target:'501|501',status}], completed: [] };
@@ -73,4 +74,11 @@ test('confirmation logs ALLOWED, CLICKING and CLICK_DISPATCHED around one native
     const click=f.button.click;f.button.click=()=>{events.push('native click');click();};f.run();
     assert.deepEqual(events,['[EAS][FAKE][CONFIRM] ALLOWED','[EAS][FAKE][CONFIRM] CLICKING','native click','[EAS][FAKE][CONFIRM] CLICK_DISPATCHED']);
     assert.equal(f.clicks(),1);
+});
+
+test('image audit is read-only and strips resource query strings',()=>{
+ const f=fixture(),before=f.read();
+ f.document.querySelectorAll=()=>[{src:'https://test/pixel.gif?private=value',complete:true,naturalWidth:0,id:'image',className:'',parentElement:{id:'container'},closest:()=>null}];
+ f.window.performance={getEntriesByType:()=>[{name:'https://test/pixel.gif?private=value',initiatorType:'img',responseStatus:429,startTime:1,duration:2}]};
+ const data=f.window.EASFakeImageDebug();assert.equal(data.images[0].src,'https://test/pixel.gif');assert.equal(data.resources[0].responseStatus,429);assert.deepEqual(f.read(),before);assert.equal(f.clicks(),0);
 });

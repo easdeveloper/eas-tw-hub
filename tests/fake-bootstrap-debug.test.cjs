@@ -44,7 +44,7 @@ test('initialized module, resume and confirmation are separate diagnostic stages
 });
 test('silent existing-UI path loads the missing Fake module for the authorized tab',async()=>{
  const f=fixture();f.root.document.readyState='complete';f.root.__EAS_TW_SILENT_BOOTSTRAP__=true;
- f.root.EAS={UI:{toggle(){},FloatingPanel:{initialize(){}}},Minting:{},MissionScheduler:{initialize(){}}, Units:{calculateCommandPopulation(){}},CommandRules:{scanCommandRuleErrors(){}},Place:{getCommandForm(){}}};
+ f.root.EAS={UI:{toggle(){},FloatingPanel:{initialize(){}}},Minting:{},MissionScheduler:{initialize(){}}, Units:{calculateCommandPopulation(){}},CommandRules:{scanCommandRuleErrors(){}},Place:{getCommandForm(){},ensureCommandTarget(){}}};
  f.run('index.js');await new Promise(resolve=>setImmediate(resolve));
  const data=f.root.EASFakeDebug();assert.equal(data.bootstrap.silentExistingUIBranch,true);assert.equal(data.bootstrap.fakeModuleInitialized,false);assert.equal(data.bootstrap.resumeEntered,false);assert.equal(f.scripts.length,1);assert.match(f.scripts[0].src,/services\/fakes-execution\.js/);
 });

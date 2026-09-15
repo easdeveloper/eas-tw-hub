@@ -210,6 +210,99 @@
         return `${index}:${entry?.villageId || 0}:${entry?.target || ''}`;
     };
 
+    const readOutgoingCommands = (targetWindow) => {
+        const doc = targetWindow.document;
+        const container = doc.querySelector('#commands_outgoings');
+        if (!container) return { available: false, commands: [], reason: 'CONTAINER_MISSING' };
+        if (doc.readyState === 'loading') return { available: false, commands: [], reason: 'DOM_LOADING' };
+        if (container.querySelector?.('a[href*="page="], .paged-nav')) return { available: false, commands: [], reason: 'PAGINATED' };
+        const commands = [];
+        for (const row of container.querySelectorAll('tr.command-row')) {
+            const quick = row.querySelector('.quickedit-out[data-id]');
+            const cancel = row.querySelector('.command-cancel[data-id][data-home]');
+            const icon = row.querySelector('.command_hover_details[data-command-id][data-command-type]');
+            const link = row.querySelector('a[href*="screen=info_command"]');
+            let url;
+            try { url = link ? new URL(link.href, targetWindow.location.href) : null; } catch { return { available: false, commands: [], reason: 'INVALID_ROW' }; }
+            const ids = [quick?.dataset.id, cancel?.dataset.id, icon?.dataset.commandId, url?.searchParams.get('id')].filter(Boolean);
+            if (!ids.length || ids.some(id => !/^\d+$/.test(id) || id !== ids[0])) return { available: false, commands: [], reason: 'INVALID_ROW' };
+            const source = cancel?.dataset.home || (url?.searchParams.get('type') === 'own' ? url.searchParams.get('village') : null);
+            if (cancel && url?.searchParams.get('village') && cancel.dataset.home !== url.searchParams.get('village')) return { available: false, commands: [], reason: 'INVALID_ROW' };
+            const label = row.querySelector('.quickedit-label');
+            const coordinates = [...String(label?.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].map(match => match[1]);
+            commands.push({ id: ids[0], sourceVillageId: source, type: icon?.dataset.commandType || null,
+                target: coordinates.length === 1 ? coordinates[0] : null });
+        }
+        return { available: true, commands };
+    };
+
+    const snapshotMatches = (context, entry, attempt) => {
+        const snapshot = attempt?.outgoingSnapshot;
+        return Boolean(snapshot && Array.isArray(snapshot.beforeCommandIds) &&
+            attempt.commandId === getCommandKey(entry, context.currentIndex) &&
+            snapshot.commandId === attempt.commandId && snapshot.attemptId === attempt.attemptId &&
+            snapshot.executionId === context.executionTab && snapshot.target === entry.target &&
+            snapshot.sourceVillageId === String(entry.sourceVillageId || entry.villageId) && Number.isFinite(snapshot.capturedAt));
+    };
+
+    const persistOutgoingSnapshot = (context, targetWindow) => {
+        const entry = getCurrentEntry(context), commandId = getCommandKey(entry, context.currentIndex);
+        let attempt = entry.confirmationAttempt;
+        const restored = snapshotMatches(context, entry, attempt);
+        if (!attempt) attempt = entry.confirmationAttempt = { commandId,
+            attemptId: `${context.executionTab}:${commandId}:${Date.now()}:${Math.random()}`, state: 'snapshot-ready' };
+        let reason = null;
+        if (!restored && !attempt.outgoingSnapshot && attempt.commandId === commandId) {
+            const observed = readOutgoingCommands(targetWindow);
+            if (observed.available && String(getScreen(targetWindow).villageId) === String(entry.sourceVillageId || entry.villageId)) {
+                attempt.outgoingSnapshot = { executionId: context.executionTab, commandId, attemptId: attempt.attemptId,
+                    sourceVillageId: String(entry.sourceVillageId || entry.villageId), target: entry.target,
+                    capturedAt: Date.now(), beforeCommandIds: observed.commands.map(command => command.id) };
+            } else reason = observed.reason || 'SOURCE_MISMATCH';
+        }
+        const valid = snapshotMatches(context, entry, attempt);
+        const stored = valid && saveContext(context) ? readContext() : null;
+        const persisted = Boolean(stored && snapshotMatches(stored, getCurrentEntry(stored), getCurrentEntry(stored)?.confirmationAttempt) &&
+            JSON.stringify(getCurrentEntry(stored).confirmationAttempt.outgoingSnapshot) === JSON.stringify(attempt.outgoingSnapshot));
+        console.log?.('[EAS][FAKE][SNAPSHOT]', { executionId: context.executionTab, commandId, attemptId: attempt.attemptId,
+            sourceVillageId: String(entry.sourceVillageId || entry.villageId), target: entry.target,
+            capturedCommandIds: attempt.outgoingSnapshot?.beforeCommandIds ?? null,
+            capturedAt: attempt.outgoingSnapshot?.capturedAt ?? null, persisted, restoredAfterNavigation: restored,
+            reason: reason || (valid ? (persisted ? null : 'PERSISTENCE_FAILED') : 'SNAPSHOT_INVALID') });
+        return persisted;
+    };
+
+    const reconcileOutgoing = (context, targetWindow, overrideResult = null) => {
+        const entry = getCurrentEntry(context), attempt = entry?.confirmationAttempt, baseline = attempt?.outgoingSnapshot;
+        const observed = readOutgoingCommands(targetWindow);
+        const detail = { executionId: context.executionTab, commandId: getCommandKey(entry, context.currentIndex),
+            attemptId: attempt?.attemptId || null, sourceVillageId: String(entry?.sourceVillageId || entry?.villageId || ''),
+            expectedTarget: entry?.target, beforeCommandIds: baseline?.beforeCommandIds || null,
+            afterCommandIds: observed.commands.map(command => command.id), newCommandIds: [], candidateCommandIds: [], matchedOutgoingCommandId: null };
+        let result;
+        if (attempt?.state === 'completed' && attempt.commandId === detail.commandId && attempt.outgoingCommandId) result = 'ALREADY_RECONCILED';
+        else if (!baseline || !Array.isArray(baseline.beforeCommandIds)) result = 'SNAPSHOT_MISSING';
+        else if (attempt.commandId !== detail.commandId || baseline.commandId !== detail.commandId || baseline.attemptId !== attempt.attemptId ||
+            baseline.executionId !== context.executionTab || baseline.target !== entry.target || !Number.isFinite(baseline.capturedAt) || !Number.isFinite(attempt.startedAt) || baseline.capturedAt > attempt.startedAt) result = 'ATTEMPT_MISMATCH';
+        else if (baseline.sourceVillageId !== detail.sourceVillageId || String(getScreen(targetWindow).villageId) !== detail.sourceVillageId) result = 'SOURCE_MISMATCH';
+        else if (!observed.available) result = 'DOM_UNAVAILABLE';
+        else {
+            const fresh = observed.commands.filter(command => !baseline.beforeCommandIds.includes(command.id));
+            detail.newCommandIds = fresh.map(command => command.id);
+            const own = fresh.filter(command => command.sourceVillageId === detail.sourceVillageId && command.type === context.forwardingCommandType);
+            const candidates = own.filter(command => command.target === detail.expectedTarget);
+            detail.candidateCommandIds = [...new Set(candidates.map(command => command.id))];
+            // Unknown target/type/source rows cannot disambiguate a concurrent send.
+            const unknown = fresh.some(command => !command.sourceVillageId || !command.type || !command.target);
+            result = !fresh.length ? 'NO_NEW_COMMAND' : unknown || detail.candidateCommandIds.length > 1 ? 'AMBIGUOUS'
+                : !own.length ? 'SOURCE_OR_TYPE_MISMATCH' : !candidates.length ? 'TARGET_MISMATCH' : 'SUCCESS';
+            if (result === 'SUCCESS') detail.matchedOutgoingCommandId = detail.candidateCommandIds[0];
+        }
+        detail.result = overrideResult || result;
+        console.log?.('[EAS][FAKE][RECONCILE]', detail);
+        return detail;
+    };
+
     const uniquePush = (items, value) => {
         if (!items.includes(value)) {
             items.push(value);
@@ -445,6 +538,7 @@
         if (!EAS.Place.fillCommandTarget(validation.target, targetWindow)) {
             return {
                 valid: false,
+                code: 'TARGET_NOT_APPLIED',
                 message: 'Não foi possível preparar o alvo.'
             };
         }
@@ -515,17 +609,24 @@
         if (!result.valid || !button || button.disabled) {
             return { valid: false, message: result.message || 'Botão de comando indisponível.' };
         }
-        if (context.autoMode && (result.requiredTroops.some(([unit, quantity]) => Number(result.inputs[unit].value) !== Number(quantity)) ||
-            result.form.querySelector('input[name="input"]')?.value !== result.target)) {
+        if (context.autoMode && result.requiredTroops.some(([unit, quantity]) => Number(result.inputs[unit].value) !== Number(quantity))) {
             return { valid: false, message: 'Campos preparados foram alterados. Verifique tropas e alvo.' };
         }
+        const target = EAS.Place.ensureCommandTarget?.(entry.target, targetWindow, entry.targetVillageId ?? null);
+        console.log?.('[EAS][FAKE][TARGET]', { commandId: getCommandKey(entry, context.currentIndex),
+            expectedTarget: entry.target, targetVillageId: entry.targetVillageId ?? null, ...target });
+        if (!target?.targetValidated) {
+            return { valid: false, code: 'TARGET_NOT_APPLIED', message: 'TARGET_NOT_APPLIED: destino nativo não validado. Nenhum ataque foi submetido.' };
+        }
         bindExecutionTab(context, targetWindow);
+        if (!persistOutgoingSnapshot(context, targetWindow)) return { valid: false, code: 'SNAPSHOT_UNAVAILABLE', message: 'Snapshot indisponivel. Nenhum ataque foi enviado.' };
         context.forwardingIndex = context.currentIndex;
         context.forwardingCommandType = commandType;
         context.forwardingStartedAt = Date.now();
         result.entry.status = context.autoMode ? 'attacking' : 'forwarding';
         if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir ataque.' };
         beforeClick();
+        console.log?.('[EAS][FAKE][ATTACK]', { commandId: getCommandKey(entry, context.currentIndex), targetValidated: true, submitting: true });
         button.click();
         return result;
     };
@@ -643,6 +744,10 @@
             if (entry.confirmationAttempt?.commandId === commandKey) {
                 entry.confirmationAttempt.state = 'completed';
                 entry.confirmationAttempt.completedAt = Date.now();
+                // The baseline is needed only until reconciliation. Keep attempt identity
+                // and matched ID for auditing without storing every old ID for every fake.
+                if (entry.confirmationAttempt.outgoingSnapshot) delete entry.confirmationAttempt.outgoingSnapshot.beforeCommandIds;
+                delete entry.outgoingBefore;
             }
             console.log?.('[EAS][FAKE][QUEUE] command completed', { oldCommandId: commandKey, confirmationAttempt: JSON.parse(JSON.stringify(entry.confirmationAttempt || null)) });
             confirmationTrace(context, entryIndex, 'completed');
@@ -655,10 +760,11 @@
         context.forwardingIndex = null;
         context.forwardingCommandType = null;
         context.lastPopulationRejection = null;
-        saveContext(context);
+        const persisted = saveContext(context);
         console.log?.('[EAS][FAKE][QUEUE] advancing', { oldCommandId: commandKey, newCommandId: getCurrentEntry(context) ? getCommandKey(getCurrentEntry(context), context.currentIndex) : null });
         console.log?.('[EAS][FAKE][QUEUE] confirmation state after advance', JSON.parse(JSON.stringify({ currentIndex: context.currentIndex, forwardingIndex: context.forwardingIndex, currentCommand: getCurrentEntry(context), previousAttempt: entry?.confirmationAttempt || null })));
         confirmationTrace(context, context.currentIndex, `advancing to=${getCurrentEntry(context) ? getCommandKey(getCurrentEntry(context), context.currentIndex) : 'finished'}`);
+        return persisted;
     };
 
     const confirmLog = (message) => console.debug(`[fake.exec.confirm] ${message}`);
@@ -713,7 +819,7 @@
                 pageVillageId: getScreen(targetWindow).villageId,
                 elapsedSinceForwardingMs: context?.forwardingStartedAt ? Date.now() - context.forwardingStartedAt : null,
                 attemptId: attempt?.attemptId || null, confirmationLock: attempt,
-                lastConfirmation: context?.queue?.slice(0, context.currentIndex).reverse().find(item => item.confirmationAttempt)?.confirmationAttempt || null,
+                lastConfirmation: context?.lastConfirmation || context?.queue?.slice(0, context.currentIndex).reverse().find(item => item.confirmationAttempt)?.confirmationAttempt || null,
                 confirmPageDetected, formFound: Boolean(form), buttonFound: Boolean(button),
                 buttonDisabled: button?.disabled ?? null, buttonEffectivelyDisabled: button?.matches?.(':disabled') ?? null,
                 buttonValue: button?.value ?? null,
@@ -802,9 +908,13 @@
             }
             // The attempt belongs to this queue entry, including repeated targets/origins.
             // Never borrow a consumed attempt from the previous command.
-            entry.confirmationAttempt = { commandId,
-                attemptId: `${context.executionTab}:${commandId}:${Date.now()}:${Math.random()}`,
-                state: 'confirming', startedAt: Date.now() };
+            if (!persistOutgoingSnapshot(context, targetWindow)) {
+                confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD', 'SNAPSHOT_UNAVAILABLE');
+                confirmationTrace(context, index, 'allowed=false blocked reason=snapshot-unavailable');
+                return true;
+            }
+            entry.confirmationAttempt.state = 'confirming';
+            entry.confirmationAttempt.startedAt = Date.now();
             entry.status = 'confirming';
             entry.confirmationUrl = targetWindow.location.href;
             if (!saveContext(context)) {
@@ -820,14 +930,22 @@
             console.log?.('[EAS][FAKE][CONFIRM] CLICK_DISPATCHED', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             return true;
         }
-        // The normal successful POST redirects to place with a command_id. Merely
-        // leaving confirmation (or finding the preparation form) is not success.
-        if (['confirming', 'submitted'].includes(entry.status) &&
-            (/^\d+$/.test(url.searchParams.get('command_id') || '') || doc.querySelector('.success_box')) &&
-            !doc.querySelector('.error_box, .error')) {
+        // A return to place is not evidence of sending. Compare this attempt's
+        // persisted baseline with the server-rendered outgoing command identities.
+        if (['confirming', 'submitted'].includes(entry.status) && !doc.querySelector('.error_box, .error')) {
+            if (entry.confirmationAttempt && !entry.confirmationAttempt.reconcileStartedAt) {
+                entry.confirmationAttempt.reconcileStartedAt = Date.now();
+                if (!saveContext(context)) return true;
+            }
+            const reconciliation = reconcileOutgoing(context, targetWindow);
+            if (reconciliation.result !== 'SUCCESS') return true;
+            entry.confirmationAttempt.outgoingCommandId = reconciliation.matchedOutgoingCommandId;
+            context.lastConfirmation = { commandId: getCommandKey(entry, index),
+                attemptId: entry.confirmationAttempt.attemptId, outgoingCommandId: reconciliation.matchedOutgoingCommandId,
+                sourceVillageId: entry.sourceVillageId || entry.villageId, target: entry.target, completedAt: Date.now() };
             entry.status = 'submitted';
             confirmLog('submitted');
-            completeForwardedTarget(context, index, context.forwardingCommandType);
+            if (!completeForwardedTarget(context, index, context.forwardingCommandType)) return true;
             if (!getCurrentEntry(context)) {
                 finishExecution(context, targetWindow);
                 return true;
@@ -876,7 +994,7 @@
         if (!entry) return;
         const detail = { commandKey: getCommandKey(entry, context.currentIndex),
             villageId: entry.villageId, target: entry.target, state: entry.status,
-            reason: String(error?.message || error), detectedAt: Date.now() };
+            reason: String(error?.message || error), code: error?.code || null, detectedAt: Date.now() };
         entry.status = 'error';
         context.paused = true;
         context.errors = context.errors.filter((item) => item.commandKey !== detail.commandKey);
@@ -1031,10 +1149,12 @@
                     }
                     const rejected = EAS.CommandRules.scanCommandRuleErrors(targetWindow.document)[0];
                     const genericError = targetWindow.document.querySelector('.error_box, .error');
-                    if (rejected || genericError || Date.now() - (context.forwardingStartedAt || 0) >= OPEN_TIMEOUT_MS) {
+                    if (rejected || genericError || Date.now() - (readContext()?.queue?.[context.currentIndex]?.confirmationAttempt?.reconcileStartedAt || context.forwardingStartedAt || 0) >= OPEN_TIMEOUT_MS) {
                         confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', rejected ? 'COMMAND_RULE_REJECTED' : genericError ? 'GAME_ERROR' : 'RESULT_TIMEOUT');
                         if (rejected) rejectForCommandRule(context, context.currentIndex, rejected);
-                        failAutomatic(normalizeContext(readContext()), rejected?.message || genericError?.textContent || 'Resposta incerta. Verifique o jogo antes de pular; o comando não será reenviado.');
+                        if (!rejected && !genericError) reconcileOutgoing(normalizeContext(readContext()), targetWindow, 'TIMEOUT');
+                        const targetFailure = /selecione uma aldeia alvo/i.test(genericError?.textContent || '');
+                        failAutomatic(normalizeContext(readContext()), targetFailure ? Object.assign(new Error(genericError.textContent), { code: 'TARGET_NOT_APPLIED' }) : rejected?.message || genericError?.textContent || 'Resposta incerta. Verifique o jogo antes de pular; o comando não será reenviado.');
                         const failed = normalizeContext(readContext());
                         renderAutomatic(failed, targetWindow);
                         if (executionCounts(failed).remaining === 0) finishExecution(failed, targetWindow);
@@ -1051,7 +1171,7 @@
                     if (!saveContext(context)) return runtime.stop();
                     renderAutomatic(context, targetWindow);
                     const result = prepareCurrent(context, targetWindow, context.commandType);
-                    if (!result.valid) throw new Error(result.message);
+                    if (!result.valid) throw Object.assign(new Error(result.message), { code: result.code });
                     runtime.preparedKey = getCommandKey(entry, context.currentIndex);
                     renderAutomatic(context, targetWindow);
                     schedule(AUTO_STEP_MS);
@@ -1060,7 +1180,7 @@
                 if (entry.status === 'prepared') {
                     if (runtime.preparedKey !== getCommandKey(entry, context.currentIndex)) throw new Error('Preparação não verificada nesta pagina. O comando não será reenviado.');
                     const result = attackCurrent(context, targetWindow, context.commandType);
-                    if (!result.valid) throw new Error(result.message);
+                    if (!result.valid) throw Object.assign(new Error(result.message), { code: result.code });
                     renderAutomatic(context, targetWindow);
                     schedule(POLL_INTERVAL_MS);
                     return;
@@ -1697,7 +1817,25 @@
     EAS.FakesExecution.automaticControl = automaticControl;
     EAS.FakesExecution.executionCounts = executionCounts;
     EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
+    EAS.FakesExecution.readOutgoingCommands = readOutgoingCommands;
+    EAS.FakesExecution.reconcileOutgoing = reconcileOutgoing;
     // Temporary DEV helper, intentionally available without changing persisted settings.
+    // Read-only image audit: no fetches, image creation, observers or refreshes.
+    window.EASFakeImageDebug = () => {
+        const cleanUrl = value => { try { const url = new URL(value, window.location.href); return url.origin + url.pathname; } catch { return String(value || ''); } };
+        const images = Array.from(document.querySelectorAll('img')).filter(img => /\.gif(?:[?#]|$)/i.test(img.currentSrc || img.src) || (img.complete && img.naturalWidth === 0)).map(img => ({
+            src: cleanUrl(img.currentSrc || img.src), broken: img.complete && img.naturalWidth === 0,
+            id: img.id, className: img.className, parentId: img.parentElement?.id || null,
+            easOwner: img.closest('[id^="eas-"], [data-eas-tw-hub]')?.id || null
+        }));
+        const resources = (window.performance?.getEntriesByType('resource') || []).filter(item => /\.gif(?:[?#]|$)/i.test(item.name)).slice(-50).map(item => ({
+            url: cleanUrl(item.name), initiatorType: item.initiatorType, responseStatus: item.responseStatus ?? null,
+            startTime: item.startTime, duration: item.duration
+        }));
+        const snapshot = { images, resources };
+        console.log?.('[EAS][IMAGE AUDIT]', snapshot);
+        return snapshot;
+    };
     window.EASFakeDebug = () => ({ ...confirmationDiagnostic(window),
         bootstrap: JSON.parse(JSON.stringify(window.EASFakeBootstrapDebug || null)) });
     window.__EASFakeBootstrapMark?.('fakeModuleInitialized', { message: 'fake module initialized' });

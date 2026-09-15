@@ -11,6 +11,8 @@ Ainda é necessário confirmar qual desses carregadores está instalado no naveg
 
 ## Carregar exatamente os arquivos locais deste patch
 
+**Como distinguir os scripts no Violentmonkey:** `EAS TW Hub Loader` é o arquivo padrão, que busca o bundle remoto. `EAS TW Hub LOCAL validation` é o pacote gerado, que contém os fontes locais. O diagnóstico `codeSource: "remote"` com `localBuildId: null` confirma que o pacote embedded não estava ativo naquela página. Instalar apenas `eas-tw-loader.user.js` não instala o pacote local. O arquivo remoto não é atualizado por alterações neste projeto e não foi publicado como parte deste patch.
+
 1. Gere o pacote na raiz do projeto:
 
    ```powershell
@@ -51,4 +53,50 @@ Ative **Preservar log** no Console para guardar os eventos entre páginas. Se o 
 
 Somente após confirmar a origem local, inicie uma operação nova com dois comandos. Verifique o mesmo `localBuildId` em cada página de confirmação e o avanço após cada envio. As validações, travas, composição e ações do executor permanecem as existentes.
 
+Para o patch de destino, teste primeiro um comando e depois dois. Antes do ataque, procure `[EAS][FAKE][TARGET]`: ele mostra o valor visível, os valores submetidos (`nativeX`, `nativeY`, `submittedInput`), eventual ID selecionado e `targetValidated`. O adapter tenta restaurar o destino uma vez e revalida o formulário. `TARGET_NOT_APPLIED` interrompe o envio ou identifica a rejeição de destino retornada pelo jogo. A presença de `targetVillageId: null` não impede um formulário que aceita coordenadas diretamente.
+
 Sempre que modificar os fontes, gere novamente o arquivo e reimporte/substitua o userscript instalado. Editar o arquivo local não atualiza automaticamente a cópia instalada no navegador. O diretório `local-test/` é gerado e ignorado pelo Git.
+
+## Reconciliação do envio na Praça
+
+O retorno real do jogo pode não conter `command_id` na URL nem `.success_box`. O Fake agora compara os IDs estruturados de `#commands_outgoings tr.command-row` com o snapshot capturado antes da confirmação. Quando a confirmação não mostra a tabela, usa o snapshot persistido na Praça antes de Atacar. O snapshot fica vinculado à execução, comando, tentativa, origem e alvo.
+
+Somente um ID novo, de tipo compatível, mesma origem e coordenada extraída de `.quickedit-label` permite concluir. O texto do nome da aldeia ou do tipo do comando não é usado. IDs divergentes na mesma linha, coordenadas ausentes, paginação detectada, snapshot ausente ou candidatos ambíguos não autorizam sucesso. A espera pelo DOM tem limite de 10 segundos contado a partir do início da reconciliação na página de retorno; reload não reinicia esse prazo persistido. Não há reenvio automático.
+
+Após sucesso, a tentativa conserva seu ID, o ID do comando real e a data de conclusão; `lastConfirmation` registra a associação. As listas de IDs anteriores são descartadas após a conclusão para não multiplicar o tamanho do storage por toda a fila. O próximo comando captura seu próprio snapshot.
+
+Limites: tabelas incompletas ou comandos renomeados sem coordenada podem impedir a reconciliação. Um envio paralelo, externo ao EAS, da mesma origem para o mesmo alvo pode ser indistinguível pelas informações disponíveis no DOM. Faça o teste sem outros envios simultâneos dessa origem/alvo.
+
+## Auditoria de imagens e HTTP 429
+
+A busca nos fontes não encontrou criação de `.gif`, `new Image()` ou `sendBeacon`. Os `<img>` encontrados estão em `modules/mass-snipe.js` (`.webp`) e `modules/troop-counter.js` (`.png`). A referência a `.gif` em `core/troops.js` apenas identifica unidades no HTML; não cria nem solicita imagens. `core/observability.js` grava logs, sem imagens de comunicação.
+
+Há refresh de aldeias/Mercado em `core/game-data.js` durante o bootstrap e leitura de HTML remoto por `DOMParser` em `services/market-engine.js`. Isso explica atividade desses módulos, mas não prova a origem da fileira de imagens nem dos 429 de `.gif`. Nenhum loop, imagem ou estilo foi alterado por hipótese.
+
+Quando o problema ocorrer, capture:
+
+```js
+JSON.stringify(EASFakeImageDebug(), null, 2)
+```
+
+O helper apenas lê as imagens presentes (incluindo ancestral EAS quando identificável) e as últimas 50 entradas de recursos `.gif` já registradas pelo navegador. Não cria imagens, não faz requests e não instala timers. Query strings são removidas do resultado. Para atribuir a origem exata, envie também o campo **Initiator** de uma requisição 429 na aba Network; os dados de Performance podem não expor o status HTTP ou a pilha de criação.
+
+### Baseline persistido por tentativa
+
+O caminho anterior aceitava `readOutgoingCommands().available === false`, gravava
+`beforeCommandIds: null` e ainda enviava. A serializacao/normalizacao nao removia o
+campo. O log real nao distingue tabela ausente, DOM carregando, paginacao ou linha
+invalida; `[EAS][FAKE][SNAPSHOT].reason` agora identifica essas causas.
+
+Antes de Atacar, a tentativa recebe identidade e um snapshot real de
+`#commands_outgoings`, persistido em
+`eas_tw_fakes_execution.queue[currentIndex].confirmationAttempt.outgoingSnapshot`.
+A leitura de volta verifica o JSON antes do clique. Na confirmacao, a mesma
+identidade e baseline sao recuperados; DOM indisponivel nao os substitui por null.
+Sem baseline valido, o envio fica bloqueado. A confirmacao direta ainda pode
+capturar uma tabela real nessa pagina, antes do clique irreversivel.
+
+Os logs SNAPSHOT incluem escopo, IDs, horario, persistencia verificada e indicacao
+de reutilizacao do snapshot persistido (`restoredAfterNavigation`). Essa indicacao
+significa recuperacao de baseline existente, inclusive em bootstrap duplicado.
+O reconciliador e sua regra de evidencia positiva permanecem inalterados.

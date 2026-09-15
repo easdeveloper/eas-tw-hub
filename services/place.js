@@ -243,6 +243,8 @@
         input.focus();
         setInputValue(input, parsed.coordinate, targetWindow);
         dispatchFieldEvents(input, targetWindow);
+        // Coordinate widgets may update their submitted fields on keyup rather than input.
+        if (targetWindow.KeyboardEvent) input.dispatchEvent(new targetWindow.KeyboardEvent('keyup', { bubbles: true, key: 'Unidentified' }));
         input.blur();
 
         if (input.value !== parsed.coordinate) {
@@ -251,6 +253,55 @@
 
         EAS.Place.clearTemporaryTarget(targetWindow);
         return true;
+    };
+
+    const readCommandTarget = (targetWindow = window) => {
+        const form = getCommandForm(targetWindow.document);
+        const input = getTargetInput(targetWindow.document);
+        const normalize = value => EAS.Utils.parseCoordinate(String(value || '').trim())?.coordinate || null;
+        const x = form?.querySelector('input[name="x"]');
+        const y = form?.querySelector('input[name="y"]');
+        const targetId = form?.querySelector('input[name="target_id"], input[name="target_village_id"], input[name="target"]');
+        const fields = targetWindow.FormData && form ? new targetWindow.FormData(form) : null;
+        const values = (name, node) => fields ? fields.getAll(name).map(String) : node && !node.disabled ? [String(node.value)] : [];
+        const xs = values('x', x), ys = values('y', y), typed = values('input', input);
+        const split = Boolean(x || y);
+        const actualTarget = split
+            ? xs.length === 1 && ys.length === 1 ? normalize(`${xs[0]}|${ys[0]}`) : null
+            : typed.length === 1 ? normalize(typed[0]) : null;
+        return { inputFound: Boolean(input), inputValue: input?.value || '',
+            actualTarget, inputTarget: normalize(input?.value), coordinateFieldsFound: split,
+            nativeX: xs, nativeY: ys, submittedInput: typed,
+            nativeTargetId: targetId && !targetId.disabled ? String(targetId.value || '') : null };
+    };
+
+    EAS.Place.readCommandTarget = readCommandTarget;
+    EAS.Place.ensureCommandTarget = (coordinate, targetWindow = window, expectedVillageId = null) => {
+        const expectedTarget = EAS.Utils.parseCoordinate(coordinate)?.coordinate;
+        const matches = state => Boolean(expectedTarget && state.actualTarget === expectedTarget &&
+            (!state.inputFound || state.inputTarget === expectedTarget) &&
+            (!state.nativeTargetId || (expectedVillageId != null && state.nativeTargetId === String(expectedVillageId))));
+        const before = readCommandTarget(targetWindow);
+        let applyTarget = false;
+        if (!matches(before)) {
+            applyTarget = EAS.Place.fillCommandTarget(coordinate, targetWindow);
+            // Only update existing native coordinate controls; never invent a target village ID.
+            if (applyTarget) {
+                const form = getCommandForm(targetWindow.document);
+                const [x, y] = expectedTarget.split('|');
+                for (const [name, value] of [['x', x], ['y', y]]) {
+                    const field = form?.querySelector(`input[name="${name}"]`);
+                    if (field && !field.disabled && !field.readOnly) {
+                        setInputValue(field, value, targetWindow);
+                        dispatchFieldEvents(field, targetWindow);
+                    }
+                }
+            }
+        }
+        const after = readCommandTarget(targetWindow);
+        return { ...after, expectedTarget, targetVillageId: expectedVillageId,
+            inputValueBefore: before.inputValue, applyTarget, inputValueAfter: after.inputValue,
+            targetValidated: matches(after), code: matches(after) ? null : 'TARGET_NOT_APPLIED' };
     };
 
     EAS.Place.fillTarget = (coordinate) => {

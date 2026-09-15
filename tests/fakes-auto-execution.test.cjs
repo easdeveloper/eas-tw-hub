@@ -3,9 +3,10 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const source = fs.readFileSync('services/fakes-execution.js', 'utf8');
+const outgoingRow = require('./outgoing-dom.cjs').row;
 const KEY = 'eas_tw_fakes_execution';
-function fixture(size = 3) {
-    let now = 100000, timerId = 0, preparations = 0, attacks = 0, confirmations = 0;
+function fixture(size = 3, startTime = 100000) {
+    let now = startTime, timerId = 0, preparations = 0, attacks = 0, confirmations = 0;
     const timers = new Map(), storage = new Map(), events = [];
     const read = () => JSON.parse(storage.get(KEY) || 'null');
     const write = value => storage.set(KEY, JSON.stringify(value));
@@ -14,8 +15,10 @@ function fixture(size = 3) {
         return { tag, dataset: {}, children: [], textContent: '', value: '', disabled: false,
             appendChild(child) { this.children.push(child); if(child.id) nodes.set(child.id,child); },
             remove() { nodes.delete(this.id); }, addEventListener(type, callback) { this[type] = callback; },
+            focus(){},blur(){},closest(){return form;},getBoundingClientRect(){return {width:100,height:20};},
             dispatchEvent() {}, querySelector() { return null; } };
     }
+    let outgoing = [], outgoingAvailable = true;
     let document, input, unit, attackButton, confirmButton, form, error = null;
     const window = { name:'auto-tab', location:{href:''}, HTMLInputElement:{prototype:{}}, Event:class {} };
     const sandbox = { window, URL, console:{debug(){},error(){}}, Date:class extends Date { static now(){return now;} },
@@ -24,21 +27,23 @@ function fixture(size = 3) {
         localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
         EAS:{ Utils:{parseCoordinate:value=>/^\d+\|\d+$/.test(value)?{coordinate:value}:null},
             CommandRules:{scanCommandRuleErrors:()=>[],validateCommandComposition:()=>({valid:true}),getWorld:()=> 'test'},
-            Place:{getCommandForm:()=>form, fillCommandTarget(target){preparations++;events.push('prepare');assert.equal(read().queue[read().currentIndex].status,'preparing');input.value=target;return true;},
+            Place:{getCommandForm:()=>form, ensureCommandTarget:target=>({targetValidated:input.value===target}), fillCommandTarget(target){preparations++;events.push('prepare');assert.equal(read().queue[read().currentIndex].status,'preparing');input.value=target;return true;},
                 buildPlaceUrl:id=>`https://test/game.php?screen=place&village=${id}`}}
     };
     function navigate(stage='place', village=9, sameDocument=false) {
         const previousDocument = document;
         nodes.clear();error=null;
+        if (stage === 'success') outgoing.push(outgoingRow({id:String(1874818544 + read().currentIndex),source:String(village),target:read().queue[read().currentIndex].target}));
         document = {readyState:'complete',createElement:element,getElementById:id=>nodes.get(id)||null,body:element('body'),
             querySelector(selector){
-                if(selector==='#command-data-form') return form;
+                if(selector==='#commands_outgoings')return outgoingAvailable?{querySelectorAll:()=>outgoing}:null;
+                if(selector==='#command-data-form' || selector==='#command-data-form, form[action*="screen=place"]') return form;
                 if(selector==='.error_box, .error') return error;
                 return null;
             }};
         input=element('input');unit=element('input');unit.dataset.allCount='100000';
-        attackButton={disabled:false,click(){attacks++;events.push('attack');assert.equal(read().queue[read().currentIndex].status,'attacking');}};
-        confirmButton={disabled:false,click(){confirmations++;events.push('confirm');assert.equal(read().queue[read().currentIndex].status,'confirming');}};
+        attackButton={disabled:false,click(){assert.ok(Array.isArray(read().queue[read().currentIndex].confirmationAttempt.outgoingSnapshot.beforeCommandIds));attacks++;events.push('attack');assert.equal(read().queue[read().currentIndex].status,'attacking');}};
+        confirmButton={disabled:false,click(){assert.ok(Array.isArray(read().queue[read().currentIndex].confirmationAttempt.outgoingSnapshot.beforeCommandIds));confirmations++;events.push('confirm');assert.equal(read().queue[read().currentIndex].status,'confirming');}};
         form={querySelector(selector){
             if(selector==='#troop_confirm_submit')return stage==='confirm'?confirmButton:null;
             if(selector==='input[name="input"]')return input;
@@ -56,9 +61,15 @@ function fixture(size = 3) {
     const api=()=>sandbox.EAS.FakesExecution;
     const tick=()=>{assert.ok(timers.size,'timer expected');const [id,t]=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];timers.delete(id);now=t.at;t.fn();};
     const reload=stage=>{navigate(stage,read()?.queue[read().currentIndex]?.villageId||9);vm.runInContext(source,sandbox);api().initialize();};
-    return {read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
+    return {outgoing:(rows,available=true)=>{outgoing=rows;outgoingAvailable=available;},read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
         run:()=>api().initialize(),counts:()=>({preparations,attacks,confirmations}),
-        unit:()=>unit,confirm:()=>confirmButton,error:value=>{error={textContent:value};},
+        unit:()=>unit,confirm:()=>confirmButton,input:()=>input,
+        useNativeTarget(){
+            window.getComputedStyle=()=>({});document.defaultView=window;document.querySelectorAll=()=>[input];
+            window.FormData=class{getAll(name){return name==='input'?[input.value]:[];}};
+            sandbox.location={...window.location,host:'test',origin:'https://test'};sandbox.sessionStorage={removeItem(){}};sandbox.EAS.World={};
+            vm.runInContext(fs.readFileSync('services/place.js','utf8'),sandbox);
+        },error:value=>{error={textContent:value};},
         next(){const c=read();navigate('place',c.queue[c.currentIndex].villageId);api().initialize();},
         success(){const c=read();navigate('success',c.queue[c.currentIndex].villageId);api().initialize();tick();},
         confirmation(){const c=read();navigate('confirm',c.queue[c.currentIndex].villageId);api().initialize();tick();},
@@ -215,9 +226,113 @@ test('bootstrap diagnostic records whether resume was actually called',async()=>
 
 test('two commands survive replacement of the entire JavaScript realm using only persisted state and tab name',()=>{
  const first=fixture(2);first.run();first.tick();first.tick();
- const confirm1=fixture(2);confirm1.write(first.read());confirm1.navigate('confirm',9);confirm1.run();confirm1.tick();confirm1.success();
- const second=fixture(2);second.write(confirm1.read());second.navigate('place',10);second.run();second.tick();second.tick();
- const confirm2=fixture(2);confirm2.write(second.read());confirm2.navigate('confirm',10);confirm2.run();confirm2.tick();confirm2.success();
+ const confirm1=fixture(2,101000);confirm1.write(first.read());confirm1.navigate('confirm',9);confirm1.run();confirm1.tick();confirm1.success();
+ const second=fixture(2,102000);second.write(confirm1.read());second.navigate('place',10);second.run();second.tick();second.tick();
+ const confirm2=fixture(2,103000);confirm2.write(second.read());confirm2.navigate('confirm',10);confirm2.run();confirm2.tick();confirm2.success();
  assert.equal(first.counts().attacks+second.counts().attacks,2);assert.equal(confirm1.counts().confirmations+confirm2.counts().confirmations,2);
  assert.equal(confirm2.read(),null);assert.equal(confirm2.summary().counts.completed,2);
+});
+
+test('target adapter failure blocks attack and pauses the queue without success',()=>{
+ const f=fixture(2);f.sandbox.EAS.Place.ensureCommandTarget=()=>({targetValidated:false});
+ f.run();f.tick();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().paused,true);assert.equal(f.read().errors[0].code,'TARGET_NOT_APPLIED');assert.equal(f.read().completed.length,0);assert.equal(f.read().currentIndex,0);
+ f.run();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().queue[1].status,'pending');
+});
+test('native missing-target response is classified as target failure, not successful confirmation',()=>{
+ const f=fixture(2);f.run();f.tick();f.tick();f.error('Por favor, selecione uma aldeia alvo.');f.tick();
+ assert.equal(f.read().errors[0].code,'TARGET_NOT_APPLIED');assert.equal(f.read().paused,true);assert.equal(f.read().completed.length,0);assert.equal(f.counts().confirmations,0);
+});
+
+test('real Place adapter validates and restores a coordinate with null ID before Fake attack',()=>{
+ const f=fixture(2);f.useNativeTarget();const c=f.read();c.queue[0].targetVillageId=null;f.write(c);
+ f.run();f.tick();assert.equal(f.input().value,'501|501');f.input().value='';f.tick();
+ assert.equal(f.input().value,'501|501');assert.equal(f.counts().attacks,1);assert.equal(f.read().queue[0].status,'attacking');
+ f.confirmation();assert.equal(f.counts().confirmations,1);assert.equal(f.read().queue[0].status,'confirming');
+});
+
+function readyReconciliation(f){f.run();f.tick();f.tick();f.confirmation();f.navigate('place',9);}
+test('snapshot persists existing same-target ID in its own attempt and matches only the new ID',()=>{
+ const f=fixture(2);f.outgoing([outgoingRow({id:'11'})]);readyReconciliation(f);
+ const attempt=f.read().queue[0].confirmationAttempt;assert.deepEqual(attempt.outgoingSnapshot.beforeCommandIds,['11']);assert.equal(attempt.outgoingSnapshot.attemptId,attempt.attemptId);
+ f.outgoing([outgoingRow({id:'11'}),outgoingRow({id:'12'})]);f.run();f.tick();
+ assert.equal(f.read().currentIndex,1);assert.equal(f.read().completed.length,1);assert.equal(f.read().lastConfirmation.outgoingCommandId,'12');assert.equal(f.read().queue[0].confirmationAttempt.state,'completed');
+ f.api().resumeConfirmation(f.window);assert.equal(f.read().currentIndex,1);assert.equal(f.read().completed.length,1);
+});
+for(const [kind,result] of [['old-only','NO_NEW_COMMAND'],['ambiguous','AMBIGUOUS'],['missing','SNAPSHOT_MISSING'],['source','SOURCE_OR_TYPE_MISMATCH'],['target','TARGET_MISMATCH'],['attempt','ATTEMPT_MISMATCH'],['dom','DOM_UNAVAILABLE'],['home','SOURCE_MISMATCH']])test(`reconciliation fails safely: ${kind}`,()=>{
+ const f=fixture(2);f.outgoing([outgoingRow({id:'11'})]);readyReconciliation(f);const c=f.read();
+ let rows=[outgoingRow({id:'11'}),outgoingRow({id:'12'})];
+ if(kind==='old-only')rows=[outgoingRow({id:'11'})];
+ if(kind==='ambiguous')rows.push(outgoingRow({id:'13'}));
+ if(kind==='missing')delete c.queue[0].confirmationAttempt.outgoingSnapshot;
+ if(kind==='source')rows=[outgoingRow({id:'12',source:'8'})];
+ if(kind==='target')rows=[outgoingRow({id:'12',target:'502|502'})];
+ if(kind==='attempt')c.queue[0].confirmationAttempt.outgoingSnapshot.attemptId='different';
+ if(kind==='home')c.queue[0].confirmationAttempt.outgoingSnapshot.sourceVillageId='8';
+ f.write(c);f.outgoing(rows,kind!=='dom');assert.equal(f.api().reconcileOutgoing(c,f.window).result,result);
+ f.api().resumeConfirmation(f.window);assert.equal(f.read().currentIndex,0);assert.equal(f.read().completed.length,0);assert.equal(f.read().queue[0].confirmationAttempt.state,'confirming');assert.equal(f.counts().confirmations,1);
+});
+test('delayed outgoing DOM is reconciled within the existing bounded timer',()=>{
+ const f=fixture(2);readyReconciliation(f);f.outgoing([],false);f.run();f.tick();f.tick();assert.equal(f.read().currentIndex,0);
+ f.outgoing([outgoingRow({id:'12'})]);f.tick();assert.equal(f.read().currentIndex,1);assert.equal(f.counts().confirmations,1);
+});
+test('no positive evidence times out and never retries or advances',()=>{
+ const f=fixture(2);readyReconciliation(f);f.outgoing([]);f.run();f.tick();for(let i=0;i<50;i++)f.tick();
+ assert.equal(f.read().paused,true);assert.equal(f.read().currentIndex,0);assert.equal(f.read().completed.length,0);assert.equal(f.read().queue[0].confirmationAttempt.state,'confirming');assert.equal(f.timers.size,0);assert.equal(f.counts().confirmations,1);
+});
+test('confirmation without outgoing table uses persisted preparation snapshot',()=>{
+ const f=fixture(2);f.outgoing([outgoingRow({id:'11'})]);f.run();f.tick();f.tick();f.outgoing([],false);f.confirmation();
+ assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,['11']);
+ f.navigate('place',9);f.outgoing([outgoingRow({id:'11'}),outgoingRow({id:'12'})]);f.run();f.tick();assert.equal(f.read().currentIndex,1);
+});
+test('completed attempt reports ALREADY_RECONCILED without mutating counters',()=>{
+ const f=fixture(2);readyReconciliation(f);f.outgoing([outgoingRow({id:'12'})]);f.api().resumeConfirmation(f.window);
+ const c=f.read();c.currentIndex=0;const before=JSON.stringify(c);assert.equal(f.api().reconcileOutgoing(c,f.window).result,'ALREADY_RECONCILED');assert.equal(JSON.stringify(c),before);
+});
+
+test('real structured row adapter reads ID, home, type and coordinate independently of label language',()=>{
+ const f=fixture();f.outgoing([outgoingRow({id:'1874818544',source:'13186',target:'604|379'})]);
+ const observed=f.api().readOutgoingCommands(f.window);assert.equal(observed.available,true);assert.equal(JSON.stringify(observed.commands),JSON.stringify([{id:'1874818544',sourceVillageId:'13186',type:'attack',target:'604|379'}]));
+});
+test('conflicting structured IDs invalidate the outgoing DOM rather than guessing',()=>{
+ const f=fixture();const row=outgoingRow({id:'12'}),query=row.querySelector;row.querySelector=selector=>selector==='.quickedit-out[data-id]'?{dataset:{id:'13'}}:query(selector);f.outgoing([row]);assert.equal(f.api().readOutgoingCommands(f.window).available,false);
+});
+
+test('snapshot is persisted before attack and survives JSON and a fresh bootstrap without a confirmation table',()=>{
+ const f=fixture(2);f.outgoing([outgoingRow({id:'100'})]);f.run();f.tick();f.tick();
+ const before=f.read().queue[0].confirmationAttempt;
+ assert.equal(f.counts().attacks,1);assert.deepEqual(before.outgoingSnapshot.beforeCommandIds,['100']);
+ assert.equal(before.outgoingSnapshot.attemptId,before.attemptId);
+ const next=fixture(2,101000);next.write(JSON.parse(JSON.stringify(f.read())));next.outgoing([],false);next.navigate('confirm',9);
+ const logs=[];next.sandbox.console.log=(label,data)=>{if(label==='[EAS][FAKE][SNAPSHOT]')logs.push(data);};
+ next.run();next.tick();next.api().resumeConfirmation(next.window);
+ const after=next.read().queue[0].confirmationAttempt;
+ assert.equal(after.attemptId,before.attemptId);assert.deepEqual(after.outgoingSnapshot,before.outgoingSnapshot);
+ assert.equal(next.counts().confirmations,1);assert.ok(logs.some(x=>x.persisted&&x.restoredAfterNavigation));
+});
+for(const baseline of [[],['100']])test(`snapshot set difference ${JSON.stringify(baseline)}`,()=>{
+ const f=fixture(2);f.outgoing(baseline.map(id=>outgoingRow({id})));readyReconciliation(f);
+ f.outgoing([...baseline,'200'].map(id=>outgoingRow({id})));
+ const result=f.api().reconcileOutgoing(f.read(),f.window);
+ assert.equal(result.result,'SUCCESS');assert.deepEqual(Array.from(result.newCommandIds),['200']);
+});
+test('missing real outgoing container blocks initial attack instead of inventing empty baseline',()=>{
+ const f=fixture(2);f.outgoing([],false);f.run();f.tick();f.tick();
+ assert.equal(f.counts().attacks,0);assert.equal(f.counts().confirmations,0);assert.equal(f.read().paused,true);
+});
+for(const field of ['attemptId','sourceVillageId'])test(`confirmation cannot adopt snapshot with wrong ${field}`,()=>{
+ const f=fixture(2);f.run();f.tick();f.tick();const c=f.read();c.queue[0].confirmationAttempt.outgoingSnapshot[field]='other';f.write(c);
+ f.confirmation();assert.equal(f.counts().confirmations,0);
+});
+test('explicit null baseline never reconciles as success',()=>{
+ const f=fixture(2);readyReconciliation(f);const c=f.read();c.queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds=null;
+ f.outgoing([outgoingRow({id:'200'})]);assert.equal(f.api().reconcileOutgoing(c,f.window).result,'SNAPSHOT_MISSING');
+});
+test('second command persists its own new baseline and identity',()=>{
+ const f=fixture(2);f.outgoing([outgoingRow({id:'100'})]);f.run();f.tick();f.tick();const first=f.read().queue[0].confirmationAttempt;
+ f.confirmation();f.success();f.next();f.outgoing([outgoingRow({id:'300',source:'10'})]);f.tick();f.tick();
+ const second=f.read().queue[1].confirmationAttempt;
+ assert.notEqual(second.attemptId,first.attemptId);assert.deepEqual(second.outgoingSnapshot.beforeCommandIds,['300']);
+ assert.equal(second.outgoingSnapshot.sourceVillageId,'10');assert.notEqual(second.commandId,first.commandId);
+ f.outgoing([],false);f.confirmation();assert.equal(f.counts().confirmations,2);
+ assert.deepEqual(f.read().queue[1].confirmationAttempt.outgoingSnapshot,second.outgoingSnapshot);
 });
