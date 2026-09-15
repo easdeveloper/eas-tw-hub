@@ -57,7 +57,7 @@
     const hasActiveRuntime = () => {
         const url = new URL(pageWindow.location.href);
         if (url.searchParams.get('eas_mission') || url.searchParams.get('eas_scheduled_execution')) return true;
-        return ['eas_tw_scheduler_v2', 'eas_tw_scheduler', 'eas_tw_market_target_supply_execution', 'eas_tw_market_offers_execution', 'eas_tw_market_balance_execution']
+        return ['eas_tw_fakes_execution', 'eas_tw_scheduler_v2', 'eas_tw_scheduler', 'eas_tw_market_target_supply_execution', 'eas_tw_market_offers_execution', 'eas_tw_market_balance_execution']
             .some((key) => {
                 try {
                     const value = JSON.parse(pageWindow.localStorage.getItem(key) || 'null');

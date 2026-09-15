@@ -123,6 +123,10 @@
                 return true;
             }
         }
+        if (window.EAS.FakesExecution?.resumeConfirmation?.()) {
+            window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'fakes' };
+            return true;
+        }
         const marketRuntimes = [
             ['coordinated-market', shouldInitializeMarketTargetExecution, () => window.EAS.MarketTargetExecution?.initialize?.()],
             ['market-offers', shouldInitializeMarketOfferExecution, () => window.EAS.MarketOffersExecution?.initialize?.()],

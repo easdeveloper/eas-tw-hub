@@ -72,6 +72,8 @@
     const removeContext = () => {
         try {
             localStorage.removeItem(EXECUTION_STORAGE_KEY);
+            localStorage.removeItem('eas_tw_fake_nt_execution');
+            localStorage.removeItem('eas_tw_fake_anti_snipe_execution');
         } catch {
             // The panel can still be closed when browser storage is unavailable.
         }
@@ -597,7 +599,7 @@
         uniquePush(context.completed, commandKey);
 
         if (entry) {
-            entry.status = 'forwarded';
+            entry.status = 'completed';
             entry.executedCommandType = executedCommandType;
         }
 
@@ -609,6 +611,80 @@
         context.forwardingCommandType = null;
         context.lastPopulationRejection = null;
         saveContext(context);
+    };
+
+    const confirmLog = (message) => console.debug(`[fake.exec.confirm] ${message}`);
+
+    // window.name survives same-origin navigation and is not shared by manual tabs.
+    const bindExecutionTab = (context, targetWindow) => {
+        context.executionTab = context.executionTab || `eas-fakes:${Date.now()}:${Math.random()}`;
+        targetWindow.name = context.executionTab;
+    };
+
+    const resumeConfirmation = (targetWindow = window) => {
+        const stored = readContext();
+        if (!stored || !stored.executionTab || targetWindow.name !== stored.executionTab ||
+            stored.endedAt || stored.finishedAt || !isMatchingPlace(stored, targetWindow)) {
+            confirmLog('invalid context');
+            return false;
+        }
+        const context = normalizeContext(stored);
+        const index = context.forwardingIndex;
+        const entry = context.queue[index];
+        if (!Number.isInteger(index) || index !== context.currentIndex || !entry ||
+            Number(entry.villageId) !== getScreen(targetWindow).villageId) return false;
+        const doc = targetWindow.document;
+        const url = new URL(targetWindow.location.href);
+        const form = doc.querySelector('#command-data-form');
+        const submit = form?.querySelector('#troop_confirm_submit');
+        const confirmation = url.searchParams.get('try') === 'confirm';
+        if (confirmation) {
+            confirmLog('page detected');
+            confirmLog(`command=${getCommandKey(entry, index)}`);
+            if (form) confirmLog('form found');
+            if (submit) confirmLog('button found');
+            confirmLog('validating');
+            if (['confirming', 'submitted', 'completed'].includes(entry.status)) {
+                confirmLog('duplicate blocked');
+                return true;
+            }
+            if (!['forwarding', 'prepared', 'confirm-page'].includes(entry.status) ||
+                !form || !submit || submit.disabled || submit.matches?.(':disabled') ||
+                context.completed.includes(getCommandKey(entry, index))) {
+                confirmLog('invalid context');
+                return true;
+            }
+            entry.status = 'confirming';
+            entry.confirmationUrl = targetWindow.location.href;
+            if (!saveContext(context)) return true;
+            confirmLog('submitting');
+            submit.click();
+            return true;
+        }
+        // The normal successful POST redirects to place with a command_id. Merely
+        // leaving confirmation (or finding the preparation form) is not success.
+        if (['confirming', 'submitted'].includes(entry.status) &&
+            (/^\d+$/.test(url.searchParams.get('command_id') || '') || doc.querySelector('.success_box')) &&
+            !doc.querySelector('.error_box, .error')) {
+            entry.status = 'submitted';
+            confirmLog('submitted');
+            completeForwardedTarget(context, index, context.forwardingCommandType);
+            if (!getCurrentEntry(context)) {
+                removeContext();
+                const summary = doc.createElement('aside');
+                summary.id = PANEL_ID;
+                summary.className = 'fake-execution-panel';
+                summary.textContent = `Execu??o conclu?da. Fakes enviados: ${context.completed.length}. Pulados: ${context.skipped.length}. Erros: ${context.errors.length}.`;
+                doc.getElementById(PANEL_ID)?.remove();
+                doc.body.appendChild(summary);
+                return true;
+            }
+            context.continueQueue = true;
+            if (!saveContext(context)) return true;
+            targetWindow.location.href = String(EAS.Place.buildPlaceUrl(getCurrentEntry(context).villageId));
+            return true;
+        }
+        return ['confirming', 'submitted'].includes(entry.status);
     };
 
     const watchCommandResult = ({
@@ -652,17 +728,8 @@
                 return;
             }
 
-            if (isConfirmationScreen(
-                currentDocument,
-                context.forwardingCommandType
-            )) {
+            if (resumeConfirmation(targetWindow)) {
                 stop();
-                completeForwardedTarget(
-                    context,
-                    entryIndex,
-                    context.forwardingCommandType
-                );
-                onConfirmed();
                 return;
             }
 
@@ -766,20 +833,9 @@
                 context.forwardingIndex,
                 initialCommandRule
             );
-        } else if (hasForwardingEntry && isConfirmationScreen(
-            doc,
-            context.forwardingCommandType
-        )) {
-            completeForwardedTarget(
-                context,
-                context.forwardingIndex,
-                context.forwardingCommandType
-            );
-        } else if (hasForwardingEntry) {
-            context.forwardingIndex = null;
-            context.forwardingCommandType = null;
-            saveContext(context);
         }
+        if (resumeConfirmation(targetWindow)) return true;
+        if (hasForwardingEntry) return false;
 
         copyStyles(targetWindow);
         doc.getElementById(PANEL_ID)?.remove();
@@ -985,11 +1041,12 @@
                         return;
                     }
 
+                    bindExecutionTab(context, targetWindow);
                     context.forwardingIndex = context.currentIndex;
                     context.forwardingCommandType = 'attack';
                     context.forwardingStartedAt = Date.now();
                     result.entry.status = 'forwarding';
-                    saveContext(context);
+                    if (!saveContext(context)) return;
                     render(
                         'Encaminhando ataque. Aguardando resposta do jogo...',
                         'info'
@@ -1043,11 +1100,12 @@
                         return;
                     }
 
+                    bindExecutionTab(context, targetWindow);
                     context.forwardingIndex = context.currentIndex;
                     context.forwardingCommandType = 'support';
                     context.forwardingStartedAt = Date.now();
                     result.entry.status = 'forwarding';
-                    saveContext(context);
+                    if (!saveContext(context)) return;
                     render(
                         'Encaminhando apoio. Aguardando resposta do jogo...',
                         'info'
@@ -1205,6 +1263,14 @@
         };
 
         render();
+        if (context.continueQueue && targetWindow.name === context.executionTab) {
+            context.continueQueue = false;
+            if (saveContext(context)) {
+                const buttons = Array.from(content.querySelectorAll('button'));
+                const next = buttons.find((button) => button.textContent === (context.commandType === 'support' ? 'Apoiar' : 'Atacar'));
+                if (next && !next.disabled) next.click();
+            }
+        }
         return true;
     };
 
@@ -1275,6 +1341,7 @@
             : false;
     };
 
+    EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
     EAS.FakesExecution.mountPanel = mountPanel;
     EAS.FakesExecution.readContext = readContext;
     EAS.FakesExecution.parseMinimumPopulationError = parseMinimumPopulationError;
