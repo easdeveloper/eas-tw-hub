@@ -1,6 +1,8 @@
 (() => {
     'use strict';
 
+    window.__EASFakeBootstrapMark?.('fakeModuleReached');
+
     EAS.FakesExecution = EAS.FakesExecution || {};
 
     const EXECUTION_STORAGE_KEY = 'eas_tw_fakes_execution';
@@ -751,6 +753,7 @@
     };
 
     const resumeConfirmation = (targetWindow = window) => {
+        targetWindow.__EASFakeBootstrapMark?.('confirmationHandlerEntered');
         confirmationDiagnostic(targetWindow, 'CONFIRM_HANDLER_ENTER');
         const stored = readContext();
         if (!stored || !stored.executionTab || targetWindow.name !== stored.executionTab ||
@@ -945,6 +948,7 @@
     };
 
     const resumeAutomatic = (targetWindow = window) => {
+        targetWindow.__EASFakeBootstrapMark?.('resumeEntered');
         confirmationDiagnostic(targetWindow, 'AUTO_RESUME_ENTER');
         const stored = readContext();
         if (!stored?.autoMode || !stored.executionTab || stored.executionTab !== targetWindow.name ||
@@ -1686,13 +1690,17 @@
             : false;
     };
 
-    EAS.FakesExecution.resume = (targetWindow = window) => readContext()?.autoMode
-        ? resumeAutomatic(targetWindow) : resumeConfirmation(targetWindow);
+    EAS.FakesExecution.resume = (targetWindow = window) => {
+        targetWindow.__EASFakeBootstrapMark?.('resumeEntered');
+        return readContext()?.autoMode ? resumeAutomatic(targetWindow) : resumeConfirmation(targetWindow);
+    };
     EAS.FakesExecution.automaticControl = automaticControl;
     EAS.FakesExecution.executionCounts = executionCounts;
     EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
     // Temporary DEV helper, intentionally available without changing persisted settings.
-    window.EASFakeDebug = () => confirmationDiagnostic(window);
+    window.EASFakeDebug = () => ({ ...confirmationDiagnostic(window),
+        bootstrap: JSON.parse(JSON.stringify(window.EASFakeBootstrapDebug || null)) });
+    window.__EASFakeBootstrapMark?.('fakeModuleInitialized', { message: 'fake module initialized' });
     confirmationDiagnostic(window, 'SERVICE_LOADED');
     EAS.FakesExecution.mountPanel = mountPanel;
     EAS.FakesExecution.readContext = readContext;

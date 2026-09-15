@@ -1,5 +1,57 @@
 (() => {
     'use strict';
+
+    // Temporary DEV bootstrap probe: intentionally self-contained before loader guards/network.
+    ((root, stage) => {
+        try {
+            const marker = root.EASFakeBootstrapDebug = root.EASFakeBootstrapDebug || {
+                loaded: true, url: root.location.href, timestamp: Date.now(),
+                loaderReached: false, indexReached: false, fakeModuleReached: false,
+                fakeModuleInitialized: false, resumeRequested: false,
+                resumeEntered: false, confirmationHandlerEntered: false, events: []
+            };
+            root.__EASFakeBootstrapMark = (event, details = {}) => {
+                try {
+                    marker[event] = true;
+                    marker.lastEvent = event;
+                    marker.events.push({ event, timestamp: Date.now(), ...details });
+                    if (marker.events.length > 40) marker.events.shift();
+                    const url = new URL(root.location.href);
+                    let execution = null, storageError = null;
+                    try { execution = JSON.parse(root.localStorage.getItem('eas_tw_fakes_execution') || 'null'); }
+                    catch (error) { storageError = String(error); }
+                    console.log?.('[EAS][FAKE][BOOTSTRAP]', { event, ...details, url: url.href,
+                        fakeExecutionDetected: Boolean(execution), storageError,
+                        confirmPageDetected: url.searchParams.get('screen') === 'place' && url.searchParams.get('try') === 'confirm',
+                        resumeRequested: marker.resumeRequested, fakeModuleInitialized: marker.fakeModuleInitialized });
+                } catch { /* Diagnostic failure must not affect bootstrap. */ }
+            };
+            if (typeof root.EASFakeDebug !== 'function') root.EASFakeDebug = () => {
+                let execution = null, storageError = null;
+                try { execution = JSON.parse(root.localStorage.getItem('eas_tw_fakes_execution') || 'null'); }
+                catch (error) { storageError = String(error); }
+                const entry = execution?.queue?.[execution.currentIndex];
+                const form = root.document.querySelector('#command-data-form');
+                const button = form?.querySelector('#troop_confirm_submit');
+                const snapshot = { url: root.location.href, executionFound: Boolean(execution), storageError,
+                    executionId: execution?.executionTab || null, tabId: root.name,
+                    tabAuthorized: Boolean(execution?.executionTab && execution.executionTab === root.name),
+                    currentCommand: entry || null,
+                    currentCommandId: entry ? `${execution.currentIndex}:${entry.villageId || 0}:${entry.target || ''}` : null,
+                    commandState: entry?.status || null, attemptId: entry?.confirmationAttempt?.attemptId || null,
+                    confirmationLock: entry?.confirmationAttempt || null,
+                    formFound: Boolean(form), buttonFound: Boolean(button), buttonDisabled: button?.disabled ?? null,
+                    canConfirm: null, blockedReason: !marker.fakeModuleInitialized ? 'FAKE_MODULE_NOT_INITIALIZED'
+                        : !marker.resumeEntered ? 'FAKE_RESUME_NOT_ENTERED' : 'CONFIRMATION_DIAGNOSTIC_NOT_REGISTERED',
+                    bootstrap: marker };
+                const copy = JSON.parse(JSON.stringify(snapshot));
+                console.log?.('[EAS][FAKE][BOOTSTRAP] snapshot', copy);
+                return copy;
+            };
+            root.__EASFakeBootstrapMark(stage, { message: stage === 'indexReached' ? 'index reached' : 'loader reached' });
+        } catch { /* Keep the original loader behavior. */ }
+    })(window, 'loaderReached');
+
     const INDEX_URL='https://easdeveloper.github.io/eas-tw-hub/index.js';
     const PANEL_ID='eas-tw-loader-status';
     const RUNTIME_KEY='EASTWHubLoaderRuntime';
