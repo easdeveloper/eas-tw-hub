@@ -66,6 +66,15 @@
     const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
     const loadedScripts = new Set();
+    // A generated local userscript embeds every asset; missing files never fall back
+    // to the published release, so a validation run cannot silently mix versions.
+    const assetUrl = (src, type) => {
+        if (!window.EASLocalBuild) return `${BASE_URL}/${src}?v=${Date.now()}`;
+        const content = window.EASLocalBuild.files[src];
+        if (typeof content !== 'string') throw new Error(`Local build asset missing: ${src}`);
+        return URL.createObjectURL(new Blob([content], { type }));
+    };
+
     const isMobile = () => Boolean(
         ((navigator.maxTouchPoints || 0) > 0 && Math.min(screen.width || innerWidth, innerWidth) <= 900) ||
         window.matchMedia?.('(pointer: coarse)')?.matches ||
@@ -87,7 +96,7 @@
         }
 
         const script = document.createElement('script');
-        script.src = `${BASE_URL}/${src}?v=${Date.now()}`;
+        script.src = assetUrl(src, 'text/javascript');
         script.dataset.easScript = src;
         script.onload = () => {
             loadedScripts.add(src);
@@ -247,12 +256,26 @@
 
         const link = document.createElement('link');
         link.rel = 'stylesheet';
-        link.href = `${BASE_URL}/${src}?v=${Date.now()}`;
+        link.href = assetUrl(src, 'text/css');
         link.dataset.easStyle = src;
         link.onload = resolve;
         link.onerror = () => reject(new Error(`Falha ao carregar: ${src}`));
         document.head.appendChild(link);
     });
+
+    const loadActiveFakeRuntime = async () => {
+        let execution;
+        try { execution = JSON.parse(localStorage.getItem('eas_tw_fakes_execution') || 'null'); }
+        catch { return; }
+        const page = new URL(location.href);
+        if (!execution || execution.finishedAt || execution.endedAt || !execution.executionTab ||
+            execution.executionTab !== window.name || page.searchParams.get('screen') !== 'place') return;
+        window.__EASFakeBootstrapMark?.('activeFakeDependenciesRequested');
+        if (!window.EAS.Units?.calculateCommandPopulation) await loadScript('core/units.js');
+        if (!window.EAS.CommandRules?.scanCommandRuleErrors) await loadScript('core/world-rules.js');
+        if (!window.EAS.Place?.getCommandForm) await loadScript('services/place.js');
+        if (!window.EAS.FakesExecution?.resume) await loadScript('services/fakes-execution.js');
+    };
 
     const start = async () => {
         try {
@@ -270,6 +293,7 @@
                 const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
                 if (window.__EAS_TW_SILENT_BOOTSTRAP__) {
                     window.__EASFakeBootstrapMark?.('silentExistingUIBranch', { fakeModuleAvailable: Boolean(window.EAS.FakesExecution?.initialize) });
+                    await loadActiveFakeRuntime();
                     window.EAS.MissionScheduler?.initialize?.();
                     await resumeEASRuntimeIfNeeded();
                     notifyReady();

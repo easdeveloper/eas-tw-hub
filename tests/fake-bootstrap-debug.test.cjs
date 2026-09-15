@@ -42,9 +42,34 @@ test('initialized module, resume and confirmation are separate diagnostic stages
  let marker=f.root.EASFakeDebug().bootstrap;assert.equal(marker.fakeModuleInitialized,true);assert.equal(marker.resumeEntered,false);assert.equal(marker.confirmationHandlerEntered,false);
  f.root.EAS.FakesExecution.resume();marker=f.root.EASFakeDebug().bootstrap;assert.equal(marker.resumeEntered,true);assert.equal(marker.confirmationHandlerEntered,true);assert.equal(f.clicks(),0);
 });
-test('silent existing-UI path is diagnosed without loading the missing Fake module',async()=>{
+test('silent existing-UI path loads the missing Fake module for the authorized tab',async()=>{
  const f=fixture();f.root.document.readyState='complete';f.root.__EAS_TW_SILENT_BOOTSTRAP__=true;
- f.root.EAS={UI:{toggle(){},FloatingPanel:{initialize(){}}},Minting:{},MissionScheduler:{initialize(){}}};
+ f.root.EAS={UI:{toggle(){},FloatingPanel:{initialize(){}}},Minting:{},MissionScheduler:{initialize(){}}, Units:{calculateCommandPopulation(){}},CommandRules:{scanCommandRuleErrors(){}},Place:{getCommandForm(){}}};
  f.run('index.js');await new Promise(resolve=>setImmediate(resolve));
- const data=f.root.EASFakeDebug();assert.equal(data.bootstrap.silentExistingUIBranch,true);assert.equal(data.bootstrap.fakeModuleInitialized,false);assert.equal(data.bootstrap.resumeEntered,false);assert.equal(f.scripts.length,0);
+ const data=f.root.EASFakeDebug();assert.equal(data.bootstrap.silentExistingUIBranch,true);assert.equal(data.bootstrap.fakeModuleInitialized,false);assert.equal(data.bootstrap.resumeEntered,false);assert.equal(f.scripts.length,1);assert.match(f.scripts[0].src,/services\/fakes-execution\.js/);
+});
+
+test('persistent local userscript requests embedded index once per fresh page, never the remote release',()=>{
+ const source=fs.readFileSync('local-test/eas-tw-local.user.js','utf8');
+ for(let page=0;page<2;page++){
+  const f=fixture();f.root.__EAS_TW_BOOTSTRAPPED__=false;
+  const blobs=[];f.sandbox.Blob=class{constructor(parts){this.parts=parts;}};
+  f.sandbox.URL=class extends URL{static createObjectURL(blob){blobs.push(blob);return 'blob:local-build-'+blobs.length;}};
+  vm.runInContext(source,f.sandbox);vm.runInContext(source,f.sandbox);
+  assert.equal(f.scripts.length,1);assert.match(f.scripts[0].src,/^blob:/);assert.equal(blobs.length,1);
+  assert.equal(blobs[0].parts[0],f.root.EASLocalBuild.files['index.js']);
+  assert.equal(f.root.EASFakeDebug().bootstrap.codeSource,'local-embedded');
+  assert.equal(typeof f.root.EASFakeDebug,'function');assert.equal(f.root.EASFakeBootstrapDebug.loaded,true);
+  assert.equal(f.root.EASTWUserscriptLoader.pageContext().localBuildId,f.root.EASLocalBuild.id);
+ }
+});
+test('embedded index resolves local assets and fails closed for missing files',async()=>{
+ const f=fixture();const blobs=[];
+ f.root.EASLocalBuild={id:'test',files:{'core/test.js':'window.localAssetExecuted=true;'}};
+ f.sandbox.Blob=class{constructor(parts){this.parts=parts;}};
+ f.sandbox.URL=class extends URL{static createObjectURL(blob){blobs.push(blob);return 'blob:asset-'+blobs.length;}};
+ f.run('index.js');const loading=f.root.EASLoader.loadScript('core/test.js');
+ assert.equal(f.scripts[0].src,'blob:asset-1');assert.equal(blobs[0].parts[0],'window.localAssetExecuted=true;');f.scripts[0].onload();await loading;
+ await assert.rejects(f.root.EASLoader.loadScript('core/missing.js'),/Local build asset missing/);
+ assert.equal(f.scripts.length,1);
 });

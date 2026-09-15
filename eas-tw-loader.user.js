@@ -22,6 +22,8 @@
         try {
             const marker = root.EASFakeBootstrapDebug = root.EASFakeBootstrapDebug || {
                 loaded: true, url: root.location.href, timestamp: Date.now(),
+                codeSource: root.EASLocalBuild ? 'local-embedded' : 'remote',
+                localBuildId: root.EASLocalBuild?.id || null,
                 loaderReached: false, indexReached: false, fakeModuleReached: false,
                 fakeModuleInitialized: false, resumeRequested: false,
                 resumeEntered: false, confirmationHandlerEntered: false, events: []
@@ -93,6 +95,8 @@
             : `${url.searchParams.get('screen') || 'unknown'}:${url.searchParams.get('mode') || ''}`;
         return {
             loaderVersion: LOADER_VERSION,
+            codeSource: pageWindow.EASLocalBuild ? 'local-embedded' : BUNDLE_URL,
+            localBuildId: pageWindow.EASLocalBuild?.id || null,
             bundleVersion: pageWindow.EAS?.version || null,
             url: url.href,
             pageStage,
@@ -136,7 +140,9 @@
         pageWindow.__EAS_TW_INITIALIZING__ = true;
         pageWindow.__EAS_TW_SILENT_BOOTSTRAP__ = true;
         const script = pageWindow.document.createElement('script');
-        script.src = `${BUNDLE_URL}?loader=${encodeURIComponent(LOADER_VERSION)}&v=${Date.now()}`;
+        script.src = pageWindow.EASLocalBuild
+            ? URL.createObjectURL(new Blob([pageWindow.EASLocalBuild.files['index.js']], { type: 'text/javascript' }))
+            : `${BUNDLE_URL}?loader=${encodeURIComponent(LOADER_VERSION)}&v=${Date.now()}`;
         script.async = true;
         script.dataset.easUserscriptBundle = 'true';
         pageWindow.__EASFakeBootstrapMark?.('bundleRequested', { src: script.src });

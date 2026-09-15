@@ -212,3 +212,12 @@ test('bootstrap diagnostic records whether resume was actually called',async()=>
     delete f.sandbox.EAS.FakesExecution.resume;events.length=0;await bootstrap();
     assert.equal(events.at(-1).event,'RESUME_EXIT');assert.equal(events.at(-1).resumeCalled,false);assert.equal(events.at(-1).resumeAvailable,false);
 });
+
+test('two commands survive replacement of the entire JavaScript realm using only persisted state and tab name',()=>{
+ const first=fixture(2);first.run();first.tick();first.tick();
+ const confirm1=fixture(2);confirm1.write(first.read());confirm1.navigate('confirm',9);confirm1.run();confirm1.tick();confirm1.success();
+ const second=fixture(2);second.write(confirm1.read());second.navigate('place',10);second.run();second.tick();second.tick();
+ const confirm2=fixture(2);confirm2.write(second.read());confirm2.navigate('confirm',10);confirm2.run();confirm2.tick();confirm2.success();
+ assert.equal(first.counts().attacks+second.counts().attacks,2);assert.equal(confirm1.counts().confirmations+confirm2.counts().confirmations,2);
+ assert.equal(confirm2.read(),null);assert.equal(confirm2.summary().counts.completed,2);
+});
