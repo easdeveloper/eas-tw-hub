@@ -304,6 +304,31 @@
             targetValidated: matches(after), code: matches(after) ? null : 'TARGET_NOT_APPLIED' };
     };
 
+    // Read-only evidence of game resolution, separate from the coordinate payload
+    // that EAS itself can fill. Absence of evidence is never treated as readiness.
+    EAS.Place.readTargetReadiness = (coordinate, targetWindow = window, expectedVillageId = null) => {
+        const form = getCommandForm(targetWindow.document), state = readCommandTarget(targetWindow);
+        const expectedTarget = EAS.Utils.parseCoordinate(coordinate)?.coordinate;
+        const selected = Array.from(form?.querySelectorAll?.('#target_selection .village-name, #target_selection a[href*="screen=info_village"], .target-input-field .village-name, .target-input-field a[href*="screen=info_village"]') || []);
+        const resolved = selected.filter(node => {
+            const style = targetWindow.getComputedStyle?.(node);
+            if (style?.display === 'none' || style?.visibility === 'hidden' || (node.getClientRects && !node.getClientRects().length)) return false;
+            return [...String(node.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].some(match => match[1] === expectedTarget);
+        });
+        const nativeIdMatches = Boolean(expectedVillageId != null && state.nativeTargetId === String(expectedVillageId));
+        const noConflictingLabel = selected.every(node => {
+            const coords = [...String(node.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].map(match => match[1]);
+            return coords.every(coord => coord === expectedTarget);
+        });
+        const labelMatches = resolved.length > 0 && noConflictingLabel;
+        const payloadMatches = state.actualTarget === expectedTarget && (!state.inputFound || state.inputTarget === expectedTarget) &&
+            (!state.nativeTargetId || nativeIdMatches);
+        const busy = Boolean(form?.querySelector?.('[aria-busy="true"]'));
+        return { ...state, expectedTarget, targetReady: Boolean(payloadMatches && !busy && noConflictingLabel && (nativeIdMatches || labelMatches)),
+            resolutionEvidence: nativeIdMatches ? 'native-target-id' : labelMatches ? 'resolved-target-label' : null,
+            reason: !payloadMatches || !noConflictingLabel ? 'TARGET_NOT_APPLIED' : busy ? 'TARGET_BUSY' : !nativeIdMatches && !labelMatches ? 'TARGET_RESOLUTION_MISSING' : null };
+    };
+
     EAS.Place.fillTarget = (coordinate) => {
         const parsed = EAS.Utils.parseCoordinate(coordinate);
 

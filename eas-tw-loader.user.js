@@ -131,6 +131,7 @@
         (pageWindow.document.body || pageWindow.document.documentElement).appendChild(notice);
     };
     const start = () => {
+        try { pageWindow.__EASLogger?.info('CORE', 'LOADER_START', { local: !!pageWindow.EASLocalBuild }); } catch {}
         log('eas-loader-start', pageContext());
         if (pageWindow.__EAS_TW_BOOTSTRAPPED__ || pageWindow.__EAS_TW_INITIALIZING__ || pageWindow.document.querySelector(SCRIPT_SELECTOR)) {
             pageWindow.__EASFakeBootstrapMark?.('loaderGuardReturned', pageContext().bootstrapState);
@@ -143,6 +144,7 @@
         script.src = pageWindow.EASLocalBuild
             ? URL.createObjectURL(new Blob([pageWindow.EASLocalBuild.files['index.js']], { type: 'text/javascript' }))
             : `${BUNDLE_URL}?loader=${encodeURIComponent(LOADER_VERSION)}&v=${Date.now()}`;
+        pageWindow.__EASImageTraceMark?.({ event: 'bundle-script-created', asset: 'index.js', url: script.src, stack: new Error('EAS bundle creation').stack });
         script.async = true;
         script.dataset.easUserscriptBundle = 'true';
         pageWindow.__EASFakeBootstrapMark?.('bundleRequested', { src: script.src });
@@ -172,7 +174,10 @@
             script.remove();
             finish(false, new Error('Tempo limite ao carregar o bundle oficial.'));
         }, LOAD_TIMEOUT_MS);
-        script.onload = () => log('eas-loader-bundle-loaded', pageContext());
+        script.onload = () => {
+            if (pageWindow.EASLocalBuild && script.src.startsWith('blob:')) { try { URL.revokeObjectURL(script.src); } catch {} }
+            log('eas-loader-bundle-loaded', pageContext());
+        };
         script.onerror = () => finish(false, new Error('Falha de rede ao carregar o bundle oficial.'));
         (pageWindow.document.head || pageWindow.document.documentElement).appendChild(script);
     };

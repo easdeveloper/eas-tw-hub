@@ -65,6 +65,7 @@
 
     const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
+    try { window.__EASLogger?.info('CORE', 'INDEX_REACHED', { local: !!window.EASLocalBuild }); } catch {}
     const loadedScripts = new Set();
     // A generated local userscript embeds every asset; missing files never fall back
     // to the published release, so a validation run cannot silently mix versions.
@@ -72,7 +73,9 @@
         if (!window.EASLocalBuild) return `${BASE_URL}/${src}?v=${Date.now()}`;
         const content = window.EASLocalBuild.files[src];
         if (typeof content !== 'string') throw new Error(`Local build asset missing: ${src}`);
-        return URL.createObjectURL(new Blob([content], { type }));
+        const url = URL.createObjectURL(new Blob([content], { type }));
+        window.__EASImageTraceMark?.({ event: 'local-asset-created', asset: src, url, type, stack: new Error('EAS asset creation').stack });
+        return url;
     };
 
     const isMobile = () => Boolean(
@@ -99,6 +102,7 @@
         script.src = assetUrl(src, 'text/javascript');
         script.dataset.easScript = src;
         script.onload = () => {
+            if (window.EASLocalBuild && script.src.startsWith('blob:')) { try { URL.revokeObjectURL(script.src); } catch {} }
             loadedScripts.add(src);
             resolve();
         };
@@ -364,6 +368,7 @@
             await loadStyle('css/eas.css');
 
             await loadScript('core/eas.js');
+            await loadScript('core/logger.js').catch(() => {}); // Diagnostics must not block runtime loading.
             await loadScript('core/utils.js');
             await loadScript('core/storage.js');
             await loadScript('core/observability.js');

@@ -18,7 +18,7 @@ function fixture(size = 3, startTime = 100000) {
             focus(){},blur(){},closest(){return form;},getBoundingClientRect(){return {width:100,height:20};},
             dispatchEvent() {}, querySelector() { return null; } };
     }
-    let outgoing = [], outgoingAvailable = true;
+    let outgoing = [], outgoingAvailable = true, resolved = true;
     let document, input, unit, attackButton, confirmButton, form, error = null;
     const window = { name:'auto-tab', location:{href:''}, HTMLInputElement:{prototype:{}}, Event:class {} };
     const sandbox = { window, URL, console:{debug(){},error(){}}, Date:class extends Date { static now(){return now;} },
@@ -27,7 +27,7 @@ function fixture(size = 3, startTime = 100000) {
         localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
         EAS:{ Utils:{parseCoordinate:value=>/^\d+\|\d+$/.test(value)?{coordinate:value}:null},
             CommandRules:{scanCommandRuleErrors:()=>[],validateCommandComposition:()=>({valid:true}),getWorld:()=> 'test'},
-            Place:{getCommandForm:()=>form, ensureCommandTarget:target=>({targetValidated:input.value===target}), fillCommandTarget(target){preparations++;events.push('prepare');assert.equal(read().queue[read().currentIndex].status,'preparing');input.value=target;return true;},
+            Place:{getCommandForm:()=>form, readTargetReadiness:target=>({targetReady:resolved&&input.value===target,actualTarget:input.value,reason:'TARGET_RESOLUTION_MISSING'}), ensureCommandTarget:target=>({targetValidated:input.value===target}), fillCommandTarget(target){preparations++;events.push('prepare');assert.equal(read().queue[read().currentIndex].status,'preparing');input.value=target;return true;},
                 buildPlaceUrl:id=>`https://test/game.php?screen=place&village=${id}`}}
     };
     function navigate(stage='place', village=9, sameDocument=false) {
@@ -61,10 +61,11 @@ function fixture(size = 3, startTime = 100000) {
     const api=()=>sandbox.EAS.FakesExecution;
     const tick=()=>{assert.ok(timers.size,'timer expected');const [id,t]=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];timers.delete(id);now=t.at;t.fn();};
     const reload=stage=>{navigate(stage,read()?.queue[read().currentIndex]?.villageId||9);vm.runInContext(source,sandbox);api().initialize();};
-    return {outgoing:(rows,available=true)=>{outgoing=rows;outgoingAvailable=available;},read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
+    return {resolveTarget:value=>{resolved=value;},outgoing:(rows,available=true)=>{outgoing=rows;outgoingAvailable=available;},read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
         run:()=>api().initialize(),counts:()=>({preparations,attacks,confirmations}),
         unit:()=>unit,confirm:()=>confirmButton,input:()=>input,
         useNativeTarget(){
+            form.querySelectorAll=selector=>selector.includes('#target_selection')?[{textContent:'001 (501|501)'}]:[];
             window.getComputedStyle=()=>({});document.defaultView=window;document.querySelectorAll=()=>[input];
             window.FormData=class{getAll(name){return name==='input'?[input.value]:[];}};
             sandbox.location={...window.location,host:'test',origin:'https://test'};sandbox.sessionStorage={removeItem(){}};sandbox.EAS.World={};
@@ -235,7 +236,7 @@ test('two commands survive replacement of the entire JavaScript realm using only
 
 test('target adapter failure blocks attack and pauses the queue without success',()=>{
  const f=fixture(2);f.sandbox.EAS.Place.ensureCommandTarget=()=>({targetValidated:false});
- f.run();f.tick();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().paused,true);assert.equal(f.read().errors[0].code,'TARGET_NOT_APPLIED');assert.equal(f.read().completed.length,0);assert.equal(f.read().currentIndex,0);
+ f.run();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().paused,true);assert.equal(f.read().errors[0].code,'TARGET_NOT_APPLIED');assert.equal(f.read().completed.length,0);assert.equal(f.read().currentIndex,0);
  f.run();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().queue[1].status,'pending');
 });
 test('native missing-target response is classified as target failure, not successful confirmation',()=>{
@@ -317,6 +318,7 @@ for(const baseline of [[],['100']])test(`snapshot set difference ${JSON.stringif
 });
 test('missing real outgoing container blocks initial attack instead of inventing empty baseline',()=>{
  const f=fixture(2);f.outgoing([],false);f.run();f.tick();f.tick();
+ assert.notEqual(f.read().paused,true);while(f.timers.size)f.tick();
  assert.equal(f.counts().attacks,0);assert.equal(f.counts().confirmations,0);assert.equal(f.read().paused,true);
 });
 for(const field of ['attemptId','sourceVillageId'])test(`confirmation cannot adopt snapshot with wrong ${field}`,()=>{
@@ -335,4 +337,84 @@ test('second command persists its own new baseline and identity',()=>{
  assert.equal(second.outgoingSnapshot.sourceVillageId,'10');assert.notEqual(second.commandId,first.commandId);
  f.outgoing([],false);f.confirmation();assert.equal(f.counts().confirmations,2);
  assert.deepEqual(f.read().queue[1].confirmationAttempt.outgoingSnapshot,second.outgoingSnapshot);
+});
+
+for (const mode of ['throwing','quota','normal']) test(`diagnostic logger ${mode} cannot change two-command Fake behavior`,()=>{
+ const f=fixture(2);const logs=[];
+ if(mode==='throwing')f.sandbox.EAS.Logger={info(){throw Error('logger failure');}};
+ else {
+  f.window.localStorage=f.sandbox.localStorage;f.window.setTimeout=()=>999999;f.window.clearTimeout=()=>{};f.window.addEventListener=()=>{};
+  const setter=f.sandbox.localStorage.setItem;f.sandbox.localStorage.setItem=(key,value)=>{if(mode==='quota'&&key==='eas_tw_diagnostics_v1')throw Error('quota');setter(key,value);};
+  f.window.EAS=f.sandbox.EAS;vm.runInContext(fs.readFileSync('core/logger.js','utf8'),f.sandbox);
+ }
+ f.run();for(let i=0;i<2;i++){f.tick();f.tick();f.confirmation();f.api().resumeConfirmation(f.window);f.window.__EASLogger?.flush();f.success();if(i===0)f.next();}
+ assert.deepEqual(f.counts(),{preparations:2,attacks:2,confirmations:2});assert.equal(f.summary().counts.completed,2);assert.equal(f.read(),null);
+ if(mode==='normal')assert.equal(f.window.__EASLogger.entries().filter(e=>e.event==='EXECUTION_COMPLETE').length,1);
+});
+
+test('input filled while TW unresolved waits without troops or submit, then proceeds once',()=>{
+ const f=fixture(2);f.resolveTarget(false);f.run();f.tick();
+ assert.equal(f.input().value,'501|501');assert.equal(f.unit().value,'');assert.equal(f.counts().attacks,0);
+ const attempt=f.read().queue[0].confirmationAttempt.attemptId;const deadline=f.read().queue[0].preparationWait.deadlineAt;
+ f.run();f.tick();f.run();assert.equal(f.read().queue[0].preparationWait.deadlineAt,deadline);assert.equal(f.counts().preparations,1);
+ f.resolveTarget(true);f.tick();assert.equal(f.unit().value,'1');f.tick();assert.equal(f.counts().attacks,1);
+ assert.equal(f.read().queue[0].confirmationAttempt.attemptId,attempt);f.confirmation();assert.equal(f.counts().confirmations,1);
+});
+test('reinjected module during WAIT_TARGET retains deadline and sends only once',()=>{
+ const f=fixture(2);f.resolveTarget(false);f.run();f.tick();const before=f.read().queue[0];
+ vm.runInContext(source,f.sandbox);f.run();f.tick();f.resolveTarget(true);f.tick();f.tick();
+ assert.equal(f.counts().preparations,1);assert.equal(f.counts().attacks,1);assert.equal(f.read().queue[0].confirmationAttempt.attemptId,before.confirmationAttempt.attemptId);
+});
+test('target timeout pauses with no troops, snapshot, attack or retry',()=>{
+ const f=fixture(2);f.resolveTarget(false);f.run();while(f.timers.size)f.tick();
+ assert.equal(f.read().paused,true);assert.equal(f.read().errors[0].code,'WAIT_TARGET_TIMEOUT');assert.equal(f.unit().value,'');assert.equal(f.counts().attacks,0);
+ f.resolveTarget(true);f.run();if(f.timers.size)f.tick();assert.equal(f.counts().attacks,0);
+});
+test('snapshot arrives later and is read back before attack without preparing again',()=>{
+ const f=fixture(2);f.outgoing([],false);f.run();f.tick();f.tick();const before=f.read().queue[0];
+ assert.equal(before.preparationWait.phase,'WAIT_SNAPSHOT');assert.notEqual(f.read().paused,true);assert.equal(f.counts().attacks,0);
+ vm.runInContext(source,f.sandbox);f.run();f.tick();f.outgoing([outgoingRow({id:'100'})]);f.tick();
+ assert.equal(f.counts().attacks,1);assert.equal(f.counts().preparations,1);assert.equal(f.read().queue[0].confirmationAttempt.attemptId,before.confirmationAttempt.attemptId);
+ assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,['100']);
+});
+test('place loading and stale source DOM wait before applying target',()=>{
+ const f=fixture(2);f.window.document.readyState='loading';f.window.game_data={village:{id:10}};f.run();f.tick();assert.equal(f.counts().preparations,0);
+ f.window.document.readyState='complete';f.tick();assert.equal(f.counts().preparations,0);f.window.game_data.village.id=9;f.tick();f.tick();assert.equal(f.counts().attacks,1);
+});
+test('second source waits independently and captures its own snapshot after target readiness',()=>{
+ const f=fixture(2);f.run();f.tick();f.tick();f.confirmation();f.success();const first=f.read().queue[0].confirmationAttempt;
+ f.next();f.resolveTarget(false);f.tick();f.tick();assert.equal(f.counts().attacks,1);assert.equal(f.read().queue[1].villageId,10);
+ f.resolveTarget(true);f.outgoing([outgoingRow({id:'888',source:'10'})]);f.tick();f.tick();
+ const second=f.read().queue[1].confirmationAttempt;assert.notEqual(second.attemptId,first.attemptId);assert.deepEqual(second.outgoingSnapshot.beforeCommandIds,['888']);assert.equal(second.outgoingSnapshot.sourceVillageId,'10');
+});
+test('logger records target resolution before troops and snapshot before attack',()=>{
+ const f=fixture(2),logs=[];f.sandbox.EAS.Logger={info:(module,event,data)=>logs.push({event,...data})};f.resolveTarget(false);f.run();f.tick();f.resolveTarget(true);f.tick();f.tick();
+ const names=logs.map(x=>x.event);const expected=['PLACE_WAIT_START','PLACE_READY','TARGET_APPLY_START','TARGET_APPLIED','TARGET_WAIT_START','TARGET_READY','TARGET_VALIDATED','TROOPS_FILLED','TROOPS_VALIDATED','SNAPSHOT_CAPTURE_START','SNAPSHOT_CAPTURED','SNAPSHOT_READY','ATTACK_SUBMIT'];
+ let index=-1;for(const event of expected){index=names.indexOf(event,index+1);assert.ok(index>=0,event);}
+ for(const log of logs){assert.equal(log.executionId,'auto-tab');assert.equal(log.commandId,'0:9:501|501');assert.ok(log.attemptId);assert.equal(log.expectedTarget,'501|501');assert.ok(log.timestamp);}
+});
+
+test('application that leaves input empty never fills troops or attacks',()=>{
+ const f=fixture(2);f.sandbox.EAS.Place.fillCommandTarget=()=>true;f.run();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.unit().value,'');assert.equal(f.read().errors[0].code,'TARGET_NOT_APPLIED');
+});
+test('snapshot timeout retains safety and a restart cannot extend the deadline',()=>{
+ const f=fixture(2);f.outgoing([],false);f.run();f.tick();f.tick();const deadline=f.read().queue[0].preparationWait.deadlineAt;
+ for(let i=0;i<5;i++){vm.runInContext(source,f.sandbox);f.run();f.tick();assert.equal(f.read().queue[0].preparationWait.deadlineAt,deadline);}
+ while(f.timers.size)f.tick();assert.equal(f.read().errors[0].code,'WAIT_SNAPSHOT_TIMEOUT');assert.equal(f.counts().attacks,0);
+ f.outgoing([]);f.run();if(f.timers.size)f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().paused,true);
+});
+
+test('wait metadata from another attempt cannot authorize preparation or attack',()=>{
+ for(const stage of ['target','snapshot']){
+  const f=fixture(2);if(stage==='target')f.resolveTarget(false);else f.outgoing([],false);
+  f.run();f.tick();if(stage==='snapshot')f.tick();const c=f.read();c.queue[0].preparationWait.attemptId='previous-command';f.write(c);
+  f.resolveTarget(true);f.outgoing([]);f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().paused,true);assert.equal(f.read().currentIndex,0);assert.equal(f.read().errors.length,1);
+ }
+});
+
+test('typed coordinate with pending native validation waits for native readiness',()=>{
+ const f=fixture(2);let nativeReady=false;f.resolveTarget(false);
+ f.sandbox.EAS.Place.ensureCommandTarget=()=>({targetValidated:nativeReady,inputTarget:'501|501',actualTarget:nativeReady?'501|501':null});
+ f.run();f.tick();assert.notEqual(f.read().paused,true);assert.equal(f.unit().value,'');assert.equal(f.counts().attacks,0);
+ f.tick();nativeReady=true;f.resolveTarget(true);f.tick();f.tick();assert.equal(f.counts().attacks,1);assert.equal(f.counts().preparations,1);
 });

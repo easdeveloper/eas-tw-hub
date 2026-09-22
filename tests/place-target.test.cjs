@@ -35,3 +35,18 @@ test('disabled coordinate fields and conflicting selected village IDs block subm
 test('duplicate successful coordinate controls do not validate an ambiguous payload',()=>{
  const f=fixture({typed:'604|379',nativeX:'604',nativeY:'379'});f.fields.push({...f.x,value:'100'});assert.equal(f.api.ensureCommandTarget('604|379',f.w).targetValidated,false);
 });
+
+test('native payload alone does not prove TW resolved the target',()=>{
+ const f=fixture({typed:'604|379',nativeX:'604',nativeY:'379'});
+ assert.equal(f.api.readTargetReadiness('604|379',f.w).targetReady,false);
+ assert.equal(f.api.readTargetReadiness('604|379',f.w).reason,'TARGET_RESOLUTION_MISSING');
+});
+test('resolved target label or matching native ID proves readiness, with conflicts blocked',()=>{
+ const f=fixture({typed:'604|379',nativeX:'604',nativeY:'379'});
+ const form=f.w.document.querySelector();let label='001 (604|379)';form.querySelectorAll=()=>[{textContent:label}];
+ assert.equal(f.api.readTargetReadiness('604|379',f.w).targetReady,true);
+ label='001 (605|379)';assert.equal(f.api.readTargetReadiness('604|379',f.w).targetReady,false);
+ const id=fixture({typed:'604|379',nativeX:'604',nativeY:'379',targetId:'123'});
+ assert.equal(id.api.readTargetReadiness('604|379',id.w,'123').targetReady,true);
+ assert.equal(id.api.readTargetReadiness('604|379',id.w,'999').targetReady,false);
+});

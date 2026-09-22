@@ -1,4 +1,4 @@
-﻿const test=require('node:test');
+const test=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
@@ -64,12 +64,18 @@ test('persistent local userscript requests embedded index once per fresh page, n
  }
 });
 test('embedded index resolves local assets and fails closed for missing files',async()=>{
- const f=fixture();const blobs=[];
+ const f=fixture();const blobs=[],revoked=[];
  f.root.EASLocalBuild={id:'test',files:{'core/test.js':'window.localAssetExecuted=true;'}};
  f.sandbox.Blob=class{constructor(parts){this.parts=parts;}};
- f.sandbox.URL=class extends URL{static createObjectURL(blob){blobs.push(blob);return 'blob:asset-'+blobs.length;}};
+ f.sandbox.URL=class extends URL{static createObjectURL(blob){blobs.push(blob);return 'blob:asset-'+blobs.length;}static revokeObjectURL(url){revoked.push(url);}};
  f.run('index.js');const loading=f.root.EASLoader.loadScript('core/test.js');
- assert.equal(f.scripts[0].src,'blob:asset-1');assert.equal(blobs[0].parts[0],'window.localAssetExecuted=true;');f.scripts[0].onload();await loading;
+ assert.equal(f.scripts[0].src,'blob:asset-1');assert.equal(blobs[0].parts[0],'window.localAssetExecuted=true;');assert.equal(revoked.length,0);f.scripts[0].onload();await loading;assert.deepEqual(revoked,['blob:asset-1']);
  await assert.rejects(f.root.EASLoader.loadScript('core/missing.js'),/Local build asset missing/);
  assert.equal(f.scripts.length,1);
+});
+
+test('local bundle blob is revoked after load and duplicate bootstrap does not create another',()=>{
+ const f=fixture(),revoked=[];f.root.__EAS_TW_BOOTSTRAPPED__=false;f.root.EASLocalBuild={id:'test',files:{'index.js':'/* test */'}};
+ f.sandbox.Blob=class{};f.sandbox.URL=class extends URL{static createObjectURL(){return 'blob:test';}static revokeObjectURL(url){revoked.push(url);}};
+ f.run('eas-tw-loader.user.js');assert.equal(revoked.length,0);f.scripts[0].onload();assert.deepEqual(revoked,['blob:test']);f.run('eas-tw-loader.user.js');assert.equal(f.scripts.length,1);
 });

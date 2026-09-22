@@ -14,6 +14,7 @@
         Adapters: {},
         Runtime: {},
         Log: {},
+        Logger: window.__EASLogger || null,
         Usage: {},
         World: {},
         Villages: {},

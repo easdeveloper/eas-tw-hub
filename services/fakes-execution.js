@@ -5,6 +5,17 @@
 
     EAS.FakesExecution = EAS.FakesExecution || {};
 
+    const diagnosticLog = (event, context, data = {}) => {
+        try {
+            const entry = context?.queue?.[context.currentIndex];
+            EAS.Logger?.[event === 'ERROR' ? 'error' : event === 'RECONCILE_UNCERTAIN' ? 'warn' : 'info']?.('FAKE', event, { executionId: context?.executionTab,
+                commandId: entry ? getCommandKey(entry, context.currentIndex) : null,
+                attemptId: entry?.confirmationAttempt?.attemptId, sourceVillageId: entry?.villageId,
+                target: entry?.target, expectedTarget: entry?.target, actualTarget: entry?.preparationWait?.actualTarget ?? null,
+                state: entry?.status, phase: entry?.preparationWait?.phase || null, timestamp: Date.now(), ...data });
+        } catch { /* Logging is never an execution guard. */ }
+    };
+
     const EXECUTION_STORAGE_KEY = 'eas_tw_fakes_execution';
     const PANEL_ID = 'eas-fake-execution-panel';
     const POLL_INTERVAL_MS = 200;
@@ -264,6 +275,7 @@
         const stored = valid && saveContext(context) ? readContext() : null;
         const persisted = Boolean(stored && snapshotMatches(stored, getCurrentEntry(stored), getCurrentEntry(stored)?.confirmationAttempt) &&
             JSON.stringify(getCurrentEntry(stored).confirmationAttempt.outgoingSnapshot) === JSON.stringify(attempt.outgoingSnapshot));
+        diagnosticLog(persisted ? 'SNAPSHOT_CAPTURED' : 'SNAPSHOT_UNAVAILABLE', context, { persisted, restoredAfterNavigation: restored, reason });
         console.log?.('[EAS][FAKE][SNAPSHOT]', { executionId: context.executionTab, commandId, attemptId: attempt.attemptId,
             sourceVillageId: String(entry.sourceVillageId || entry.villageId), target: entry.target,
             capturedCommandIds: attempt.outgoingSnapshot?.beforeCommandIds ?? null,
@@ -274,6 +286,7 @@
 
     const reconcileOutgoing = (context, targetWindow, overrideResult = null) => {
         const entry = getCurrentEntry(context), attempt = entry?.confirmationAttempt, baseline = attempt?.outgoingSnapshot;
+        diagnosticLog('RECONCILE_START', context);
         const observed = readOutgoingCommands(targetWindow);
         const detail = { executionId: context.executionTab, commandId: getCommandKey(entry, context.currentIndex),
             attemptId: attempt?.attemptId || null, sourceVillageId: String(entry?.sourceVillageId || entry?.villageId || ''),
@@ -299,6 +312,7 @@
             if (result === 'SUCCESS') detail.matchedOutgoingCommandId = detail.candidateCommandIds[0];
         }
         detail.result = overrideResult || result;
+        diagnosticLog(detail.result === 'SUCCESS' ? 'RECONCILE_SUCCESS' : 'RECONCILE_UNCERTAIN', context, { result: detail.result, outgoingCommandId: detail.matchedOutgoingCommandId });
         console.log?.('[EAS][FAKE][RECONCILE]', detail);
         return detail;
     };
@@ -473,6 +487,7 @@
         if (missingInputs.length) {
             return {
                 valid: false,
+                waitingForFields: true,
                 message: `Campos de tropas indisponíveis: ${missingInputs.join(', ')}.`
             };
         }
@@ -508,11 +523,50 @@
         };
     };
 
+    const waitBeforeAttack = (context, phase, reason) => {
+        const entry = getCurrentEntry(context), attempt = entry.confirmationAttempt;
+        const previous = entry.preparationWait;
+        if (!previous || previous.attemptId !== attempt?.attemptId || attempt?.commandId !== getCommandKey(entry, context.currentIndex) || !Number.isFinite(previous.deadlineAt)) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Identidade da preparacao invalida.' };
+        const changed = !previous.waiting || previous.phase !== phase;
+        previous.waiting = true;
+        if (previous.phase !== phase) {
+            previous.phase = phase; previous.startedAt = Date.now();
+            diagnosticLog(phase === 'WAIT_PLACE' ? 'PLACE_WAIT_START' : phase === 'WAIT_TARGET' ? 'TARGET_WAIT_START' : 'SNAPSHOT_UNAVAILABLE', context, { reason });
+        }
+        if (changed && !saveContext(context)) return { valid: false, message: 'Falha ao persistir espera.' };
+        if (Date.now() >= previous.deadlineAt) return { valid: false, code: `${phase}_TIMEOUT`, message: `${phase}: tempo limite (${reason}). Nenhum ataque foi enviado.` };
+        return { valid: false, waiting: true, code: reason };
+    };
+
+    const checkResolvedTarget = (context, targetWindow) => {
+        const entry = getCurrentEntry(context);
+        const state = EAS.Place.readTargetReadiness?.(entry.target, targetWindow, entry.targetVillageId ?? null);
+        if (entry.preparationWait) entry.preparationWait.actualTarget = state?.actualTarget ?? null;
+        return state;
+    };
+
     const prepareCurrent = (
         context,
         targetWindow,
         commandType = null
     ) => {
+        const entry = getCurrentEntry(context);
+        if (context.autoMode) {
+            if (!entry.confirmationAttempt) entry.confirmationAttempt = { commandId: getCommandKey(entry, context.currentIndex),
+                attemptId: `${context.executionTab}:${getCommandKey(entry, context.currentIndex)}:${Date.now()}:${Math.random()}`, state: 'preparing' };
+            if (entry.confirmationAttempt.commandId !== getCommandKey(entry, context.currentIndex) || !['preparing', 'snapshot-ready'].includes(entry.confirmationAttempt.state)) return { valid: false, message: 'Tentativa de preparacao ja consumida ou invalida.' };
+            if (entry.preparationWait && entry.preparationWait.attemptId !== entry.confirmationAttempt.attemptId) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Espera pertence a outra tentativa.' };
+            if (!entry.preparationWait) {
+                entry.preparationWait = { attemptId: entry.confirmationAttempt.attemptId, phase: 'WAIT_PLACE', startedAt: Date.now(), deadlineAt: Date.now() + OPEN_TIMEOUT_MS, applied: false };
+                diagnosticLog('PLACE_WAIT_START', context);
+                if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir preparacao.' };
+            }
+            if (entry.preparationWait.waiting && Date.now() >= entry.preparationWait.deadlineAt) return waitBeforeAttack(context, entry.preparationWait.phase, 'PREPARATION_DEADLINE');
+            const form = EAS.Place.getCommandForm(targetWindow.document);
+            const sourceReady = targetWindow.game_data?.village?.id == null || Number(targetWindow.game_data.village.id) === Number(entry.villageId);
+            if (targetWindow.document.readyState === 'loading' || !form || !sourceReady) return waitBeforeAttack(context, 'WAIT_PLACE', 'PLACE_LOADING');
+            if (!entry.preparationWait.applied) diagnosticLog('PLACE_READY', context);
+        }
         const validation = validateCurrent(
             context,
             targetWindow,
@@ -520,29 +574,40 @@
         );
 
         if (!validation.valid) {
+            if (context.autoMode && validation.waitingForFields) return waitBeforeAttack(context, 'WAIT_PLACE', 'TROOP_FIELDS_LOADING');
             return validation;
         }
 
+        if (!context.autoMode || !entry.preparationWait.applied) {
+            diagnosticLog('TARGET_APPLY_START', context);
+            if (!EAS.Place.fillCommandTarget(validation.target, targetWindow)) return { valid: false, code: 'TARGET_NOT_APPLIED', message: 'Nao foi possivel preparar o alvo.' };
+            if (context.autoMode) {
+                entry.preparationWait.applied = true;
+                // Preserve the native payload application; do not repeat it while waiting.
+                const applied = EAS.Place.ensureCommandTarget?.(entry.target, targetWindow, entry.targetVillageId ?? null);
+                entry.preparationWait.actualTarget = applied?.actualTarget ?? null;
+                if (!applied?.targetValidated && applied?.inputTarget !== entry.target) return { valid: false, code: 'TARGET_NOT_APPLIED', message: 'Destino nativo nao validado.' };
+                if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir destino aplicado.' };
+            }
+            diagnosticLog('TARGET_APPLIED', context);
+        }
+        if (context.autoMode) {
+            if (entry.preparationWait.phase !== 'WAIT_TARGET') diagnosticLog('TARGET_WAIT_START', context);
+            const ready = checkResolvedTarget(context, targetWindow);
+            if (!ready?.targetReady) return waitBeforeAttack(context, 'WAIT_TARGET', ready?.reason || 'TARGET_RESOLUTION_MISSING');
+            entry.preparationWait.waiting = false;
+            entry.preparationWait.phase = 'TARGET_READY';
+            diagnosticLog('TARGET_READY', context, { actualTarget: ready.actualTarget, resolutionEvidence: ready.resolutionEvidence });
+            diagnosticLog('TARGET_VALIDATED', context, { actualTarget: ready.actualTarget });
+        }
         UNITS.forEach((unit) => {
             const input = findUnitInput(validation.form, unit);
-
-            if (input) {
-                setInputValue(input, 0, targetWindow);
-            }
+            if (input) setInputValue(input, 0, targetWindow);
         });
-
-        validation.requiredTroops.forEach(([unit, quantity]) => {
-            setInputValue(validation.inputs[unit], Number(quantity), targetWindow);
-        });
-
-        if (!EAS.Place.fillCommandTarget(validation.target, targetWindow)) {
-            return {
-                valid: false,
-                code: 'TARGET_NOT_APPLIED',
-                message: 'Não foi possível preparar o alvo.'
-            };
-        }
-
+        validation.requiredTroops.forEach(([unit, quantity]) => setInputValue(validation.inputs[unit], Number(quantity), targetWindow));
+        diagnosticLog('TROOPS_FILLED', context);
+        if (validation.requiredTroops.some(([unit, quantity]) => Number(validation.inputs[unit].value) !== Number(quantity))) return { valid: false, message: 'Campos de tropas nao validados.' };
+        diagnosticLog('TROOPS_VALIDATED', context);
         if (context.autoMode) {
             const latest = readContext();
             if (!latest || latest.executionTab !== context.executionTab ||
@@ -602,6 +667,11 @@
             !['pending', 'prepared'].includes(entry?.status)) {
             return { valid: false, message: 'Contexto do comando alterado.' };
         }
+        if (context.autoMode && entry.preparationWait) {
+            if (entry.preparationWait.attemptId !== entry.confirmationAttempt?.attemptId || entry.confirmationAttempt?.commandId !== getCommandKey(entry, context.currentIndex)) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Espera pertence a outro comando/tentativa.' };
+            if (entry.preparationWait.waiting && Date.now() >= entry.preparationWait.deadlineAt) return waitBeforeAttack(context, entry.preparationWait.phase, 'PREPARATION_DEADLINE');
+            if (targetWindow.document.readyState === 'loading' || (targetWindow.game_data?.village?.id != null && Number(targetWindow.game_data.village.id) !== Number(entry.villageId))) return waitBeforeAttack(context, 'WAIT_PLACE', 'SOURCE_OR_PLACE_LOADING');
+        }
         const result = entry.status === 'prepared'
             ? validateCurrent(context, targetWindow, { commandType })
             : prepareCurrent(context, targetWindow, commandType);
@@ -616,16 +686,28 @@
         console.log?.('[EAS][FAKE][TARGET]', { commandId: getCommandKey(entry, context.currentIndex),
             expectedTarget: entry.target, targetVillageId: entry.targetVillageId ?? null, ...target });
         if (!target?.targetValidated) {
+            if (context.autoMode && target?.inputTarget === entry.target) return waitBeforeAttack(context, 'WAIT_TARGET', 'NATIVE_TARGET_PENDING');
             return { valid: false, code: 'TARGET_NOT_APPLIED', message: 'TARGET_NOT_APPLIED: destino nativo não validado. Nenhum ataque foi submetido.' };
         }
+        if (context.autoMode) {
+            const ready = checkResolvedTarget(context, targetWindow);
+            if (!ready?.targetReady) return waitBeforeAttack(context, 'WAIT_TARGET', ready?.reason || 'TARGET_RESOLUTION_MISSING');
+        }
         bindExecutionTab(context, targetWindow);
+        diagnosticLog('SNAPSHOT_CAPTURE_START', context);
+        const observed = readOutgoingCommands(targetWindow);
+        if (context.autoMode && !observed.available && ['CONTAINER_MISSING', 'DOM_LOADING'].includes(observed.reason)) return waitBeforeAttack(context, 'WAIT_SNAPSHOT', observed.reason);
         if (!persistOutgoingSnapshot(context, targetWindow)) return { valid: false, code: 'SNAPSHOT_UNAVAILABLE', message: 'Snapshot indisponivel. Nenhum ataque foi enviado.' };
+        if (entry.preparationWait) { entry.preparationWait.waiting = false; entry.preparationWait.phase = 'SNAPSHOT_READY'; }
+        diagnosticLog('SNAPSHOT_READY', context);
         context.forwardingIndex = context.currentIndex;
         context.forwardingCommandType = commandType;
         context.forwardingStartedAt = Date.now();
+        diagnosticLog('COMMAND_START', context);
         result.entry.status = context.autoMode ? 'attacking' : 'forwarding';
         if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir ataque.' };
         beforeClick();
+        diagnosticLog('ATTACK_SUBMIT', context);
         console.log?.('[EAS][FAKE][ATTACK]', { commandId: getCommandKey(entry, context.currentIndex), targetValidated: true, submitting: true });
         button.click();
         return result;
@@ -749,6 +831,7 @@
                 if (entry.confirmationAttempt.outgoingSnapshot) delete entry.confirmationAttempt.outgoingSnapshot.beforeCommandIds;
                 delete entry.outgoingBefore;
             }
+            diagnosticLog('COMMAND_COMPLETE', context, { outgoingCommandId: entry.confirmationAttempt?.outgoingCommandId });
             console.log?.('[EAS][FAKE][QUEUE] command completed', { oldCommandId: commandKey, confirmationAttempt: JSON.parse(JSON.stringify(entry.confirmationAttempt || null)) });
             confirmationTrace(context, entryIndex, 'completed');
         }
@@ -862,6 +945,7 @@
         targetWindow.__EASFakeBootstrapMark?.('confirmationHandlerEntered');
         confirmationDiagnostic(targetWindow, 'CONFIRM_HANDLER_ENTER');
         const stored = readContext();
+        diagnosticLog('RESUME', stored, { confirmationPage: String(targetWindow.location.href).includes('try=confirm') });
         if (!stored || !stored.executionTab || targetWindow.name !== stored.executionTab ||
             stored.endedAt || stored.finishedAt || !isMatchingPlace(stored, targetWindow)) {
             confirmationDiagnostic(targetWindow, 'CONFIRM_GUARD');
@@ -906,6 +990,7 @@
                 confirmationTrace(context, index, `allowed=false blocked reason=${!form ? 'missing-form' : !submit ? 'missing-button' : submit.disabled || submit.matches?.(':disabled') ? 'disabled-button' : 'command-state:' + entry.status}`);
                 return true;
             }
+            diagnosticLog('CONFIRM_PAGE', context);
             // The attempt belongs to this queue entry, including repeated targets/origins.
             // Never borrow a consumed attempt from the previous command.
             if (!persistOutgoingSnapshot(context, targetWindow)) {
@@ -925,6 +1010,7 @@
             console.log?.('[EAS][FAKE][CONFIRM] ALLOWED', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             confirmationTrace(context, index, 'allowed=true submit');
             confirmLog('submitting');
+            diagnosticLog('CONFIRM_SUBMIT', context);
             console.log?.('[EAS][FAKE][CONFIRM] CLICKING', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             submit.click();
             console.log?.('[EAS][FAKE][CONFIRM] CLICK_DISPATCHED', { commandId, attemptId: entry.confirmationAttempt.attemptId });
@@ -979,6 +1065,7 @@
         catch { return false; }
         targetWindow.__easFakesAuto?.stop();
         removeContext();
+        diagnosticLog('EXECUTION_COMPLETE', context, { stopped });
         const doc = targetWindow.document;
         const panel = doc.createElement('aside');
         panel.id = PANEL_ID;
@@ -990,6 +1077,7 @@
     };
 
     const failAutomatic = (context, error) => {
+        diagnosticLog('ERROR', context, { message: error?.message });
         const entry = getCurrentEntry(context);
         if (!entry) return;
         const detail = { commandKey: getCommandKey(entry, context.currentIndex),
@@ -1087,7 +1175,7 @@
         previous?.stop();
         const runtime = { document: targetWindow.document, executionTab: stored.executionTab,
             commandId, attemptId, confirmationPage,
-            timer: null, stopped: false, preparedKey: null,
+            timer: null, stopped: false, preparedKey: stored.queue?.[stored.currentIndex]?.status === 'prepared' && stored.queue?.[stored.currentIndex]?.preparationWait?.waiting === true && ['WAIT_SNAPSHOT', 'WAIT_TARGET', 'WAIT_PLACE'].includes(stored.queue?.[stored.currentIndex]?.preparationWait?.phase) ? commandId : null,
             stop() { this.stopped = true; clearTimeout(this.timer); } };
         targetWindow.__easFakesAuto = runtime;
         const schedule = (delay) => { if (!runtime.stopped) runtime.timer = setTimeout(tick, delay); };
@@ -1164,13 +1252,17 @@
                     return;
                 }
                 if (confirmationPage) throw new Error('Página inesperada para preparar o comando.');
-                if (entry.status === 'preparing') throw new Error('Preparação interrompida por reload. Verifique o comando; não será repetido.');
-                if (entry.status === 'pending') {
+                if (entry.status === 'preparing' && (!entry.preparationWait || entry.preparationWait.attemptId !== entry.confirmationAttempt?.attemptId)) throw new Error('Preparação interrompida por reload. Verifique o comando; não será repetido.');
+                if (['pending', 'preparing'].includes(entry.status)) {
                     if (Number(entry.recommendedActionTime) > Date.now()) { schedule(AUTO_STEP_MS); return; }
-                    entry.status = 'preparing';
-                    if (!saveContext(context)) return runtime.stop();
+                    if (entry.status === 'pending') {
+                        entry.status = 'preparing';
+                        if (!saveContext(context)) return runtime.stop();
+                    }
                     renderAutomatic(context, targetWindow);
                     const result = prepareCurrent(context, targetWindow, context.commandType);
+                    runtime.attemptId = entry.confirmationAttempt?.attemptId || null;
+                    if (result.waiting) { schedule(POLL_INTERVAL_MS); return; }
                     if (!result.valid) throw Object.assign(new Error(result.message), { code: result.code });
                     runtime.preparedKey = getCommandKey(entry, context.currentIndex);
                     renderAutomatic(context, targetWindow);
@@ -1180,6 +1272,8 @@
                 if (entry.status === 'prepared') {
                     if (runtime.preparedKey !== getCommandKey(entry, context.currentIndex)) throw new Error('Preparação não verificada nesta pagina. O comando não será reenviado.');
                     const result = attackCurrent(context, targetWindow, context.commandType);
+                    runtime.attemptId = entry.confirmationAttempt?.attemptId || null;
+                    if (result.waiting) { schedule(POLL_INTERVAL_MS); return; }
                     if (!result.valid) throw Object.assign(new Error(result.message), { code: result.code });
                     renderAutomatic(context, targetWindow);
                     schedule(POLL_INTERVAL_MS);
@@ -1796,6 +1890,7 @@
             return Promise.resolve(false);
         }
 
+        diagnosticLog('EXECUTION_START', execution);
         return openCurrentVillage(execution);
     };
 

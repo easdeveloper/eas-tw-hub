@@ -1,4 +1,4 @@
-﻿"""Create a persistent userscript containing this checkout; no remote code fallback."""
+"""Create a persistent userscript containing this checkout; no remote code fallback."""
 import hashlib
 import json
 from pathlib import Path
@@ -19,7 +19,7 @@ def build():
     output = ROOT / 'local-test'
     output.mkdir(exist_ok=True)
     target = output / 'eas-tw-local.user.js'
-    target.write_text(loader[:header_end] + setup + loader[header_end:], encoding='utf-8')
+    target.write_text(loader[:header_end] + setup + files['core/logger.js'] + '\n' + files['core/image-trace.js'] + '\n' + loader[header_end:], encoding='utf-8')
     info = {'buildId': build_id, 'source': 'local-embedded', 'assets': len(files), 'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}
     (output / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({'file': str(target), **info}, indent=2))
