@@ -12,7 +12,9 @@
                 commandId: entry ? getCommandKey(entry, context.currentIndex) : null,
                 attemptId: entry?.confirmationAttempt?.attemptId, sourceVillageId: entry?.villageId,
                 target: entry?.target, expectedTarget: entry?.target, actualTarget: entry?.preparationWait?.actualTarget ?? null,
-                state: entry?.status, phase: entry?.preparationWait?.phase || null, timestamp: Date.now(), ...data });
+                state: entry?.status, phase: entry?.preparationWait?.phase || null, timestamp: Date.now(), now: Date.now(),
+                deadline: entry?.preparationWait?.deadlineAt ?? null, remainingMs: entry?.preparationWait ? Math.max(0, entry.preparationWait.deadlineAt - Date.now()) : null,
+                documentUrl: window.location.href, screen: new URL(window.location.href).searchParams.get('screen'), ...data });
         } catch { /* Logging is never an execution guard. */ }
     };
 
@@ -224,27 +226,85 @@
     const readOutgoingCommands = (targetWindow) => {
         const doc = targetWindow.document;
         const container = doc.querySelector('#commands_outgoings');
-        if (!container) return { available: false, commands: [], reason: 'CONTAINER_MISSING' };
-        if (doc.readyState === 'loading') return { available: false, commands: [], reason: 'DOM_LOADING' };
-        if (container.querySelector?.('a[href*="page="], .paged-nav')) return { available: false, commands: [], reason: 'PAGINATED' };
-        const commands = [];
-        for (const row of container.querySelectorAll('tr.command-row')) {
+        const globalRows = Array.from(doc.querySelectorAll?.('tr.command-row') || []);
+        const rows = [...new Set([...globalRows.filter(row => row.querySelector?.('.quickedit-out[data-id]')),
+            ...Array.from(container?.querySelectorAll('tr.command-row') || [])])];
+        const source = 'place-command-rows';
+        const result = (available, commands, reason = null) => ({ available, commands, reason, source,
+            outgoingContainerFound: Boolean(container), outgoingRowsFound: rows.length });
+        if (doc.readyState === 'loading') return result(false, [], 'DOM_LOADING');
+        // A real outgoing row proves the alternate source. Without rows, retain
+        // the known explicit container as empty-list evidence; absence is not [].
+        if (!container && !rows.length) return result(false, [], 'CONTAINER_MISSING');
+        if ((container || doc).querySelector?.('a[href*="page="], .paged-nav')) return result(false, [], 'PAGINATED');
+        const normalizeId = value => {
+            const id = String(value ?? '').trim();
+            return /^\d+$/.test(id) ? id.replace(/^0+(?=\d)/, '') : null;
+        };
+        const commands = new Map();
+        for (const row of rows) {
             const quick = row.querySelector('.quickedit-out[data-id]');
             const cancel = row.querySelector('.command-cancel[data-id][data-home]');
-            const icon = row.querySelector('.command_hover_details[data-command-id][data-command-type]');
+            const icon = row.querySelector('.command_hover_details[data-command-id]') ||
+                row.querySelector('.command_hover_details[data-command-id][data-command-type]');
             const link = row.querySelector('a[href*="screen=info_command"]');
             let url;
-            try { url = link ? new URL(link.href, targetWindow.location.href) : null; } catch { return { available: false, commands: [], reason: 'INVALID_ROW' }; }
-            const ids = [quick?.dataset.id, cancel?.dataset.id, icon?.dataset.commandId, url?.searchParams.get('id')].filter(Boolean);
-            if (!ids.length || ids.some(id => !/^\d+$/.test(id) || id !== ids[0])) return { available: false, commands: [], reason: 'INVALID_ROW' };
-            const source = cancel?.dataset.home || (url?.searchParams.get('type') === 'own' ? url.searchParams.get('village') : null);
-            if (cancel && url?.searchParams.get('village') && cancel.dataset.home !== url.searchParams.get('village')) return { available: false, commands: [], reason: 'INVALID_ROW' };
+            try { url = link ? new URL(link.href, targetWindow.location.href) : null; } catch { return result(false, [], 'INVALID_ROW'); }
+            if (url && (url.origin !== new URL(targetWindow.location.href).origin || url.searchParams.get('screen') !== 'info_command' ||
+                (url.searchParams.has('type') && url.searchParams.get('type') !== 'own'))) return result(false, [], 'INVALID_ROW');
+            const ids = [quick?.dataset.id, ...(cancel ? [cancel.dataset.id] : []), ...(icon ? [icon.dataset.commandId] : []),
+                ...(url ? [url.searchParams.get('id')] : [])].map(normalizeId);
+            if (!quick || ids.some(id => !id || id !== ids[0])) return result(false, [], 'INVALID_ROW');
+            const home = cancel ? normalizeId(cancel.dataset.home) : null;
+            const village = url?.searchParams.get('type') === 'own' ? normalizeId(url.searchParams.get('village')) : null;
+            if (home && village && home !== village) return result(false, [], 'INVALID_ROW');
             const label = row.querySelector('.quickedit-label');
             const coordinates = [...String(label?.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].map(match => match[1]);
-            commands.push({ id: ids[0], sourceVillageId: source, type: icon?.dataset.commandType || null,
-                target: coordinates.length === 1 ? coordinates[0] : null });
+            const command = { id: ids[0], sourceVillageId: home || village, type: icon?.dataset.commandType || null,
+                target: coordinates.length === 1 ? coordinates[0] : null };
+            const previous = commands.get(command.id);
+            if (previous && JSON.stringify(previous) !== JSON.stringify(command)) return result(false, [], 'CONFLICTING_DUPLICATE');
+            commands.set(command.id, command);
         }
-        return { available: true, commands };
+        return result(true, [...commands.values()]);
+    };
+
+    // Evidence inventory only: no requests, getters on game_data, tokens or form values.
+    // Counts/field names are not an outgoing baseline and never authorize submission.
+    const snapshotSourceEvidence = targetWindow => {
+        try {
+            const doc = targetWindow.document;
+            const all = selector => Array.from(doc.querySelectorAll?.(selector) || []);
+            const shape = value => value && typeof value === 'object' ? Object.keys(value).slice(0, 80) : [];
+            const gameData = Object.getOwnPropertyDescriptor(targetWindow, 'game_data')?.value;
+            const village = gameData && Object.getOwnPropertyDescriptor(gameData, 'village')?.value;
+            const safeUrl = value => {
+                const url = new URL(value, targetWindow.location.href);
+                return { path: url.pathname, screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'),
+                    action: url.searchParams.get('action'), parameterNames: [...new Set(url.searchParams.keys())] };
+            };
+            const observed = readOutgoingCommands(targetWindow);
+            return { strategy: 'place-command-rows', authoritativeSourceAvailable: observed.available, sourceReason: observed.reason,
+                documentReadyState: doc.readyState, page: safeUrl(targetWindow.location.href),
+                commandRelatedElementIds: all('[id]').map(node => node.id).filter(id => /command|outgoing/i.test(id)).slice(0, 40),
+                identityMarkers: { infoCommandLinks: all('a[href*="info_command"]').length,
+                    commandIdAttributes: all('[data-command-id]').length, genericIdAttributes: all('[data-id]').length },
+                forms: all('form').slice(0, 8).map(form => ({ id: form.id || null, method: form.method || null,
+                    destination: safeUrl(form.action || targetWindow.location.href),
+                    fieldNames: [...new Set(Array.from(form.elements || []).map(field => field.name).filter(Boolean))].slice(0, 80) })),
+                gameDataKeys: shape(gameData), villageDataKeys: shape(village),
+                interpretation: 'Inventory only; missing DOM is unavailable, never an empty baseline. Response bodies and redirects are not captured.' };
+        } catch { return { diagnosticUnavailable: true }; }
+    };
+    const sourceEvidenceLogged = new WeakMap();
+    const logSnapshotSourceEvidence = (context, targetWindow, observed) => {
+        try {
+            const key = `${getCurrentEntry(context)?.confirmationAttempt?.attemptId}:${observed.reason}`;
+            if (!observed.available && sourceEvidenceLogged.get(targetWindow.document) !== key) {
+                sourceEvidenceLogged.set(targetWindow.document, key);
+                diagnosticLog('SNAPSHOT_SOURCE_EVIDENCE', context, snapshotSourceEvidence(targetWindow));
+            }
+        } catch { /* Optional diagnostics never change the execution. */ }
     };
 
     const snapshotMatches = (context, entry, attempt) => {
@@ -272,10 +332,15 @@
             } else reason = observed.reason || 'SOURCE_MISMATCH';
         }
         const valid = snapshotMatches(context, entry, attempt);
-        const stored = valid && saveContext(context) ? readContext() : null;
+        diagnosticLog('SNAPSHOT_PERSIST_START', context, { snapshotAvailable: valid, outgoingCommandIds: attempt.outgoingSnapshot?.beforeCommandIds ?? null });
+        const saved = Boolean(valid && saveContext(context));
+        diagnosticLog('SNAPSHOT_PERSIST_RESULT', context, { persisted: saved, snapshotAvailable: valid });
+        const stored = saved ? readContext() : null;
         const persisted = Boolean(stored && snapshotMatches(stored, getCurrentEntry(stored), getCurrentEntry(stored)?.confirmationAttempt) &&
             JSON.stringify(getCurrentEntry(stored).confirmationAttempt.outgoingSnapshot) === JSON.stringify(attempt.outgoingSnapshot));
-        diagnosticLog(persisted ? 'SNAPSHOT_CAPTURED' : 'SNAPSHOT_UNAVAILABLE', context, { persisted, restoredAfterNavigation: restored, reason });
+        diagnosticLog('SNAPSHOT_READBACK_RESULT', context, { persisted: saved, readBackValid: persisted });
+        if (persisted) diagnosticLog(restored ? 'SNAPSHOT_RESTORED' : 'SNAPSHOT_PERSISTED', context, { source: 'place-command-rows', persisted: true, readBackValid: true, outgoingCommandIds: attempt.outgoingSnapshot.beforeCommandIds });
+        diagnosticLog(persisted ? 'SNAPSHOT_CAPTURED' : 'SNAPSHOT_UNAVAILABLE', context, { source: 'place-command-rows', persisted, restoredAfterNavigation: restored, reason });
         console.log?.('[EAS][FAKE][SNAPSHOT]', { executionId: context.executionTab, commandId, attemptId: attempt.attemptId,
             sourceVillageId: String(entry.sourceVillageId || entry.villageId), target: entry.target,
             capturedCommandIds: attempt.outgoingSnapshot?.beforeCommandIds ?? null,
@@ -288,6 +353,7 @@
         const entry = getCurrentEntry(context), attempt = entry?.confirmationAttempt, baseline = attempt?.outgoingSnapshot;
         diagnosticLog('RECONCILE_START', context);
         const observed = readOutgoingCommands(targetWindow);
+        diagnosticLog('SNAPSHOT_AFTER_CAPTURED', context, { source: observed.source, snapshotAvailable: observed.available, snapshotReason: observed.reason, outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null });
         const detail = { executionId: context.executionTab, commandId: getCommandKey(entry, context.currentIndex),
             attemptId: attempt?.attemptId || null, sourceVillageId: String(entry?.sourceVillageId || entry?.villageId || ''),
             expectedTarget: entry?.target, beforeCommandIds: baseline?.beforeCommandIds || null,
@@ -312,6 +378,7 @@
             if (result === 'SUCCESS') detail.matchedOutgoingCommandId = detail.candidateCommandIds[0];
         }
         detail.result = overrideResult || result;
+        if (detail.result === 'SUCCESS') diagnosticLog('RECONCILE_NEW_COMMAND', context, { source: observed.source, outgoingCommandId: detail.matchedOutgoingCommandId, newCommandIds: detail.newCommandIds });
         diagnosticLog(detail.result === 'SUCCESS' ? 'RECONCILE_SUCCESS' : 'RECONCILE_UNCERTAIN', context, { result: detail.result, outgoingCommandId: detail.matchedOutgoingCommandId });
         console.log?.('[EAS][FAKE][RECONCILE]', detail);
         return detail;
@@ -523,6 +590,26 @@
         };
     };
 
+    const startSnapshotPhase = context => {
+        const entry = getCurrentEntry(context), wait = entry.preparationWait;
+        if (!wait || wait.attemptId !== entry.confirmationAttempt?.attemptId ||
+            entry.confirmationAttempt?.commandId !== getCommandKey(entry, context.currentIndex)) return false;
+        if (wait.snapshotDeadlineAt == null) {
+            wait.targetPreparationDeadline = wait.deadlineAt;
+            wait.snapshotStartedAt = Date.now();
+            wait.snapshotDeadlineAt = wait.snapshotStartedAt + OPEN_TIMEOUT_MS;
+            wait.deadlineAt = wait.snapshotDeadlineAt;
+            wait.phase = 'WAIT_SNAPSHOT'; wait.waiting = false;
+            if (!saveContext(context)) return false;
+            diagnosticLog('PREPARATION_PHASE_START', context, { targetReady: true });
+        } else {
+            if (!Number.isFinite(wait.snapshotDeadlineAt)) return false;
+            wait.deadlineAt = wait.snapshotDeadlineAt;
+            wait.phase = 'WAIT_SNAPSHOT';
+        }
+        return true;
+    };
+
     const waitBeforeAttack = (context, phase, reason) => {
         const entry = getCurrentEntry(context), attempt = entry.confirmationAttempt;
         const previous = entry.preparationWait;
@@ -534,14 +621,30 @@
             diagnosticLog(phase === 'WAIT_PLACE' ? 'PLACE_WAIT_START' : phase === 'WAIT_TARGET' ? 'TARGET_WAIT_START' : 'SNAPSHOT_UNAVAILABLE', context, { reason });
         }
         if (changed && !saveContext(context)) return { valid: false, message: 'Falha ao persistir espera.' };
-        if (Date.now() >= previous.deadlineAt) return { valid: false, code: `${phase}_TIMEOUT`, message: `${phase}: tempo limite (${reason}). Nenhum ataque foi enviado.` };
+        if (phase === 'WAIT_SNAPSHOT') diagnosticLog('SNAPSHOT_WAIT', context, { snapshotAvailable: false, snapshotReason: reason });
+        if (Date.now() >= previous.deadlineAt) {
+            diagnosticLog('PREPARATION_DEADLINE_EXPIRED', context, { reason });
+            return { valid: false, code: `${phase}_TIMEOUT`, message: `${phase}: tempo limite (${reason}). Nenhum ataque foi enviado.` };
+        }
         return { valid: false, waiting: true, code: reason };
     };
 
+    const targetReadinessDiagnostics = new WeakMap();
     const checkResolvedTarget = (context, targetWindow) => {
         const entry = getCurrentEntry(context);
         const state = EAS.Place.readTargetReadiness?.(entry.target, targetWindow, entry.targetVillageId ?? null);
         if (entry.preparationWait) entry.preparationWait.actualTarget = state?.actualTarget ?? null;
+        // Diagnostic-only deduplication; never participates in readiness decisions.
+        try {
+            const detail = { expectedTarget: entry.target, actualTarget: state?.actualTarget ?? null,
+                resolvedCoordinate: state?.resolvedCoordinate ?? null, placeTargetFound: Boolean(state?.placeTargetFound),
+                villageItemFound: Boolean(state?.villageItemFound), villageNameFound: Boolean(state?.villageNameFound), inputVisible: Boolean(state?.inputVisible),
+                candidateSelectors: state?.candidateSelectors || [], candidateCoordinates: state?.candidateCoordinates || [],
+                selectorMatches: state?.selectorMatches || [], reason: state?.reason || 'TARGET_RESOLUTION_MISSING' };
+            const signature = JSON.stringify({ attemptId: entry.confirmationAttempt?.attemptId, ready: Boolean(state?.targetReady), ...detail });
+            if (!state?.targetReady && targetReadinessDiagnostics.get(targetWindow) !== signature) diagnosticLog('TARGET_NOT_READY', context, detail);
+            targetReadinessDiagnostics.set(targetWindow, signature);
+        } catch { /* Diagnostics cannot interrupt preparation. */ }
         return state;
     };
 
@@ -558,6 +661,7 @@
             if (entry.preparationWait && entry.preparationWait.attemptId !== entry.confirmationAttempt.attemptId) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Espera pertence a outra tentativa.' };
             if (!entry.preparationWait) {
                 entry.preparationWait = { attemptId: entry.confirmationAttempt.attemptId, phase: 'WAIT_PLACE', startedAt: Date.now(), deadlineAt: Date.now() + OPEN_TIMEOUT_MS, applied: false };
+                diagnosticLog('PREPARATION_PHASE_START', context);
                 diagnosticLog('PLACE_WAIT_START', context);
                 if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir preparacao.' };
             }
@@ -597,7 +701,7 @@
             if (!ready?.targetReady) return waitBeforeAttack(context, 'WAIT_TARGET', ready?.reason || 'TARGET_RESOLUTION_MISSING');
             entry.preparationWait.waiting = false;
             entry.preparationWait.phase = 'TARGET_READY';
-            diagnosticLog('TARGET_READY', context, { actualTarget: ready.actualTarget, resolutionEvidence: ready.resolutionEvidence });
+            diagnosticLog('TARGET_READY', context, { actualTarget: ready.actualTarget, resolutionEvidence: ready.resolutionEvidence, resolutionSource: ready.resolutionSource, resolvedCoordinate: ready.resolvedCoordinate, matchedSelector: ready.matchedSelector, inputVisible: ready.inputVisible, villageItemVisible: ready.villageItemVisible });
             diagnosticLog('TARGET_VALIDATED', context, { actualTarget: ready.actualTarget });
         }
         UNITS.forEach((unit) => {
@@ -694,8 +798,19 @@
             if (!ready?.targetReady) return waitBeforeAttack(context, 'WAIT_TARGET', ready?.reason || 'TARGET_RESOLUTION_MISSING');
         }
         bindExecutionTab(context, targetWindow);
-        diagnosticLog('SNAPSHOT_CAPTURE_START', context);
+        if (context.autoMode && !startSnapshotPhase(context)) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Falha ao persistir fase de snapshot.' };
+        diagnosticLog('SNAPSHOT_CAPTURE_START', context, { targetReady: true });
         const observed = readOutgoingCommands(targetWindow);
+        const snapshotDetail = { source: observed.source, targetReady: true, snapshotAvailable: observed.available, snapshotReason: observed.reason,
+            outgoingContainerFound: observed.outgoingContainerFound, outgoingRowsFound: observed.outgoingRowsFound,
+            outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null, documentUrl: targetWindow.location.href };
+        if (observed.available) {
+            diagnosticLog('SNAPSHOT_SOURCE_FOUND', context, snapshotDetail);
+            if (!observed.commands.length) diagnosticLog('SNAPSHOT_EMPTY_VALID', context, snapshotDetail);
+        }
+        diagnosticLog('SNAPSHOT_SOURCE_CHECK', context, snapshotDetail);
+        logSnapshotSourceEvidence(context, targetWindow, observed);
+        diagnosticLog('SNAPSHOT_CAPTURE_RESULT', context, snapshotDetail);
         if (context.autoMode && !observed.available && ['CONTAINER_MISSING', 'DOM_LOADING'].includes(observed.reason)) return waitBeforeAttack(context, 'WAIT_SNAPSHOT', observed.reason);
         if (!persistOutgoingSnapshot(context, targetWindow)) return { valid: false, code: 'SNAPSHOT_UNAVAILABLE', message: 'Snapshot indisponivel. Nenhum ataque foi enviado.' };
         if (entry.preparationWait) { entry.preparationWait.waiting = false; entry.preparationWait.phase = 'SNAPSHOT_READY'; }
@@ -898,6 +1013,7 @@
                 forwardingStartedAt: context?.forwardingStartedAt,
                 autoMode: context?.autoMode, paused: context?.paused,
                 endedAt: context?.endedAt || null, finishedAt: context?.finishedAt || null,
+                snapshotSourceEvidence: snapshotSourceEvidence(targetWindow),
                 executionErrors: context?.errors || [], documentReadyState: targetWindow.document.readyState,
                 pageVillageId: getScreen(targetWindow).villageId,
                 elapsedSinceForwardingMs: context?.forwardingStartedAt ? Date.now() - context.forwardingStartedAt : null,
@@ -1913,6 +2029,7 @@
     EAS.FakesExecution.executionCounts = executionCounts;
     EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
     EAS.FakesExecution.readOutgoingCommands = readOutgoingCommands;
+    EAS.FakesExecution.snapshotSourceEvidence = snapshotSourceEvidence;
     EAS.FakesExecution.reconcileOutgoing = reconcileOutgoing;
     // Temporary DEV helper, intentionally available without changing persisted settings.
     // Read-only image audit: no fetches, image creation, observers or refreshes.

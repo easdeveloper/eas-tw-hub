@@ -50,3 +50,28 @@ test('resolved target label or matching native ID proves readiness, with conflic
  assert.equal(id.api.readTargetReadiness('604|379',id.w,'123').targetReady,true);
  assert.equal(id.api.readTargetReadiness('604|379',id.w,'999').targetReady,false);
 });
+
+test('readiness diagnostics identify searched selectors and stale candidate coordinates',()=>{
+ const f=fixture({typed:'511|443',nativeX:'511',nativeY:'443'}),form=f.w.document.querySelector();
+ const label={textContent:'Village (604|379)'};
+ form.querySelectorAll=selector=>selector==='#target_selection .village-name'?[label]:[];
+ let result=f.api.readTargetReadiness('511|443',f.w);
+ assert.equal(result.targetReady,false);assert.deepEqual(Array.from(result.candidateCoordinates),['604|379']);
+ assert.equal(result.selectorMatches[0].count,1);assert.equal(result.matchedSelector,null);
+ label.textContent='Different player and village (511|443)';result=f.api.readTargetReadiness('511|443',f.w);
+ assert.equal(result.targetReady,true);assert.equal(result.resolutionSource,'resolved-target-label');
+ assert.equal(result.resolvedCoordinate,'511|443');assert.equal(result.matchedSelector,'#target_selection .village-name');
+ form.querySelectorAll=()=>[];result=f.api.readTargetReadiness('511|443',f.w);
+ assert.equal(result.targetReady,false);assert.equal(result.reason,'TARGET_RESOLUTION_MISSING');assert.equal(result.candidateSelectors.length,4);
+});
+
+
+test('canonical widget authorizes hidden empty input without repairing it; stale widget blocks legacy fallback',()=>{
+ const f=fixture({split:false,typed:''}),name={textContent:'Village (511|443)'},item={querySelectorAll:()=>[name]};
+ f.w.document.getElementById=id=>id==='place_target'?{querySelectorAll:()=>[item],querySelector:()=>null}:null;
+ f.api.fillCommandTarget=()=>{throw Error('must not reapply a resolved target');};
+ let r=f.api.ensureCommandTarget('511|443',f.w);assert.equal(r.targetValidated,true);assert.equal(r.actualTarget,'511|443');assert.equal(r.applyTarget,false);
+ assert.equal(r.inputVisible,false);assert.equal(r.villageItemVisible,true);
+ name.textContent='Stale (604|379)';f.w.document.querySelector().querySelectorAll=()=>[{textContent:'Legacy (511|443)'}];
+ r=f.api.readTargetReadiness('511|443',f.w);assert.equal(r.targetReady,false);assert.equal(r.resolvedCoordinate,'604|379');
+});

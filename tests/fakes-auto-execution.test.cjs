@@ -64,8 +64,11 @@ function fixture(size = 3, startTime = 100000) {
     return {resolveTarget:value=>{resolved=value;},outgoing:(rows,available=true)=>{outgoing=rows;outgoingAvailable=available;},read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
         run:()=>api().initialize(),counts:()=>({preparations,attacks,confirmations}),
         unit:()=>unit,confirm:()=>confirmButton,input:()=>input,
-        useNativeTarget(){
-            form.querySelectorAll=selector=>selector.includes('#target_selection')?[{textContent:'001 (501|501)'}]:[];
+        useNativeTarget(labels = null){
+            form.querySelectorAll=selector=>labels ? selector==='.village-item .village-name' ? labels() : [] : selector.includes('#target_selection')?[{textContent:'001 (501|501)'}]:[];
+            if(labels){const original=document.getElementById;document.getElementById=id=>id==='place_target'?{
+                querySelectorAll:()=>labels().map(name=>({querySelectorAll:()=>[name]})),querySelector:()=>null
+            }:original(id);}
             window.getComputedStyle=()=>({});document.defaultView=window;document.querySelectorAll=()=>[input];
             window.FormData=class{getAll(name){return name==='input'?[input.value]:[];}};
             sandbox.location={...window.location,host:'test',origin:'https://test'};sandbox.sessionStorage={removeItem(){}};sandbox.EAS.World={};
@@ -417,4 +420,86 @@ test('typed coordinate with pending native validation waits for native readiness
  f.sandbox.EAS.Place.ensureCommandTarget=()=>({targetValidated:nativeReady,inputTarget:'501|501',actualTarget:nativeReady?'501|501':null});
  f.run();f.tick();assert.notEqual(f.read().paused,true);assert.equal(f.unit().value,'');assert.equal(f.counts().attacks,0);
  f.tick();nativeReady=true;f.resolveTarget(true);f.tick();f.tick();assert.equal(f.counts().attacks,1);assert.equal(f.counts().preparations,1);
+});
+
+
+test('real village-item adapter waits for late card through reinjection and submits once',()=>{
+ const f=fixture(2),labels=[],logs=[];f.useNativeTarget(()=>labels);
+ f.sandbox.EAS.Logger={info:(module,event,data)=>logs.push({event,...data})};
+ f.run();f.tick();assert.equal(f.input().value,'501|501');assert.equal(f.unit().value,'');assert.equal(f.counts().attacks,0);
+ const attempt=f.read().queue[0].confirmationAttempt.attemptId;
+ vm.runInContext(source,f.sandbox);f.run();f.tick();assert.equal(f.counts().attacks,0);
+ labels.push({textContent:'Old village (604|379)'});f.tick();assert.equal(f.counts().attacks,0);
+ labels.push({textContent:'Renamed village (501|501)'});f.input().value='';f.tick();f.tick();f.run();
+ assert.equal(f.counts().attacks,1);assert.equal(logs.filter(log=>log.event==='TARGET_APPLY_START').length,1);
+ assert.equal(f.read().queue[0].confirmationAttempt.attemptId,attempt);
+ const ready=logs.find(log=>log.event==='TARGET_READY');assert.equal(ready.resolutionSource,'#place_target .village-item .village-name');assert.equal(ready.resolvedCoordinate,'501|501');
+ assert.equal(ready.matchedSelector,'#place_target .village-item .village-name');
+ f.confirmation();assert.equal(f.counts().confirmations,1);
+});
+
+
+test('slow target gets independent persisted snapshot budget, then empty baseline sends once',()=>{
+ const f=fixture(2),logs=[];f.sandbox.EAS.Logger={info:(module,event,data)=>logs.push({event,...data})};
+ f.resolveTarget(false);f.outgoing([],false);f.run();f.tick();
+ const targetDeadline=f.read().queue[0].preparationWait.deadlineAt;
+ while(f.sandbox.Date.now()<targetDeadline-1800)f.tick();
+ f.resolveTarget(true);f.tick();f.tick();
+ const wait=f.read().queue[0].preparationWait;
+ assert.equal(wait.targetPreparationDeadline,targetDeadline);assert.equal(wait.snapshotDeadlineAt-wait.snapshotStartedAt,10000);
+ assert.ok(wait.snapshotDeadlineAt>targetDeadline+7000);assert.equal(f.counts().attacks,0);
+ vm.runInContext(source,f.sandbox);f.run();f.tick();assert.equal(f.read().queue[0].preparationWait.snapshotDeadlineAt,wait.snapshotDeadlineAt);
+ while(f.sandbox.Date.now()<=targetDeadline+1000)f.tick();
+ f.outgoing([]);f.tick();assert.equal(f.counts().attacks,1);
+ assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,[]);
+ const unavailable=logs.find(log=>log.event==='SNAPSHOT_SOURCE_CHECK'&&!log.snapshotAvailable);
+ assert.equal(unavailable.snapshotReason,'CONTAINER_MISSING');assert.equal(unavailable.outgoingContainerFound,false);assert.equal(unavailable.outgoingCommandIds,null);
+ const captured=logs.find(log=>log.event==='SNAPSHOT_CAPTURE_RESULT'&&log.snapshotAvailable);
+ assert.deepEqual(Array.from(captured.outgoingCommandIds),[]);
+ assert.ok(logs.findIndex(log=>log.event==='SNAPSHOT_READBACK_RESULT'&&log.readBackValid)<logs.findIndex(log=>log.event==='ATTACK_SUBMIT'));
+});
+
+test('snapshot deadline expiry logs source absence and never submits',()=>{
+ const f=fixture(2),logs=[];f.sandbox.EAS.Logger={info:(module,event,data)=>logs.push({event,...data})};
+ f.outgoing([],false);f.run();while(f.timers.size)f.tick();
+ const expired=logs.find(log=>log.event==='PREPARATION_DEADLINE_EXPIRED');assert.ok(expired);assert.equal(expired.phase,'WAIT_SNAPSHOT');assert.equal(expired.remainingMs,0);
+ assert.ok(logs.some(log=>log.event==='SNAPSHOT_WAIT'&&log.snapshotReason==='CONTAINER_MISSING'));assert.equal(f.counts().attacks,0);
+});
+
+
+test('source evidence inventories names only and missing DOM never becomes empty baseline',()=>{
+ const f=fixture(2),logs=[];f.outgoing([],false);
+ f.sandbox.EAS.Logger={info:(module,event,data)=>logs.push({event,...data})};
+ f.window.game_data={village:{id:9,commands:[]},csrf:'secret'};
+ let getterCalls=0;Object.defineProperty(f.window.game_data,'outgoing',{enumerable:true,get(){getterCalls++;throw Error('must not execute');}});
+ f.window.document.querySelectorAll=selector=>selector==='form'?[{id:'command-data-form',method:'post',action:'https://test/game.php?screen=place&h=secret',elements:[{name:'h',value:'secret'}]}]:[];
+ const evidence=f.api().snapshotSourceEvidence(f.window);
+ assert.equal(evidence.authoritativeSourceAvailable,false);assert.ok(evidence.gameDataKeys.includes('outgoing'));
+ assert.equal(JSON.stringify(evidence).includes('secret'),false);assert.equal(getterCalls,0);
+ f.run();f.tick();f.tick();f.tick();assert.equal(f.counts().attacks,0);
+ assert.equal(f.read().queue[0].confirmationAttempt.outgoingSnapshot,undefined);
+ assert.equal(logs.filter(log=>log.event==='SNAPSHOT_SOURCE_EVIDENCE').length,1);
+});
+
+test('diagnostic DOM inventory failure cannot affect safe snapshot wait',()=>{
+ const f=fixture(2);f.outgoing([],false);f.window.document.querySelectorAll=()=>{throw Error('diagnostic DOM failure');};
+ assert.equal(f.api().snapshotSourceEvidence(f.window).diagnosticUnavailable,true);
+ f.run();f.tick();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().queue[0].preparationWait.phase,'WAIT_SNAPSHOT');
+});
+
+
+test('global place rows capture and reconcile through the same parser without legacy container',()=>{
+ const f=fixture(2),rows=[outgoingRow({id:'100'})];
+ const globalSource=()=>{f.outgoing([],false);f.window.document.querySelectorAll=selector=>selector==='tr.command-row'?rows:[];};
+ globalSource();f.run();f.tick();f.tick();
+ assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,['100']);
+ f.confirmation();f.navigate('place',9);globalSource();rows.push(outgoingRow({id:'200'}));
+ const result=f.api().reconcileOutgoing(f.read(),f.window);assert.equal(result.result,'SUCCESS');assert.deepEqual(Array.from(result.newCommandIds),['200']);assert.equal(result.matchedOutgoingCommandId,'200');
+});
+
+test('global outgoing rows deduplicate IDs but reject conflicting metadata',()=>{
+ const f=fixture(),rows=[outgoingRow({id:'10'}),outgoingRow({id:'10'}),outgoingRow({id:'11'})];
+ f.outgoing([],false);f.window.document.querySelectorAll=()=>rows;
+ let r=f.api().readOutgoingCommands(f.window);assert.equal(r.available,true);assert.deepEqual(Array.from(r.commands,c=>c.id),['10','11']);
+ rows.push(outgoingRow({id:'10',target:'600|600'}));r=f.api().readOutgoingCommands(f.window);assert.equal(r.available,false);assert.equal(r.reason,'CONFLICTING_DUPLICATE');
 });

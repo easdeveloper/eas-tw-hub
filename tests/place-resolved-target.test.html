@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Running</title>
+<form id="command-data-form"></form><div id="unrelated"></div><pre id="result"></pre>
+<script>window.EAS={World:{}};</script><script src="../core/utils.js"></script><script src="../services/place.js"></script>
+<script>
+(async()=>{
+ const form=document.querySelector('form'),outside=document.querySelector('#unrelated');
+ const [input,card]=await Promise.all(['target-unresolved','target-resolved'].map(async name=>(await fetch('./fixtures/place/'+name+'.html')).text()));
+ let count=0;const assert=(condition,label)=>{if(!condition)throw Error(label);count++;};
+ const read=()=>EAS.Place.readTargetReadiness('511|443');
+ const setup=(html=card)=>{form.innerHTML=html||input;outside.innerHTML='';};
+ setup();let r=read();assert(r.targetReady,'A: real card ready');assert(r.resolutionSource==='#place_target .village-item .village-name','source');assert(r.matchedSelector==='#place_target .village-item .village-name','selector');assert(r.resolvedCoordinate==='511|443','coordinate');
+ setup(card.replace('511|443','604|379'));assert(!read().targetReady,'B: stale blocked');assert(read().candidateCoordinates[0]==='604|379','stale diagnostic');
+ setup('');assert(!read().targetReady,'C: input alone blocked');
+ await Promise.resolve();form.innerHTML=card;assert(read().targetReady,'D: late card ready');
+ setup();form.querySelector('#place_target').insertAdjacentHTML('afterbegin','<div class="village-item"><span class="village-name">Old (604|379)</span></div>');assert(read().targetReady,'E: select matching card');
+ setup(card.replace('511|443',' 511 | 443 '));assert(read().targetReady,'F: formatting normalized');
+ setup('');outside.innerHTML='<div class="village-item"><span class="village-name">Other (511|443)</span></div>';assert(!read().targetReady,'outside canonical container blocked');
+ setup();form.querySelector('.village-item').hidden=true;assert(!read().targetReady,'hidden card blocked');
+ setup();assert(form.querySelector('input').value==='' && getComputedStyle(form.querySelector('input')).display==='none' && read().targetReady,'real empty hidden input ready');
+ const widget=form.querySelector('#place_target');outside.append(widget);assert(read().targetReady,'canonical container independent of command form');
+ setup();assert(!EAS.Place.readTargetReadiness('').targetReady,'invalid expected blocked');
+ setup(card.replace('bluedefense de ald?','Any renamed village'));assert(read().targetReady,'name independent');
+ document.title='PASS';document.querySelector('#result').textContent='PASS ? '+count+' assertions';
+})().catch(error=>{document.title='FAIL';document.querySelector('#result').textContent=error.stack;});
+</script>

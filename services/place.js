@@ -282,6 +282,12 @@
             (!state.inputFound || state.inputTarget === expectedTarget) &&
             (!state.nativeTargetId || (expectedVillageId != null && state.nativeTargetId === String(expectedVillageId))));
         const before = readCommandTarget(targetWindow);
+        const resolution = EAS.Place.readTargetReadiness(coordinate, targetWindow, expectedVillageId);
+        // The canonical widget clears/hides its input after resolving. Never repair
+        // that input when the visible resolved card already identifies this target.
+        if (resolution.placeTargetFound && resolution.targetReady) return { ...resolution,
+            targetVillageId: expectedVillageId, inputValueBefore: before.inputValue,
+            inputValueAfter: before.inputValue, applyTarget: false, targetValidated: true, code: null };
         let applyTarget = false;
         if (!matches(before)) {
             applyTarget = EAS.Place.fillCommandTarget(coordinate, targetWindow);
@@ -308,25 +314,76 @@
     // that EAS itself can fill. Absence of evidence is never treated as readiness.
     EAS.Place.readTargetReadiness = (coordinate, targetWindow = window, expectedVillageId = null) => {
         const form = getCommandForm(targetWindow.document), state = readCommandTarget(targetWindow);
-        const expectedTarget = EAS.Utils.parseCoordinate(coordinate)?.coordinate;
-        const selected = Array.from(form?.querySelectorAll?.('#target_selection .village-name, #target_selection a[href*="screen=info_village"], .target-input-field .village-name, .target-input-field a[href*="screen=info_village"]') || []);
-        const resolved = selected.filter(node => {
+        const normalize = value => {
+            const compact = String(value ?? '').replace(/\s+/g, '');
+            return /^\d{1,3}\|\d{1,3}$/.test(compact) ? EAS.Utils.parseCoordinate(compact)?.coordinate : null;
+        };
+        const expectedTarget = normalize(coordinate);
+        const visibleNode = node => {
+            if (!node) return false;
             const style = targetWindow.getComputedStyle?.(node);
-            if (style?.display === 'none' || style?.visibility === 'hidden' || (node.getClientRects && !node.getClientRects().length)) return false;
-            return [...String(node.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].some(match => match[1] === expectedTarget);
-        });
+            return style?.display !== 'none' && style?.visibility !== 'hidden' &&
+                (!node.getClientRects || node.getClientRects().length > 0);
+        };
+        const extract = node => [...String(node?.textContent || '').matchAll(/\(\s*(\d{1,3}\s*\|\s*\d{1,3})\s*\)/g)]
+            .map(match => normalize(match[1])).filter(Boolean);
+        const placeTarget = targetWindow.document.getElementById?.('place_target');
+        if (placeTarget) {
+            const selector = '#place_target .village-item .village-name';
+            const items = Array.from(placeTarget.querySelectorAll('.village-item'));
+            const candidates = items.flatMap(item => Array.from(item.querySelectorAll('.village-name')).map(name =>
+                ({ item, name, coords: extract(name), visible: visibleNode(item) && visibleNode(name) })));
+            const match = candidates.find(candidate => candidate.visible && candidate.coords.length === 1 &&
+                expectedTarget && candidate.coords[0] === expectedTarget);
+            const input = placeTarget.querySelector('input[name="input"]');
+            const busy = Boolean(placeTarget.querySelector('[aria-busy="true"]') || form?.querySelector?.('[aria-busy="true"]'));
+            const resolvedCoordinate = match?.coords[0] || candidates.find(candidate => candidate.visible && candidate.coords.length === 1)?.coords[0] || null;
+            return { ...state, expectedTarget, actualTarget: resolvedCoordinate, resolvedCoordinate,
+                placeTargetFound: true, villageItemFound: items.length > 0, villageNameFound: candidates.length > 0,
+                inputVisible: visibleNode(input), villageItemVisible: match ? true : items.some(visibleNode),
+                candidateSelectors: [selector], candidateCoordinates: [...new Set(candidates.flatMap(candidate => candidate.coords))],
+                selectorMatches: [{ selector, count: candidates.length, coordinates: candidates.flatMap(candidate => candidate.coords) }],
+                resolutionSource: match ? selector : null, resolutionEvidence: match ? selector : null,
+                matchedSelector: match ? selector : null, targetReady: Boolean(expectedTarget && match && !busy),
+                reason: !expectedTarget ? 'TARGET_INVALID' : busy ? 'TARGET_BUSY' : match ? null :
+                    !items.length ? 'TARGET_RESOLUTION_MISSING' : !candidates.length ? 'TARGET_NAME_MISSING' :
+                    !candidates.some(candidate => candidate.visible) ? 'TARGET_CARD_HIDDEN' : 'TARGET_RESOLUTION_MISMATCH' };
+        }
+        // Scope to the native command form: cards elsewhere cannot authorize an attack.
+        const candidateSelectors = ['#target_selection .village-name', '#target_selection a[href*="screen=info_village"]',
+            '.target-input-field .village-name', '.target-input-field a[href*="screen=info_village"]'];
+        const matchesBySelector = candidateSelectors.map(selector => ({ selector, nodes: Array.from(form?.querySelectorAll?.(selector) || []) }));
+        const selected = [...new Set(matchesBySelector.flatMap(match => match.nodes))];
+        const coordinates = node => [...String(node.textContent || '').matchAll(/\(\s*(\d{1,3}\s*\|\s*\d{1,3})\s*\)/g)]
+            .map(match => normalize(match[1])).filter(Boolean);
+        const candidateCoordinates = [...new Set(selected.flatMap(coordinates))];
+        const selectorMatches = matchesBySelector.map(match => ({ selector: match.selector, count: match.nodes.length,
+            coordinates: [...new Set(match.nodes.flatMap(coordinates))] }));
+        const visible = node => {
+            const style = targetWindow.getComputedStyle?.(node);
+            return style?.display !== 'none' && style?.visibility !== 'hidden' &&
+                (!node.getClientRects || node.getClientRects().length > 0);
+        };
+        const matchesCoordinate = node => {
+            const coords = coordinates(node);
+            return visible(node) && coords.length === 1 && coords[0] === expectedTarget;
+        };
+        const noConflictingLabel = selected.every(node => coordinates(node).every(coord => coord === expectedTarget));
+        const resolvedLabel = selected.find(matchesCoordinate);
         const nativeIdMatches = Boolean(expectedVillageId != null && state.nativeTargetId === String(expectedVillageId));
-        const noConflictingLabel = selected.every(node => {
-            const coords = [...String(node.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].map(match => match[1]);
-            return coords.every(coord => coord === expectedTarget);
-        });
-        const labelMatches = resolved.length > 0 && noConflictingLabel;
-        const payloadMatches = state.actualTarget === expectedTarget && (!state.inputFound || state.inputTarget === expectedTarget) &&
-            (!state.nativeTargetId || nativeIdMatches);
+        const evidenceReady = noConflictingLabel && Boolean(nativeIdMatches || resolvedLabel);
+        const payloadMatches = Boolean(expectedTarget) && normalize(state.actualTarget) === expectedTarget &&
+            (!state.inputFound || normalize(state.inputTarget) === expectedTarget) && (!state.nativeTargetId || nativeIdMatches);
         const busy = Boolean(form?.querySelector?.('[aria-busy="true"]'));
-        return { ...state, expectedTarget, targetReady: Boolean(payloadMatches && !busy && noConflictingLabel && (nativeIdMatches || labelMatches)),
-            resolutionEvidence: nativeIdMatches ? 'native-target-id' : labelMatches ? 'resolved-target-label' : null,
-            reason: !payloadMatches || !noConflictingLabel ? 'TARGET_NOT_APPLIED' : busy ? 'TARGET_BUSY' : !nativeIdMatches && !labelMatches ? 'TARGET_RESOLUTION_MISSING' : null };
+        const resolutionSource = evidenceReady ? nativeIdMatches ? 'native-target-id' : 'resolved-target-label' : null;
+        const matchedSelector = resolutionSource === 'native-target-id'
+            ? 'input[name="target_id"], input[name="target_village_id"], input[name="target"]'
+            : resolutionSource === 'resolved-target-label' ? matchesBySelector.find(match => match.nodes.includes(resolvedLabel))?.selector || null : null;
+        return { ...state, expectedTarget, placeTargetFound: false, villageItemFound: false, villageNameFound: false, inputVisible: Boolean(state.inputFound), villageItemVisible: false, candidateSelectors, candidateCoordinates, selectorMatches, resolutionSource, matchedSelector,
+            resolvedCoordinate: evidenceReady ? expectedTarget : null,
+            targetReady: Boolean(payloadMatches && !busy && evidenceReady), resolutionEvidence: resolutionSource,
+            reason: !payloadMatches ? 'TARGET_NOT_APPLIED' : busy ? 'TARGET_BUSY' : !evidenceReady
+                ? candidateCoordinates.length ? 'TARGET_RESOLUTION_MISMATCH' : 'TARGET_RESOLUTION_MISSING' : null };
     };
 
     EAS.Place.fillTarget = (coordinate) => {
