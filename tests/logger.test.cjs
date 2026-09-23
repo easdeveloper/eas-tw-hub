@@ -24,3 +24,9 @@ test('duplicate bootstrap does not duplicate listeners; global errors capped; ex
  const f=fixture();f.run();assert.equal(f.listeners.pagehide.length,1);for(let i=0;i<100;i++)f.listeners.error[0]({message:'boom'});
  const d=f.api.exportDiagnostic();assert.equal(d.events.filter(e=>e.module==='GLOBAL').length,20);d.events.length=0;assert.ok(f.api.entries().length>0);
 });
+
+
+test('100 logger bootstraps and exports produce only local storage writes',()=>{
+ const f=fixture(),deny=()=>{throw Error('logger network');};f.root.fetch=deny;f.root.Image=deny;f.root.XMLHttpRequest=deny;f.root.navigator={sendBeacon:deny};f.root.document.createElement=deny;
+ for(let i=0;i<100;i++){f.run();f.api.info('CORE','LOCAL',{});f.api.exportDiagnostic();}assert.equal(f.listeners.pagehide.length,1);assert.ok(f.writes()>0);
+});

@@ -464,13 +464,14 @@
         let response;
 
         try {
-            response = await fetch(url, {
+            response = await (window.EASRateLimit?.check() ? Promise.reject(new Error('RATE_LIMITED')) : fetch(url, {
                 credentials: 'same-origin'
-            });
+            }));
         } catch (error) {
             throw new Error('Não foi possível carregar a visão geral de tropas.');
         }
 
+        if (window.EASRateLimit?.reportStatus(response.status)) throw Object.assign(new Error('RATE_LIMITED'), { status: 429 });
         if (!response.ok) {
             throw new Error('Não foi possível carregar a visão geral de tropas.');
         }

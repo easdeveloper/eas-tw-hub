@@ -63,10 +63,22 @@
         }
     } catch (error) { console.log?.('[EAS][FAKE][BOOTSTRAP]', { event: 'SCRIPT_ENTER_DIAGNOSTIC_ERROR', error: String(error) }); }
 
+    if (window.EASRateLimit?.check()) return;
+
+    window.__EASLoaderTrace?.('index-start-call', { reason: 'index-evaluated' });
+    if (window.__EASIndexBootstrap) {
+        window.__EASLoaderTrace?.('deduplicated', { asset: 'index.js', reason: 'document-bootstrap-already-started' });
+        window.__EASLoaderTrace?.('bootstrap-already-running', { reason: 'index-reinjection' });
+        return;
+    }
+    window.__EASIndexBootstrap = { buildId: window.EASLocalBuild?.id || null, startedAt: Date.now() };
+    window.__EASLoaderTrace?.('index-start', { reason: 'first-index-in-document' });
+
     const BASE_URL = 'https://easdeveloper.github.io/eas-tw-hub';
 
     try { window.__EASLogger?.info('CORE', 'INDEX_REACHED', { local: !!window.EASLocalBuild }); } catch {}
     const loadedScripts = new Set();
+    const scriptPromises = new Map();
     // A generated local userscript embeds every asset; missing files never fall back
     // to the published release, so a validation run cannot silently mix versions.
     const assetUrl = (src, type) => {
@@ -85,12 +97,23 @@
     );
     const notifyReady = () => {
         window.EAS?.UI?.FloatingPanel?.initialize({ minimizedByDefault: Boolean(window.__EAS_TW_RUNTIME_RESUMED__?.active) });
+        window.__EASIndexBootstrap.completedAt = Date.now();
+        window.__EASLoaderTrace?.('bootstrap-completed', { reason: 'dependencies-and-resume-completed' });
         window.dispatchEvent(new CustomEvent('eas-tw-hub-ready', {
             detail: { version: window.EAS?.version || '', mobile: isMobile(), timestamp: Date.now() }
         }));
     };
 
-    const loadScript = (src) => new Promise((resolve, reject) => {
+    const loadScript = (src, { reason = window.__EASIndexBootstrap.completedAt ? 'module-demand' : 'bootstrap-dependency' } = {}) => {
+        window.__EASLoaderTrace?.('load-script', { asset: src, reason, callerStack: new Error('EAS loadScript caller').stack });
+        if (scriptPromises.has(src)) {
+            window.__EASLoaderTrace?.('deduplicated', { asset: src, reason: 'dependency-already-requested' });
+            return scriptPromises.get(src);
+        }
+        const promise = window.EASLocalBuild?.execute
+            ? (window.EASRateLimit?.check() ? Promise.reject(new Error('RATE_LIMITED')) : window.EASLocalBuild.execute(src, { reason }))
+            : new Promise((resolve, reject) => {
+        if (window.EASRateLimit?.check()) { reject(new Error('RATE_LIMITED')); return; }
         const existing = document.querySelector(`script[data-eas-script="${src}"]`);
 
         if (loadedScripts.has(src) || existing) {
@@ -101,14 +124,24 @@
         const script = document.createElement('script');
         script.src = assetUrl(src, 'text/javascript');
         script.dataset.easScript = src;
+        window.__EASLoaderTrace?.('script-created', { asset: src, url: script.src, reason, transport: 'script-element', scriptType: script.type || '', callerStack: new Error('EAS dependency insertion').stack });
         script.onload = () => {
             if (window.EASLocalBuild && script.src.startsWith('blob:')) { try { URL.revokeObjectURL(script.src); } catch {} }
             loadedScripts.add(src);
+            script.dataset.easLoaded = 'true';
+            window.__EASLoaderTrace?.('script-loaded', { asset: src, url: script.src, reason, transport: 'script-element' });
             resolve();
         };
-        script.onerror = () => reject(new Error(`Falha ao carregar: ${src}`));
+        script.onerror = () => {
+            window.__EASLoaderTrace?.('script-error', { asset: src, url: script.src, reason: 'load-event-error', transport: 'script-element' });
+            reject(new Error(`Falha ao carregar: ${src}`));
+        };
+        window.__EASLoaderTrace?.('script-injected', { asset: src, url: script.src, reason });
         document.head.appendChild(script);
     });
+        scriptPromises.set(src, promise);
+        return promise;
+    };
 
     window.EASLoader = {
         loadScript
@@ -368,7 +401,9 @@
             await loadStyle('css/eas.css');
 
             await loadScript('core/eas.js');
-            await loadScript('core/logger.js').catch(() => {}); // Diagnostics must not block runtime loading.
+            if (!window.EASRateLimit) await loadScript('core/rate-limit.js');
+            if (window.EASRateLimit?.check()) return;
+            if (!window.__EASLogger) await loadScript('core/logger.js').catch(() => {}); // Diagnostics must not block runtime loading.
             await loadScript('core/utils.js');
             await loadScript('core/storage.js');
             await loadScript('core/observability.js');
@@ -402,7 +437,7 @@
             await loadScript('services/minting-adapter.js');
             await loadScript('services/minting.js');
 
-            window.EAS.Data.bootstrap().catch((error) => window.EAS.Log.error('bootstrap', 'background-refresh-failed', error));
+            window.EAS.Data.bootstrap().catch((error) => window.EAS.Log.error('bootstrap', 'cached-bootstrap-failed', error));
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();
@@ -426,7 +461,7 @@
             window.dispatchEvent(new CustomEvent('eas-tw-hub-error', { detail: {
                 code: 'HUB_INIT_ERROR', message: error.message, stack: error.stack || '', timestamp: Date.now()
             }}));
-            if (!window.EASTWHubLoaderRuntime) alert(`EAS TW Hub: ${error.message}`);
+            if (!window.EASTWHubLoaderRuntime && error.status !== 429 && !/RATE_LIMITED/.test(String(error.message))) alert(`EAS TW Hub: ${error.message}`);
         }
     };
 

@@ -14,7 +14,7 @@
     const isOwnOfferPage = () => EAS.MarketOffersExecution?.isOwnOfferPage?.(window) ?? (pageDiagnostic().screen === 'market' && pageDiagnostic().mode === 'own_offer');
     const log = (event, data = {}) => { if (EAS.MarketOffersExecution?.logMarketOfferExecution) return EAS.MarketOffersExecution.logMarketOfferExecution(event, data); console.info('[EAS Smart Offers]', event, data); return { event, data, timestamp: Date.now() }; };
 
-    const openSmartOffersPanel = () => {
+    const openSmartOffersPanel = ({ ensureFresh = false } = {}) => {
         let win = null;
         const page = pageDiagnostic(); const execution = EAS.MarketOffersExecution?.read?.() || null;
         log('smart-offer-module-init-start', { ...page, pageDetected: isOwnOfferPage(), executionStateExists: Boolean(execution), activeExecutionId: execution?.executionId || null });
@@ -88,7 +88,7 @@
         const recalculate = ({ resetExecution = false } = {}) => { if (resetExecution) EAS.MarketOffersExecution.remove('recalculate-all'); const config = getConfig(); write(CONFIG_KEY, config); const result = EAS.MarketEngine.buildGlobalOfferSuggestions(getVillages(), config); suggestions = result.suggestions; originalSuggestions = structuredClone(suggestions); write(ANALYSIS_KEY, { ...result, suggestions, analyzedAt: Date.now() }); renderDiagnosis(); renderSuggestions(); renderExecution(); };
         let refreshRunning = false;
         const refresh = async () => { if (refreshRunning) return; refreshRunning = true; cancelling = false; const executionId = `smart-offers-refresh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; progress.hidden = false; progress.dataset.state = 'running'; progress.innerHTML = '<progress max="1" value="0"></progress><span>Verificando dados do Mercado...</span><button>Cancelar</button>'; progress.querySelector('button').onclick = () => { cancelling = true; progress.querySelector('span').textContent = 'Cancelando após a coleta em andamento...'; EAS.Log?.info?.('smart-offers', 'refresh.cancelRequested', { executionId }); }; EAS.Log?.info?.('smart-offers', 'refresh.start', { executionId });
-            try { const result = await EAS.Data.Market.refresh({ forceRefresh: true, executionId, shouldCancel: () => cancelling, onProgress: (event) => { const bar = progress.querySelector('progress'); const label = progress.querySelector('span'); if (event.total != null) bar.max = Math.max(1, event.total); if (event.completed != null) bar.value = event.completed; if (event.phase === 'village-start') label.textContent = `Verificando aldeia ${Math.min(event.index, event.total)} de ${event.total}: ${event.village?.name || event.villageId}`; if (event.phase === 'village-complete') label.textContent = `${event.source === 'cache' ? 'Dados válidos em cache' : 'Atualizada'} ${event.completed} de ${event.total}: ${event.village?.name || event.villageId}`; if (event.phase === 'complete') label.textContent = 'Reconstruindo estado econômico...'; if (event.phase === 'cancelled') label.textContent = 'Atualização cancelada.'; } }); if (result.refresh?.cancelled) { progress.dataset.state = 'cancelled'; EAS.UI.showStatus({ target: status, message: 'Atualização do Mercado cancelada.', type: 'info' }); return; } progress.querySelector('span').textContent = 'Recalculando sugestões...'; EAS.Log?.debug?.('smart-offers', 'refresh.economicState', { executionId, villageCount: getVillages().length }); renderDiagnosis(); EAS.Log?.debug?.('smart-offers', 'refresh.recalculate', { executionId }); recalculate(); progress.querySelector('span').textContent = 'Atualização concluída.'; progress.dataset.state = 'complete'; EAS.Log?.info?.('smart-offers', 'refresh.complete', { executionId, villageCount: getVillages().length }); }
+            try { const result = await EAS.Data.Market.refresh({ requestedBy:'market.smartOffers.refreshButton', reason:'user-refresh', forceRefresh: true, executionId, shouldCancel: () => cancelling, onProgress: (event) => { const bar = progress.querySelector('progress'); const label = progress.querySelector('span'); if (event.total != null) bar.max = Math.max(1, event.total); if (event.completed != null) bar.value = event.completed; if (event.phase === 'village-start') label.textContent = `Verificando aldeia ${Math.min(event.index, event.total)} de ${event.total}: ${event.village?.name || event.villageId}`; if (event.phase === 'village-complete') label.textContent = `${event.source === 'cache' ? 'Dados válidos em cache' : 'Atualizada'} ${event.completed} de ${event.total}: ${event.village?.name || event.villageId}`; if (event.phase === 'complete') label.textContent = 'Reconstruindo estado econômico...'; if (event.phase === 'cancelled') label.textContent = 'Atualização cancelada.'; } }); if (result.refresh?.cancelled) { progress.dataset.state = 'cancelled'; EAS.UI.showStatus({ target: status, message: 'Atualização do Mercado cancelada.', type: 'info' }); return; } progress.querySelector('span').textContent = 'Recalculando sugestões...'; EAS.Log?.debug?.('smart-offers', 'refresh.economicState', { executionId, villageCount: getVillages().length }); renderDiagnosis(); EAS.Log?.debug?.('smart-offers', 'refresh.recalculate', { executionId }); recalculate(); progress.querySelector('span').textContent = 'Atualização concluída.'; progress.dataset.state = 'complete'; EAS.Log?.info?.('smart-offers', 'refresh.complete', { executionId, villageCount: getVillages().length }); }
             catch (error) { progress.dataset.state = 'error'; progress.querySelector('span').textContent = 'Falha ao atualizar dados do Mercado.'; EAS.Log?.error?.('smart-offers', 'refresh.error', error, { executionId, state: 'refreshing' }); EAS.UI.showStatus({ target: status, message: `Falha ao atualizar o Mercado: ${error.message}`, type: 'error' }); }
             finally { refreshRunning = false; progress.hidden = true; EAS.Log?.debug?.('smart-offers', 'refresh.cleanup', { executionId, cancelled: cancelling, finalState: progress.dataset.state }); }
         };
@@ -102,6 +102,15 @@
         panel.dataset.easSmartOffersMounted = 'true';
         log('smart-offer-panel-mounted', { panelExists: true, panelId: PANEL_ID, mountContainerFound: true, executionStateExists: Boolean(execution), activeExecutionId: execution?.executionId || null, pageDetected: isOwnOfferPage() });
         log('smart-offer-module-init-complete', { panelId: PANEL_ID });
+        if (ensureFresh) {
+            win.dataReady = (async () => {
+                await EAS.Data?.Villages?.ensureFresh?.({ requestedBy: 'market.smartOffers.open', reason: 'module-open' });
+                await EAS.Data?.Market?.ensureFresh?.({ requestedBy: 'market.smartOffers.open', reason: 'module-open' });
+                if (panel.isConnected) { recalculate(); renderHistory(); renderExecution(); }
+            })().catch((error) => {
+                if (panel.isConnected) EAS.UI.showStatus({ target: status, message: `Falha ao atualizar o Mercado: ${error.message}`, type: 'error' });
+            });
+        }
         return win;
         } catch (error) {
             const panel = document.getElementById(PANEL_ID); if (panel) panel.removeAttribute('data-eas-smart-offers-mounted');
@@ -111,5 +120,5 @@
             throw error;
         }
     };
-    EAS.Modules.MarketSmartOffers = { open: () => { EAS.Usage?.track?.('market.smartOffers.open'); EAS.Data?.Villages?.ensureFresh?.().catch?.(() => {}); return openSmartOffersPanel(); }, openSmartOffersPanel, isOwnOfferPage, PANEL_ID };
+    EAS.Modules.MarketSmartOffers = { open: () => { EAS.Usage?.track?.('market.smartOffers.open'); return openSmartOffersPanel({ ensureFresh: true }); }, openSmartOffersPanel, isOwnOfferPage, PANEL_ID };
 })();

@@ -12,6 +12,7 @@ function fixture(size = 3, startTime = 100000) {
     const write = value => storage.set(KEY, JSON.stringify(value));
     const nodes = new Map();
     function element(tag) {
+        assert.ok(!['img','script','link'].includes(String(tag).toLowerCase()), 'Fake must not create remote resources');
         return { tag, dataset: {}, children: [], textContent: '', value: '', disabled: false,
             appendChild(child) { this.children.push(child); if(child.id) nodes.set(child.id,child); },
             remove() { nodes.delete(this.id); }, addEventListener(type, callback) { this[type] = callback; },
@@ -20,7 +21,7 @@ function fixture(size = 3, startTime = 100000) {
     }
     let outgoing = [], outgoingAvailable = true, resolved = true;
     let document, input, unit, attackButton, confirmButton, form, error = null;
-    const window = { name:'auto-tab', location:{href:''}, HTMLInputElement:{prototype:{}}, Event:class {} };
+    const window = { fetch(){throw Error('Fake network request');}, XMLHttpRequest:class{constructor(){throw Error('Fake XHR');}}, Image:class{constructor(){throw Error('Fake image');}}, navigator:{sendBeacon(){throw Error('Fake beacon');}}, name:'auto-tab', location:{href:''}, HTMLInputElement:{prototype:{}}, Event:class {} };
     const sandbox = { window, URL, console:{debug(){},error(){}}, Date:class extends Date { static now(){return now;} },
         setTimeout(fn, ms) { const id=++timerId;timers.set(id,{fn,at:now+ms});return id; },
         clearTimeout(id) {timers.delete(id);},
@@ -61,7 +62,7 @@ function fixture(size = 3, startTime = 100000) {
     const api=()=>sandbox.EAS.FakesExecution;
     const tick=()=>{assert.ok(timers.size,'timer expected');const [id,t]=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];timers.delete(id);now=t.at;t.fn();};
     const reload=stage=>{navigate(stage,read()?.queue[read().currentIndex]?.villageId||9);vm.runInContext(source,sandbox);api().initialize();};
-    return {resolveTarget:value=>{resolved=value;},outgoing:(rows,available=true)=>{outgoing=rows;outgoingAvailable=available;},read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
+    return {nativePlaceReady(){const query=document.querySelector;document.querySelector=selector=>['#command_target','#command_actions'].includes(selector)?{}:query(selector);},resolveTarget:value=>{resolved=value;},outgoing:(rows,available=true)=>{outgoing=rows;outgoingAvailable=available;},read,write,tick,navigate,reload,window,storage,timers,events,api,sandbox,
         run:()=>api().initialize(),counts:()=>({preparations,attacks,confirmations}),
         unit:()=>unit,confirm:()=>confirmButton,input:()=>input,
         useNativeTarget(labels = null){
@@ -453,7 +454,7 @@ test('slow target gets independent persisted snapshot budget, then empty baselin
  f.outgoing([]);f.tick();assert.equal(f.counts().attacks,1);
  assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,[]);
  const unavailable=logs.find(log=>log.event==='SNAPSHOT_SOURCE_CHECK'&&!log.snapshotAvailable);
- assert.equal(unavailable.snapshotReason,'CONTAINER_MISSING');assert.equal(unavailable.outgoingContainerFound,false);assert.equal(unavailable.outgoingCommandIds,null);
+ assert.equal(unavailable.snapshotReason,'PLACE_NOT_READY');assert.equal(unavailable.outgoingContainerFound,false);assert.equal(unavailable.outgoingCommandIds,null);
  const captured=logs.find(log=>log.event==='SNAPSHOT_CAPTURE_RESULT'&&log.snapshotAvailable);
  assert.deepEqual(Array.from(captured.outgoingCommandIds),[]);
  assert.ok(logs.findIndex(log=>log.event==='SNAPSHOT_READBACK_RESULT'&&log.readBackValid)<logs.findIndex(log=>log.event==='ATTACK_SUBMIT'));
@@ -463,7 +464,7 @@ test('snapshot deadline expiry logs source absence and never submits',()=>{
  const f=fixture(2),logs=[];f.sandbox.EAS.Logger={info:(module,event,data)=>logs.push({event,...data})};
  f.outgoing([],false);f.run();while(f.timers.size)f.tick();
  const expired=logs.find(log=>log.event==='PREPARATION_DEADLINE_EXPIRED');assert.ok(expired);assert.equal(expired.phase,'WAIT_SNAPSHOT');assert.equal(expired.remainingMs,0);
- assert.ok(logs.some(log=>log.event==='SNAPSHOT_WAIT'&&log.snapshotReason==='CONTAINER_MISSING'));assert.equal(f.counts().attacks,0);
+ assert.ok(logs.some(log=>log.event==='SNAPSHOT_WAIT'&&log.snapshotReason==='PLACE_NOT_READY'));assert.equal(f.counts().attacks,0);
 });
 
 
@@ -490,7 +491,7 @@ test('diagnostic DOM inventory failure cannot affect safe snapshot wait',()=>{
 
 test('global place rows capture and reconcile through the same parser without legacy container',()=>{
  const f=fixture(2),rows=[outgoingRow({id:'100'})];
- const globalSource=()=>{f.outgoing([],false);f.window.document.querySelectorAll=selector=>selector==='tr.command-row'?rows:[];};
+ const globalSource=()=>{f.nativePlaceReady();f.outgoing([],false);f.window.document.querySelectorAll=selector=>selector==='.command-row'?rows:[];};
  globalSource();f.run();f.tick();f.tick();
  assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,['100']);
  f.confirmation();f.navigate('place',9);globalSource();rows.push(outgoingRow({id:'200'}));
@@ -499,7 +500,67 @@ test('global place rows capture and reconcile through the same parser without le
 
 test('global outgoing rows deduplicate IDs but reject conflicting metadata',()=>{
  const f=fixture(),rows=[outgoingRow({id:'10'}),outgoingRow({id:'10'}),outgoingRow({id:'11'})];
- f.outgoing([],false);f.window.document.querySelectorAll=()=>rows;
+ f.nativePlaceReady();f.outgoing([],false);f.window.document.querySelectorAll=()=>rows;
  let r=f.api().readOutgoingCommands(f.window);assert.equal(r.available,true);assert.deepEqual(Array.from(r.commands,c=>c.id),['10','11']);
  rows.push(outgoingRow({id:'10',target:'600|600'}));r=f.api().readOutgoingCommands(f.window);assert.equal(r.available,false);assert.equal(r.reason,'CONFLICTING_DUPLICATE');
+});
+
+
+test('existing, empty, existing baselines remain independent across three source villages',()=>{
+ const f=fixture(3),baselines=[['100','101'],[],['300']];let previousAttempt=null;
+ for(let i=0;i<3;i++){
+  const source=String(f.read().queue[i].villageId);
+  f.outgoing(baselines[i].map(id=>outgoingRow({id,source})));if(i===1){f.nativePlaceReady();f.outgoing([],false);}if(i===0)f.run();
+  const observed=f.api().readOutgoingCommands(f.window);
+  assert.equal(observed.sourceState,i===1?'EMPTY_CONFIRMED':'ROWS_PRESENT');
+  if(i===1)assert.equal(observed.reason,'EMPTY_OUTGOING_COMMANDS');
+  f.tick();f.tick();const attempt=f.read().queue[i].confirmationAttempt;
+  assert.deepEqual(attempt.outgoingSnapshot.beforeCommandIds,baselines[i]);assert.notEqual(attempt.attemptId,previousAttempt);previousAttempt=attempt.attemptId;
+  f.confirmation();assert.deepEqual(f.read().queue[i].confirmationAttempt.outgoingSnapshot.beforeCommandIds,baselines[i]);
+  if(i===1)f.outgoing([]);f.success();if(i<2)f.next();
+ }
+ assert.deepEqual(f.summary().counts,{total:3,completed:3,skipped:0,errors:0,remaining:0});
+ assert.equal(f.counts().attacks,3);assert.equal(f.counts().confirmations,3);
+});
+
+test('complete place with form but missing outgoing evidence stays unavailable',()=>{
+ const f=fixture();f.outgoing([],false);const observed=f.api().readOutgoingCommands(f.window);
+ assert.equal(f.window.document.readyState,'complete');assert.ok(f.window.document.querySelector('#command-data-form'));
+ assert.equal(observed.available,false);assert.equal(observed.sourceState,'UNAVAILABLE');
+ f.run();f.tick();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read().queue[0].confirmationAttempt.outgoingSnapshot,undefined);
+});
+
+
+test('ready native empty place persists [] through navigation and reconciles a new outgoing ID',()=>{
+ const f=fixture(2);f.nativePlaceReady();f.outgoing([],false);
+ let r=f.api().readOutgoingCommands(f.window);assert.equal(r.available,true);assert.equal(r.pageReady,true);assert.equal(r.sourceState,'EMPTY_CONFIRMED');assert.deepEqual(Array.from(r.commandIds),[]);
+ f.run();f.tick();f.tick();const before=f.read().queue[0].confirmationAttempt;
+ assert.deepEqual(before.outgoingSnapshot.beforeCommandIds,[]);
+ f.confirmation();assert.deepEqual(f.read().queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds,[]);
+ assert.equal(f.read().queue[0].confirmationAttempt.attemptId,before.attemptId);
+ f.navigate('place',9);f.nativePlaceReady();f.outgoing([],false);f.window.document.querySelectorAll=selector=>selector==='.command-row'?[outgoingRow({id:'100'})]:[];
+ r=f.api().reconcileOutgoing(f.read(),f.window);assert.equal(r.result,'SUCCESS');assert.deepEqual(Array.from(r.newCommandIds),['100']);
+});
+
+test('ready native place requires complete document and every structure before empty is valid',()=>{
+ for(const missing of ['#command-data-form','#command_target','#command_actions']){
+  const f=fixture();f.nativePlaceReady();f.outgoing([],false);const query=f.window.document.querySelector;
+  f.window.document.querySelector=selector=>selector===missing?null:query(selector);
+  assert.equal(f.api().readOutgoingCommands(f.window).available,false);
+ }
+ const f=fixture();f.nativePlaceReady();f.outgoing([],false);f.window.document.readyState='interactive';assert.equal(f.api().readOutgoingCommands(f.window).available,false);
+ f.window.document.readyState='complete';f.window.location.href='https://test/game.php?screen=overview&village=9';assert.equal(f.api().readOutgoingCommands(f.window).available,false);
+});
+
+test('two new IDs remain uncertain even when only one matches the target',()=>{
+ const f=fixture(2);readyReconciliation(f);f.outgoing([outgoingRow({id:'100'}),outgoingRow({id:'101',target:'600|600'})]);
+ assert.equal(f.api().reconcileOutgoing(f.read(),f.window).result,'AMBIGUOUS');assert.equal(f.counts().attacks,1);
+});
+
+
+test('rate limit stops active Fake timer before submit and 100 resumes cannot restart it',()=>{
+ const f=fixture(2);f.window.localStorage=f.sandbox.localStorage;f.window.performance={getEntriesByType:()=>[]};
+ vm.runInContext(fs.readFileSync('core/rate-limit.js','utf8'),f.sandbox);
+ f.run();f.window.EASRateLimit.reportStatus(429);for(let i=0;i<100;i++)f.run();
+ assert.equal(f.read().paused,true);assert.equal(f.read().rateLimit.state,'RATE_LIMITED');assert.equal(f.counts().attacks,0);assert.equal(f.timers.size,0);
 });

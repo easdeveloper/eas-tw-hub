@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+(async()=>{
+ const legacy=new URLSearchParams(location.search).has('legacy'), failures=[];let assertions=0;
+ const eq=(a,b,label)=>{assertions++;if(JSON.stringify(a)!==JSON.stringify(b))failures.push(label+': '+JSON.stringify(a)+' != '+JSON.stringify(b));};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ localStorage.clear();sessionStorage.clear();
+ const frame=document.createElement('iframe');document.body.append(frame);
+ await new Promise(resolve=>{frame.onload=resolve;frame.src='fixtures/loader/causal-idle-page.html?screen=place'+(legacy?'&legacy=1':'');});
+ const w=frame.contentWindow;for(let i=0;i<100&&!w.causal.ready&&!w.causal.errors.length;i++)await wait(20);
+ await wait(100);eq(w.causal.errors,[],'idle bootstrap errors');eq(w.causal.ready,1,'one bootstrap');eq(w.causal.fetches,0,'no data scans');
+ const eas=w.causal.emissions.filter(x=>x.easAsset),count=w.causal.emissions.length;
+ eq(eas.length,legacy?33:0,'source-branch pixels attributable to EAS script nodes');
+ eq(w.document.querySelectorAll('script[data-eas-script],script[data-eas-userscript-bundle]').length,legacy?33:0,'actual EAS script nodes');
+ eq(w.model.stats.imageNodes>=count,true,'IMG insertions were observed');
+ for(let i=0;i<20;i++)w.EASTWUserscriptLoader.start();await wait(250);
+ eq(w.causal.emissions.length,count,'pixels do not recurse and repeated start is stable');
+ eq(w.causal.ready,1,'no second bootstrap');
+ const summary={legacy,assertions,scriptNodes:legacy?33:0,easPixels:eas.length,allFixturePixels:count,modelStats:w.model.stats,easAssets:eas.map(x=>x.easAsset),note:'Supplied source branch model only; real tc, native decoder and triggers a-f were not supplied. No claim about total real game traffic.'};
+ w.modelObserver.disconnect();frame.remove();document.querySelector('#result').textContent=(failures.length?'FAIL\n'+failures.join('\n'):'PASS')+'\n'+JSON.stringify(summary);document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
+</script>

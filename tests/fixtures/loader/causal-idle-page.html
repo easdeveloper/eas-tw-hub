@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Telemetry excerpt fixture</title><body id="ds_body">
+<script src="native-telemetry-excerpt.js"></script>
+<script>
+window.game_data={world:'test',player:{id:7,villages:1},village:{id:675,x:511,y:443,name:'test'},units:['spear','spy']};
+window.causal={ready:0,fetches:0,emissions:[],errors:[]};
+window.fetch=async()=>{causal.fetches++;throw Error('Unexpected data request');};
+window.alert=message=>causal.errors.push(message);
+addEventListener('error',event=>{if(event.message)causal.errors.push(event.message);});
+addEventListener('eas-tw-hub-ready',()=>causal.ready++);
+// Test-only reproduction. Does not import, hook or modify the real game.js.
+window.model=installTelemetryExcerpt({report:value=>{
+ const script=[...document.scripts].find(s=>s.src===value.source);
+ causal.emissions.push({...value,easAsset:script?.dataset.easScript||(script?.dataset.easUserscriptBundle?'index.js':null)});
+ const img=document.createElement('img');img.src=value.pixel;document.body.append(img);
+}});
+window.modelObserver=new MutationObserver(model.consume);modelObserver.observe(document,{childList:true,subtree:true});
+const driver=document.createElement('script');driver.src=new URLSearchParams(location.search).has('legacy')?'../../../local-test/pre-injection-fix.user.js':'../../../local-test/eas-tw-local.user.js';document.head.append(driver);
+</script>

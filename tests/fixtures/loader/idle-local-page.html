@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Idle place fixture</title><body id="ds_body">
+<script>
+// Complete local bootstrap, with no game code or operations. Fetch is a test trap.
+window.game_data={world:'test',player:{id:7,villages:1},village:{id:675,x:511,y:443,name:'test'},units:['spear','spy']};
+window.fixtureState={fetches:0,ready:0,errors:[],scripts:[],observerCallbacks:0};
+window.fetch=async()=>{fixtureState.fetches++;throw Error('Unexpected HTTP');};
+window.alert=message=>fixtureState.errors.push('alert: '+message);
+addEventListener('error',event=>fixtureState.errors.push(event.message));
+addEventListener('eas-tw-hub-error',event=>fixtureState.errors.push(event.detail.message));
+addEventListener('eas-tw-hub-ready',()=>fixtureState.ready++);
+const fixtureObserver=new MutationObserver(records=>{
+ fixtureState.observerCallbacks++;
+ for(const record of records)for(const node of record.addedNodes)
+  if(node.tagName==='SCRIPT'&&(node.dataset.easScript||node.dataset.easUserscriptBundle))fixtureState.scripts.push(node.src);
+});
+fixtureObserver.observe(document,{childList:true,subtree:true});
+window.fixtureDispose=()=>fixtureObserver.disconnect();
+</script><script src="../../../local-test/eas-tw-local.user.js"></script>

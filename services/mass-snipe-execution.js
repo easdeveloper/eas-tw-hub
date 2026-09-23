@@ -58,8 +58,9 @@
             const cached = EAS.Storage.get(key);
             if (cached && Date.now() - cached.updatedAt < 7 * 86400000) return cached.speeds;
             return EAS.Data.dedupe(key, async () => {
-                const response = await fetch('/interface.php?func=get_unit_info', { credentials: 'same-origin' });
-                if (!response.ok) throw new Error('Não foi possível carregar as velocidades das unidades.');
+                if (window.EASRateLimit?.check()) throw new Error('RATE_LIMITED'); const response = await fetch('/interface.php?func=get_unit_info', { credentials: 'same-origin' });
+                if (window.EASRateLimit?.reportStatus(response.status)) throw Object.assign(new Error('RATE_LIMITED'), { status: 429 });
+        if (!response.ok) throw new Error('Não foi possível carregar as velocidades das unidades.');
                 const xml = new DOMParser().parseFromString(await response.text(), 'application/xml');
                 const speeds = Object.fromEntries([...xml.querySelectorAll('config > *')]
                     .map((node) => [node.nodeName, Number(node.querySelector('speed')?.textContent)])

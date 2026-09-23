@@ -178,9 +178,11 @@
         const requestDocument = async (url, options = {}) => {
             const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), 20000);
             try {
+                if (window.EASRateLimit?.check()) throw new Error('RATE_LIMITED');
                 const response = await fetchPage(String(url), { credentials: 'same-origin', mode: 'same-origin', cache: 'no-store', redirect: 'follow',
                     ...options, headers: { Accept: 'text/html', ...options.headers }, signal: abort.signal });
                 const mime = (response.headers.get('content-type') || '').toLowerCase().split(';')[0].trim();
+                if (window.EASRateLimit?.reportStatus(response.status)) throw new Error('RATE_LIMITED');
                 const diagnostics = { finalGetUrl: safeUrl(response.url), finalUrl: diagnosticUrl(response.url), ok: Boolean(response.ok), responseLength: null, redirected: Boolean(response.redirected), httpStatus: response.status,
                     contentType: ['text/html', 'application/json', 'text/plain', 'application/xhtml+xml'].includes(mime) ? mime : '[other-or-missing]' };
                 if ([401, 403].includes(response.status)) return { state: 'SESSION_INVALID', reason: 'HTTP_SESSION_INVALID', diagnostics };

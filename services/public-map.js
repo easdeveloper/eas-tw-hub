@@ -9,10 +9,12 @@
     const loadOnce = async (forceRefresh = false) => {
         if (!forceRefresh && cache && Date.now() - cache.updatedAt < CACHE_TTL) return cache;
         const perfMark = EAS.Utils.Perf?.start('public-map.load', { forceRefresh });
+        if (window.EASRateLimit?.check()) throw new Error('RATE_LIMITED');
         const [playersResponse, villagesResponse] = await Promise.all([
             fetch(new URL('/map/player.txt', location.origin), { credentials: 'same-origin' }),
             fetch(new URL('/map/village.txt', location.origin), { credentials: 'same-origin' })
         ]);
+        if ([playersResponse, villagesResponse].some(response => window.EASRateLimit?.reportStatus(response.status))) throw new Error('RATE_LIMITED');
         if (!playersResponse.ok || !villagesResponse.ok) throw new Error('Os dados públicos do mapa não estão disponíveis neste mundo.');
         const [playersText, villagesText] = await Promise.all([playersResponse.text(), villagesResponse.text()]);
         if (!playersText.trim()) throw new Error('A lista pública de jogadores veio vazia.');

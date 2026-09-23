@@ -71,10 +71,13 @@
     const api={sanitizeUrl:safeUrl,flush,exportDiagnostic,entries:()=>{try{return cleanExport(entries());}catch{return[];}},clear:()=>{try{pending=[];root.localStorage.removeItem(KEY);}catch{}}};
     for(const level of ['debug','info','warn','error']) api[level]=(module,event,data)=>write(level.toUpperCase(),module,event,data);
     root.__EASLogger=api; if(root.EAS) root.EAS.Logger=api; root.EASDebug=exportDiagnostic;
-    root.addEventListener?.('pagehide',flush);
-    root.document?.addEventListener?.('visibilitychange',()=>{if(root.document.visibilityState==='hidden')flush();});
+    const listeners = [];
+    const listen = (target, event, fn) => { target?.addEventListener?.(event, fn); listeners.push([target, event, fn]); };
+    api.dispose = () => { flush(); for (const [target,event,fn] of listeners) target?.removeEventListener?.(event,fn); listeners.length=0; };
+    listen(root, 'pagehide',flush);
+    listen(root.document, 'visibilitychange',()=>{if(root.document.visibilityState==='hidden')flush();});
     let errors=0;
-    root.addEventListener?.('error',event=>{if(errors>=20 || !event.message)return; errors++;api.error('GLOBAL','WINDOW_ERROR',{message:event.message,filename:event.filename,attribution:'unverified'});});
-    root.addEventListener?.('unhandledrejection',event=>{if(errors++<20)api.error('GLOBAL','UNHANDLED_REJECTION',{reason:String(event.reason?.message||event.reason),attribution:'unverified'});});
+    listen(root, 'error',event=>{if(errors>=20 || !event.message)return; errors++;api.error('GLOBAL','WINDOW_ERROR',{message:event.message,filename:event.filename,attribution:'unverified'});});
+    listen(root, 'unhandledrejection',event=>{if(errors++<20)api.error('GLOBAL','UNHANDLED_REJECTION',{reason:String(event.reason?.message||event.reason),attribution:'unverified'});});
     api.info('CORE','LOGGER_READY',{local:!!root.EASLocalBuild});
 })();

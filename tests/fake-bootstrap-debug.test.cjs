@@ -49,20 +49,24 @@ test('silent existing-UI path loads the missing Fake module for the authorized t
  const data=f.root.EASFakeDebug();assert.equal(data.bootstrap.silentExistingUIBranch,true);assert.equal(data.bootstrap.fakeModuleInitialized,false);assert.equal(data.bootstrap.resumeEntered,false);assert.equal(f.scripts.length,1);assert.match(f.scripts[0].src,/services\/fakes-execution\.js/);
 });
 
-test('persistent local userscript requests embedded index once per fresh page, never the remote release',()=>{
+test('persistent local userscript executes embedded index once per fresh page without script injection',async()=>{
  const source=fs.readFileSync('local-test/eas-tw-local.user.js','utf8');
- for(let page=0;page<2;page++){
+ for(let page=0;page<3;page++){
   const f=fixture();f.root.__EAS_TW_BOOTSTRAPPED__=false;
-  const blobs=[];f.sandbox.Blob=class{constructor(parts){this.parts=parts;}};
-  f.sandbox.URL=class extends URL{static createObjectURL(blob){blobs.push(blob);return 'blob:local-build-'+blobs.length;}};
-  vm.runInContext(source,f.sandbox);vm.runInContext(source,f.sandbox);
-  assert.equal(f.scripts.length,1);assert.match(f.scripts[0].src,/^blob:/);assert.equal(blobs.length,1);
-  assert.equal(blobs[0].parts[0],f.root.EASLocalBuild.files['index.js']);
+  f.sandbox.Blob=class{constructor(){throw Error('unexpected JS blob');}};
+  vm.runInContext(source,f.sandbox);const build=f.root.EASLocalBuild;
+  vm.runInContext(source,f.sandbox);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.root.EASLocalBuild,build);assert.equal(f.scripts.length,0);
+  assert.equal(f.root.EASLoaderDebug().counts.indexStarts,1);
+  assert.equal(f.root.EASLoaderDebug().counts.factoryExecutions,1);
   assert.equal(f.root.EASFakeDebug().bootstrap.codeSource,'local-embedded');
   assert.equal(typeof f.root.EASFakeDebug,'function');assert.equal(f.root.EASFakeBootstrapDebug.loaded,true);
-  assert.equal(f.root.EASTWUserscriptLoader.pageContext().localBuildId,f.root.EASLocalBuild.id);
+  assert.equal(f.root.EASTWUserscriptLoader.pageContext().localBuildId,build.id);
+  const first=build.execute('missing.js');assert.equal(build.execute('missing.js'),first);
+  await assert.rejects(first,/Local build asset missing/);
  }
 });
+
 test('embedded index resolves local assets and fails closed for missing files',async()=>{
  const f=fixture();const blobs=[],revoked=[];
  f.root.EASLocalBuild={id:'test',files:{'core/test.js':'window.localAssetExecuted=true;'}};
@@ -78,4 +82,78 @@ test('local bundle blob is revoked after load and duplicate bootstrap does not c
  const f=fixture(),revoked=[];f.root.__EAS_TW_BOOTSTRAPPED__=false;f.root.EASLocalBuild={id:'test',files:{'index.js':'/* test */'}};
  f.sandbox.Blob=class{};f.sandbox.URL=class extends URL{static createObjectURL(){return 'blob:test';}static revokeObjectURL(url){revoked.push(url);}};
  f.run('eas-tw-loader.user.js');assert.equal(revoked.length,0);f.scripts[0].onload();assert.deepEqual(revoked,['blob:test']);f.run('eas-tw-loader.user.js');assert.equal(f.scripts.length,1);
+});
+
+test('index reinjection preserves the in-flight dependency promise without early success',async()=>{
+ const f=fixture();f.run('index.js');const loader=f.root.EASLoader;
+ const first=loader.loadScript('core/test.js');let settled=false;first.then(()=>{settled=true;});
+ f.run('index.js');assert.equal(f.root.EASLoader,loader);assert.equal(loader.loadScript('core/test.js'),first);
+ await Promise.resolve();assert.equal(settled,false);assert.equal(f.scripts.length,1);
+ f.scripts[0].onload();await first;assert.equal(settled,true);
+ await loader.loadScript('core/test.js');assert.equal(f.scripts.length,1);
+});
+
+test('failed dependency remains failed and is not injected automatically again',async()=>{
+ const f=fixture();f.run('index.js');const first=f.root.EASLoader.loadScript('core/failure.js');
+ f.scripts[0].onerror();await assert.rejects(first,/core\/failure/);
+ const again=f.root.EASLoader.loadScript('core/failure.js');assert.equal(again,first);
+ await assert.rejects(again,/core\/failure/);assert.equal(f.scripts.length,1);
+});
+
+test('loader diagnostics are singleton, bounded, detached and have no observer/network',()=>{
+ const f=fixture();f.run('core/loader-diagnostics.js');const mark=f.root.__EASLoaderTrace,debug=f.root.EASLoaderDebug;
+ for(let i=0;i<500;i++)mark('load-script',{asset:'core/eas.js',reason:'test'});
+ mark('image-observer',{childListMutations:7});f.run('core/loader-diagnostics.js');
+ assert.equal(f.root.__EASLoaderTrace,mark);assert.equal(f.root.EASLoaderDebug,debug);
+ const data=debug();assert.equal(data.events.length,200);assert.equal(data.resources.length,1);
+ assert.equal(data.counts.loadScriptCalls,500);assert.equal(data.counts.childListMutations,7);
+ assert.equal(data.loaderObservers,0);data.counts.loadScriptCalls=0;assert.equal(debug().counts.loadScriptCalls,500);
+ assert.equal(f.scripts.length,0);
+});
+
+test('loader lifecycle logs expose labels, counters, identity and concrete script outcomes',async()=>{
+ const f=fixture(),consoleEvents=[],loggerEvents=[];
+ f.root.console={info:(...args)=>consoleEvents.push(args)};
+ f.root.__EASLogger={debug:(...args)=>loggerEvents.push(args),info(){}};
+ f.run('core/loader-diagnostics.js');f.run('index.js');
+ const good=f.root.EASLoader.loadScript('core/good.js',{reason:'test-explicit-demand'});
+ const url=f.scripts[0].src;f.scripts[0].onload();await good;
+ await f.root.EASLoader.loadScript('core/good.js');
+ const bad=f.root.EASLoader.loadScript('core/bad.js');f.scripts[1].onerror();await assert.rejects(bad);
+ f.run('index.js');
+ const labels=consoleEvents.map(x=>x[0]);
+ for(const label of ['[EAS][LOADER] loadScript','[EAS][LOADER] script-created','[EAS][LOADER] script-loaded','[EAS][LOADER] script-error','[EAS][LOADER] duplicate-blocked','[EAS][BOOTSTRAP] start','[EAS][BOOTSTRAP] already-running'])assert.ok(labels.includes(label),label);
+ const data=f.root.EASLoaderDebug();assert.equal(data.counts.scriptsCreated,2);assert.equal(data.counts.scriptsLoaded,1);assert.equal(data.counts.scriptErrors,1);
+ for(const event of data.events){assert.equal(typeof event.counter,'number');assert.equal(typeof event.timestamp,'number');assert.equal(event.codeSource,'remote');assert.equal(event.localBuildId,null);assert.ok(event.reason);assert.equal(event.session,data.session);}
+ assert.ok(data.events.some(x=>x.event==='load-script'&&x.reason==='test-explicit-demand'&&x.callerStack));
+ assert.equal(data.resources.find(x=>x.asset==='core/good.js').url,url.split('?')[0]);
+ assert.ok(loggerEvents.length>0);
+});
+
+test('console and central logger failures cannot prevent resource completion',async()=>{
+ const f=fixture();f.root.console={info(){throw Error('console');}};f.root.__EASLogger={debug(){throw Error('logger');},info(){}};
+ f.run('core/loader-diagnostics.js');f.run('index.js');const loading=f.root.EASLoader.loadScript('core/test.js');
+ f.scripts[0].onload();await loading;assert.equal(f.root.EASLoaderDebug().counts.scriptsLoaded,1);
+});
+
+test('content hashes detect same code behind different blob URLs without logging code or tokens',()=>{
+ const f=fixture();const source='window.uniquePrivateSource = 42;';
+ const hash=require('node:crypto').createHash('sha256').update(source).digest('hex');
+ f.root.EASLocalBuild={id:'content-test',assetHashes:{'core/a.js':hash,'core/b.js':hash}};
+ f.run('core/loader-diagnostics.js');
+ f.root.__EASLoaderTrace('script-created',{asset:'core/a.js',url:'blob:https://test/uuid-one',scriptType:'text/javascript',content:source,csrf_token:'DO_NOT_LOG',callerStack:'at https://game/game.php?h=DO_NOT_LOG#DO_NOT_LOG'});
+ f.root.__EASLoaderTrace('script-created',{asset:'core/b.js',url:'blob:https://test/uuid-two',scriptType:'text/javascript'});
+ f.root.__EASLoaderTrace('script-created',{asset:'unknown.js',url:'data:text/javascript,DO_NOT_LOG'});
+ const data=f.root.EASLoaderDebug();assert.equal(data.events[0].contentHash,'sha256:'+hash);
+ assert.equal(data.events[0].sameContentProcessedBefore,false);assert.equal(data.events[1].sameContentProcessedBefore,true);
+ assert.equal(data.events[2].contentHash,null);assert.equal(data.events[2].sameContentProcessedBefore,null);
+ assert.ok(!JSON.stringify(data).includes('DO_NOT_LOG'));assert.ok(!JSON.stringify(data).includes(source));
+});
+
+test('legacy content fingerprint is stable across new blob IDs and does not imply source availability remotely',()=>{
+ const f=fixture();f.root.EASLocalBuild={id:'legacy',files:{'core/a.js':'same content','core/b.js':'same content'}};f.run('core/loader-diagnostics.js');
+ f.root.__EASLoaderTrace('script-created',{asset:'core/a.js',url:'blob:https://test/one'});
+ f.root.__EASLoaderTrace('script-created',{asset:'core/b.js',url:'blob:https://test/two'});
+ const data=f.root.EASLoaderDebug();assert.match(data.events[0].contentHash,/^fnv1a32:/);assert.equal(data.events[0].contentHash,data.events[1].contentHash);
+ assert.equal(data.events[1].sameContentProcessedBefore,true);assert.ok(!JSON.stringify(data).includes('same content'));
 });

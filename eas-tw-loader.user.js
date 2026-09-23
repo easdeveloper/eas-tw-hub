@@ -130,16 +130,50 @@
         notice.textContent = message;
         (pageWindow.document.body || pageWindow.document.documentElement).appendChild(notice);
     };
-    const start = () => {
+    const start = (reason = 'external-start-call') => {
+        pageWindow.__EASLoaderTrace?.('loader-start-call', { reason, callerStack: new Error('EAS loader start caller').stack });
+        if (pageWindow.EASRateLimit?.check()) return;
         try { pageWindow.__EASLogger?.info('CORE', 'LOADER_START', { local: !!pageWindow.EASLocalBuild }); } catch {}
         log('eas-loader-start', pageContext());
-        if (pageWindow.__EAS_TW_BOOTSTRAPPED__ || pageWindow.__EAS_TW_INITIALIZING__ || pageWindow.document.querySelector(SCRIPT_SELECTOR)) {
+        if (pageWindow.__EAS_TW_BOOTSTRAPPED__ || pageWindow.__EAS_TW_INITIALIZING__ || pageWindow.__EASLocalLoaderStarted || pageWindow.document.querySelector(SCRIPT_SELECTOR)) {
+            pageWindow.__EASLoaderTrace?.('deduplicated', { asset: 'index.js', reason: 'loader-document-guard' });
+            pageWindow.__EASLoaderTrace?.('bootstrap-already-running', { reason: 'loader-document-guard' });
             pageWindow.__EASFakeBootstrapMark?.('loaderGuardReturned', pageContext().bootstrapState);
             log('eas-loader-already-running', pageContext());
             return;
         }
         pageWindow.__EAS_TW_INITIALIZING__ = true;
         pageWindow.__EAS_TW_SILENT_BOOTSTRAP__ = true;
+        pageWindow.__EASLoaderTrace?.('loader-start', { reason: 'first-start-in-document' });
+        if (pageWindow.EASLocalBuild?.execute) {
+            // The generated local userscript already contains executable factories.
+            // Never turn those factories back into observable blob script nodes.
+            pageWindow.__EASLocalLoaderStarted = true;
+            let finished = false;
+            const finish = (success, error) => {
+                if (finished) return;
+                finished = true;
+                pageWindow.clearTimeout(timer);
+                pageWindow.removeEventListener('eas-tw-hub-ready', ready);
+                pageWindow.removeEventListener('eas-tw-hub-error', failed);
+                pageWindow.__EAS_TW_INITIALIZING__ = false;
+                pageWindow.__EAS_TW_BOOTSTRAPPED__ = success;
+                pageWindow.__EASFakeBootstrapMark?.(success ? 'bundleReady' : 'bundleError', { error: error?.message || null });
+                if (error) {
+                    pageWindow.__EASLoaderTrace?.('script-error', { asset: 'index.js', reason: 'bootstrap-handshake-error', message: error.message, transport: 'embedded-static-function' });
+                    log('eas-loader-bundle-error', { error: error.message });
+                    showResumeError('Falha ao carregar o EAS local. Recarregue a pagina e consulte EASLoaderDebug().');
+                }
+            };
+            const ready = () => finish(true);
+            const failed = event => finish(false, new Error(event.detail?.message || 'Local bootstrap failed'));
+            pageWindow.addEventListener('eas-tw-hub-ready', ready, { once: true });
+            pageWindow.addEventListener('eas-tw-hub-error', failed, { once: true });
+            const timer = pageWindow.setTimeout(() => finish(false, new Error('Local bootstrap timeout')), LOAD_TIMEOUT_MS);
+            pageWindow.__EASFakeBootstrapMark?.('bundleRequested', { source: 'embedded-static-function', asset: 'index.js' });
+            pageWindow.EASLocalBuild.execute('index.js', { reason: 'userscript-entry' }).catch(error => finish(false, error));
+            return;
+        }
         const script = pageWindow.document.createElement('script');
         script.src = pageWindow.EASLocalBuild
             ? URL.createObjectURL(new Blob([pageWindow.EASLocalBuild.files['index.js']], { type: 'text/javascript' }))
@@ -147,6 +181,7 @@
         pageWindow.__EASImageTraceMark?.({ event: 'bundle-script-created', asset: 'index.js', url: script.src, stack: new Error('EAS bundle creation').stack });
         script.async = true;
         script.dataset.easUserscriptBundle = 'true';
+        pageWindow.__EASLoaderTrace?.('script-created', { asset: 'index.js', url: script.src, reason, transport: 'script-element', scriptType: script.type || '', callerStack: new Error('EAS bundle insertion').stack });
         pageWindow.__EASFakeBootstrapMark?.('bundleRequested', { src: script.src });
         log('eas-loader-bundle-requested', pageContext());
         let finished = false;
@@ -162,6 +197,7 @@
                 pageWindow.__EAS_TW_BOOTSTRAPPED__ = true;
             } else {
                 pageWindow.__EAS_TW_BOOTSTRAPPED__ = false;
+                pageWindow.__EASLoaderTrace?.('script-error', { asset: 'index.js', url: script.src, reason: 'bootstrap-handshake-error', message: String(error?.message || error), transport: 'script-element' });
                 log('eas-loader-bundle-error', { ...pageContext(), error: String(error?.message || error) });
                 showResumeError('O EAS TW Hub não pôde retomar a execução ativa. Use o atalho manual e copie o diagnóstico.');
             }
@@ -175,13 +211,15 @@
             finish(false, new Error('Tempo limite ao carregar o bundle oficial.'));
         }, LOAD_TIMEOUT_MS);
         script.onload = () => {
+            pageWindow.__EASLoaderTrace?.('script-loaded', { asset: 'index.js', url: script.src, reason, transport: 'script-element' });
             if (pageWindow.EASLocalBuild && script.src.startsWith('blob:')) { try { URL.revokeObjectURL(script.src); } catch {} }
             log('eas-loader-bundle-loaded', pageContext());
         };
         script.onerror = () => finish(false, new Error('Falha de rede ao carregar o bundle oficial.'));
+        pageWindow.__EASLoaderTrace?.('script-injected', { asset: 'index.js', url: script.src, reason: 'bundle-request' });
         (pageWindow.document.head || pageWindow.document.documentElement).appendChild(script);
     };
 
     pageWindow.EASTWUserscriptLoader = { version: LOADER_VERSION, bundleUrl: BUNDLE_URL, pageContext, hasActiveRuntime, start };
-    start();
+    start('userscript-entry');
 })();

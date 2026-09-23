@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+(async()=>{
+ const failures=[],results=[];let assertions=0;
+ const equal=(actual,expected,label)=>{assertions++;if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(label+': '+JSON.stringify(actual)+' != '+JSON.stringify(expected));};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ localStorage.clear();sessionStorage.clear();
+ const frame=document.createElement('iframe');document.body.append(frame);
+ for(const screen of ['place','map','place']){
+  await new Promise((resolve,reject)=>{frame.onload=resolve;frame.onerror=reject;frame.src='fixtures/loader/idle-local-page.html?screen='+screen+'&village=675';});
+  const w=frame.contentWindow;
+  for(let n=0;n<50&&!w.fixtureState.ready&&!w.fixtureState.errors.length;n++)await wait(20);
+  equal(w.fixtureState.errors,[],screen+' errors');equal(w.fixtureState.ready,1,screen+' one ready event');
+  const before=w.EASLoaderDebug();
+  equal([before.counts.loaderStarts,before.counts.indexStarts,before.counts.loadScriptCalls,before.counts.scriptsInjected,before.counts.factoryExecutions],[1,1,32,0,33],screen+' deterministic bootstrap');
+  equal(w.fixtureState.scripts,[],screen+' no EAS script elements');
+  equal([before.counts.scriptsCreated,before.counts.scriptsLoaded,before.counts.bootstrapCompleted],[0,33,1],screen+' complete lifecycle without fabricated script creation');
+  equal(before.events.some(event=>event.event==='script-loaded'&&event.transport==='embedded-static-function'),true,'local execution identified');
+  equal(w.fixtureState.fetches,0,screen+' no HTTP scans');
+  equal(before.events.filter(event=>event.event==='factory-executed').every(event=>/^sha256:[a-f0-9]{64}$/.test(event.contentHash)&&event.sameContentProcessedBefore===false),true,'source hashes identify first executions');
+  equal(w.document.querySelectorAll('img[src*="/st/"]').length,0,screen+' no st images in fixture');
+  // Many duplicate invocations while the same document remains alive.
+  for(let n=0;n<20;n++)w.EASTWUserscriptLoader.start();
+  await Promise.all([w.EASLocalBuild.execute('index.js'),w.EASLocalBuild.execute('index.js')]);
+  const first=w.EASLoader.loadScript('core/units.js');
+  equal(first===w.EASLoader.loadScript('core/units.js'),true,'same dependency shares promise');await first;
+  await wait(150);
+  const after=w.EASLoaderDebug();
+  equal([after.counts.loaderStarts,after.counts.indexStarts,after.counts.scriptsInjected,after.counts.factoryExecutions],[1,1,0,33],screen+' remains stable after duplicates');
+  const assets=after.events.filter(x=>x.event==='factory-executed').map(x=>x.asset);
+  equal(assets.length,new Set(assets).size,'each factory once');
+  equal(w.fixtureState.fetches,0,'still no scans');equal(w.fixtureState.ready,1,'no second ready');
+  // Mutations cannot call loadScript. No game observer is impersonated here.
+  const calls=after.counts.loadScriptCalls;
+  for(let n=0;n<20;n++)w.document.body.appendChild(w.document.createElement('span'));
+  await wait(50);equal(w.EASLoaderDebug().counts.loadScriptCalls,calls,'childList never reinjects');
+  const resources=w.performance.getEntriesByType('resource').length;await wait(100);
+  equal(w.performance.getEntriesByType('resource').length,resources,'resource count stabilizes');
+  // Lazy module registration still works without injecting a script or opening it.
+  await Promise.all([w.EASLoader.loadScript('modules/fakes.js'),w.EASLoader.loadScript('modules/fakes.js')]);
+  equal(typeof w.EAS.Modules.Fakes.open,'function','lazy module registered');
+  equal(w.EASLoaderDebug().counts.factoryExecutions,34,'lazy module executed once');
+  equal(w.fixtureState.fetches,0,'lazy registration makes no requests');
+  equal(w.fixtureState.scripts.length,0,'lazy registration injects no scripts');
+  results.push({screen,session:after.session,counts:after.counts,resources});w.fixtureDispose();
+ }
+ equal(new Set(results.map(x=>x.session)).size,3,'full navigation gets a new session');
+ frame.remove();document.querySelector('#result').textContent=(failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions')+'\n'+JSON.stringify(results);document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
+</script>

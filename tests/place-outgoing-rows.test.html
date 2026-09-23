@@ -3,15 +3,20 @@
 <script>
 (async()=>{
  const host=document.querySelector('#fixture'),html=await(await fetch('./fixtures/place/outgoing-command-row.html')).text();
+ const ready=await(await fetch('./fixtures/place/ready-empty-outgoing.html')).text();
+ history.replaceState({},'',location.pathname+'?screen=place&village=675');
  let n=0;const assert=(v,label)=>{if(!v)throw Error(label);n++;};const read=()=>EAS.FakesExecution.readOutgoingCommands(window);
- host.innerHTML=html;let r=read();assert(r.available,'real row without legacy container');assert(r.commands[0].id==='1091585556','three IDs agree');assert(r.commands[0].sourceVillageId==='675','source');assert(r.commands[0].type==='attack','type');assert(r.commands[0].target===null,'omitted target not invented');
- host.innerHTML=html+html+html.replaceAll('1091585556','1091585557');r=read();assert(r.available&&r.commands.length===2,'deduplicate');
+ host.innerHTML=ready+html;let r=read();assert(r.available,'real row without legacy container');assert(r.sourceState==='ROWS_PRESENT','rows state');assert(r.commands[0].id==='1091585556','three IDs agree');assert(r.commands[0].sourceVillageId==='675','source');assert(r.commands[0].type==='attack','type');assert(r.commands[0].target===null,'omitted target not invented');
+ host.innerHTML=ready+html+html+html.replaceAll('1091585556','1091585557');r=read();assert(r.available&&r.commands.length===2,'deduplicate');
  host.querySelector('.command_hover_details').dataset.commandId='999';assert(!read().available,'conflicting IDs block');
- host.innerHTML=html;host.querySelector('.quickedit-out').dataset.id=' 01091585556 ';assert(read().available,'normalize IDs');
- host.innerHTML='<div id="commands_outgoings"><table></table></div>';r=read();assert(r.available&&r.commands.length===0,'explicit known source empty valid');
- host.innerHTML='';assert(!read().available,'no source not empty');
- host.innerHTML='<span class="quickedit-out" data-id="99"></span>';assert(!read().available,'identity outside command-row rejected');
- host.innerHTML=html;host.querySelector('.quickedit-out').className='quickedit-in';assert(!read().available,'incoming not outgoing');
+ host.innerHTML=ready+html;host.querySelector('.quickedit-out').dataset.id=' 01091585556 ';assert(read().available,'normalize IDs');
+ host.innerHTML=ready;r=read();assert(r.available&&r.commands.length===0,'real ready place without outgoing container empty valid');assert(r.sourceState==='EMPTY_CONFIRMED'&&r.reason==='EMPTY_OUTGOING_COMMANDS','empty state');
+ host.innerHTML='<form id="command-data-form"></form><div id="place_target"></div><div id="header_commands"></div>';assert(!read().available,'functional form without outgoing completeness evidence not empty');assert(read().sourceState==='UNAVAILABLE','unavailable state');
+ host.innerHTML=ready+'<span class="quickedit-out" data-id="99"></span>';assert(!read().available,'identity outside command-row rejected');
+ host.innerHTML=ready+html;host.querySelector('.quickedit-out').className='quickedit-in';assert(!read().available,'incoming not outgoing');
+ host.innerHTML=ready;host.querySelector('#command_actions').remove();assert(!read().available,'missing native actions blocks empty');
+ host.innerHTML=ready;host.querySelector('#command_target').setAttribute('aria-busy','true');assert(!read().available,'busy widget blocks empty');
+ host.innerHTML=ready;history.replaceState({},'',location.pathname+'?screen=place&try=confirm&village=675');assert(!read().available,'confirmation cannot authorize empty source');
  document.title='PASS';document.querySelector('#result').textContent='PASS: '+n+' assertions';
 })().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack;});
 </script>

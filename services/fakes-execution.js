@@ -226,16 +226,26 @@
     const readOutgoingCommands = (targetWindow) => {
         const doc = targetWindow.document;
         const container = doc.querySelector('#commands_outgoings');
-        const globalRows = Array.from(doc.querySelectorAll?.('tr.command-row') || []);
+        const globalRows = Array.from(doc.querySelectorAll?.('.command-row') || []);
         const rows = [...new Set([...globalRows.filter(row => row.querySelector?.('.quickedit-out[data-id]')),
             ...Array.from(container?.querySelectorAll('tr.command-row') || [])])];
         const source = 'place-command-rows';
-        const result = (available, commands, reason = null) => ({ available, commands, reason, source,
+        const url = new URL(targetWindow.location.href);
+        const placeStructureReady = doc.readyState === 'complete' && url.searchParams.get('screen') === 'place' &&
+            !url.searchParams.get('try') && Boolean(doc.querySelector('#command-data-form')) &&
+            Boolean(doc.querySelector('#command_target')) && Boolean(doc.querySelector('#command_actions')) &&
+            !doc.querySelector('[aria-busy="true"], .error_box, .error');
+        const pageReady = placeStructureReady || Boolean(container && doc.readyState !== 'loading');
+        const result = (available, commands, reason = null) => ({ available, commands,
+            reason: available && !commands.length ? 'EMPTY_OUTGOING_COMMANDS' : reason, source,
+            sourceState: !available ? 'UNAVAILABLE' : commands.length ? 'ROWS_PRESENT' : 'EMPTY_CONFIRMED',
+            pageReady, commandRowCount: globalRows.length || rows.length, commandIds: available ? commands.map(command => command.id) : null,
             outgoingContainerFound: Boolean(container), outgoingRowsFound: rows.length });
         if (doc.readyState === 'loading') return result(false, [], 'DOM_LOADING');
-        // A real outgoing row proves the alternate source. Without rows, retain
-        // the known explicit container as empty-list evidence; absence is not [].
-        if (!container && !rows.length) return result(false, [], 'CONTAINER_MISSING');
+        // The real empty layout omits the outgoing table. Its native command
+        // structures must be ready before absence can mean an empty collection.
+        if (!pageReady) return result(false, [], 'PLACE_NOT_READY');
+        if (!container && !rows.length && (globalRows.length || doc.querySelector('.quickedit-out[data-id], a[href*="info_command"], [data-command-id]'))) return result(false, [], 'UNCLASSIFIED_COMMAND_MARKERS');
         if ((container || doc).querySelector?.('a[href*="page="], .paged-nav')) return result(false, [], 'PAGINATED');
         const normalizeId = value => {
             const id = String(value ?? '').trim();
@@ -284,7 +294,14 @@
                     action: url.searchParams.get('action'), parameterNames: [...new Set(url.searchParams.keys())] };
             };
             const observed = readOutgoingCommands(targetWindow);
-            return { strategy: 'place-command-rows', authoritativeSourceAvailable: observed.available, sourceReason: observed.reason,
+            return { strategy: 'place-command-rows', authoritativeSourceAvailable: observed.available, sourceReason: observed.reason, sourceState: observed.sourceState, source: observed.source,
+                pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds,
+                emptyEvidence: { explicitOutgoingContainer: observed.outgoingContainerFound,
+                    commandFormFound: Boolean(doc.querySelector('#command-data-form')),
+                    targetContainerFound: Boolean(doc.getElementById?.('place_target')),
+                    commandHeaderFound: Boolean(doc.getElementById?.('header_commands')),
+                    commandTargetFound: Boolean(doc.querySelector('#command_target')), commandActionsFound: Boolean(doc.querySelector('#command_actions')),
+                    pageReady: observed.pageReady, note: 'Empty requires the complete native place structure and no command markers.' },
                 documentReadyState: doc.readyState, page: safeUrl(targetWindow.location.href),
                 commandRelatedElementIds: all('[id]').map(node => node.id).filter(id => /command|outgoing/i.test(id)).slice(0, 40),
                 identityMarkers: { infoCommandLinks: all('a[href*="info_command"]').length,
@@ -299,8 +316,8 @@
     const sourceEvidenceLogged = new WeakMap();
     const logSnapshotSourceEvidence = (context, targetWindow, observed) => {
         try {
-            const key = `${getCurrentEntry(context)?.confirmationAttempt?.attemptId}:${observed.reason}`;
-            if (!observed.available && sourceEvidenceLogged.get(targetWindow.document) !== key) {
+            const key = `${getCurrentEntry(context)?.confirmationAttempt?.attemptId}:${observed.sourceState}:${observed.reason}`;
+            if (sourceEvidenceLogged.get(targetWindow.document) !== key) {
                 sourceEvidenceLogged.set(targetWindow.document, key);
                 diagnosticLog('SNAPSHOT_SOURCE_EVIDENCE', context, snapshotSourceEvidence(targetWindow));
             }
@@ -339,8 +356,8 @@
         const persisted = Boolean(stored && snapshotMatches(stored, getCurrentEntry(stored), getCurrentEntry(stored)?.confirmationAttempt) &&
             JSON.stringify(getCurrentEntry(stored).confirmationAttempt.outgoingSnapshot) === JSON.stringify(attempt.outgoingSnapshot));
         diagnosticLog('SNAPSHOT_READBACK_RESULT', context, { persisted: saved, readBackValid: persisted });
-        if (persisted) diagnosticLog(restored ? 'SNAPSHOT_RESTORED' : 'SNAPSHOT_PERSISTED', context, { source: 'place-command-rows', persisted: true, readBackValid: true, outgoingCommandIds: attempt.outgoingSnapshot.beforeCommandIds });
-        diagnosticLog(persisted ? 'SNAPSHOT_CAPTURED' : 'SNAPSHOT_UNAVAILABLE', context, { source: 'place-command-rows', persisted, restoredAfterNavigation: restored, reason });
+        if (persisted) diagnosticLog(restored ? 'SNAPSHOT_RESTORED' : 'SNAPSHOT_PERSISTED', context, { source: 'place-command-rows', persisted: true, readBackValid: true, outgoingCommandIds: attempt.outgoingSnapshot.beforeCommandIds, beforeCommandIds: attempt.outgoingSnapshot.beforeCommandIds, sourceState: attempt.outgoingSnapshot.beforeCommandIds.length ? 'ROWS_PRESENT' : 'EMPTY_CONFIRMED' });
+        diagnosticLog(persisted ? 'SNAPSHOT_CAPTURED' : 'SNAPSHOT_UNAVAILABLE', context, { source: 'place-command-rows', persisted, restoredAfterNavigation: restored, reason, beforeCommandIds: attempt.outgoingSnapshot?.beforeCommandIds ?? null });
         console.log?.('[EAS][FAKE][SNAPSHOT]', { executionId: context.executionTab, commandId, attemptId: attempt.attemptId,
             sourceVillageId: String(entry.sourceVillageId || entry.villageId), target: entry.target,
             capturedCommandIds: attempt.outgoingSnapshot?.beforeCommandIds ?? null,
@@ -353,7 +370,7 @@
         const entry = getCurrentEntry(context), attempt = entry?.confirmationAttempt, baseline = attempt?.outgoingSnapshot;
         diagnosticLog('RECONCILE_START', context);
         const observed = readOutgoingCommands(targetWindow);
-        diagnosticLog('SNAPSHOT_AFTER_CAPTURED', context, { source: observed.source, snapshotAvailable: observed.available, snapshotReason: observed.reason, outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null });
+        diagnosticLog('SNAPSHOT_AFTER_CAPTURED', context, { source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds, snapshotAvailable: observed.available, snapshotReason: observed.reason, outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null });
         const detail = { executionId: context.executionTab, commandId: getCommandKey(entry, context.currentIndex),
             attemptId: attempt?.attemptId || null, sourceVillageId: String(entry?.sourceVillageId || entry?.villageId || ''),
             expectedTarget: entry?.target, beforeCommandIds: baseline?.beforeCommandIds || null,
@@ -373,11 +390,12 @@
             detail.candidateCommandIds = [...new Set(candidates.map(command => command.id))];
             // Unknown target/type/source rows cannot disambiguate a concurrent send.
             const unknown = fresh.some(command => !command.sourceVillageId || !command.type || !command.target);
-            result = !fresh.length ? 'NO_NEW_COMMAND' : unknown || detail.candidateCommandIds.length > 1 ? 'AMBIGUOUS'
+            result = !fresh.length ? 'NO_NEW_COMMAND' : unknown || fresh.length > 1 ? 'AMBIGUOUS'
                 : !own.length ? 'SOURCE_OR_TYPE_MISMATCH' : !candidates.length ? 'TARGET_MISMATCH' : 'SUCCESS';
             if (result === 'SUCCESS') detail.matchedOutgoingCommandId = detail.candidateCommandIds[0];
         }
         detail.result = overrideResult || result;
+        diagnosticLog('RECONCILE', context, { ...detail, source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds });
         if (detail.result === 'SUCCESS') diagnosticLog('RECONCILE_NEW_COMMAND', context, { source: observed.source, outgoingCommandId: detail.matchedOutgoingCommandId, newCommandIds: detail.newCommandIds });
         diagnosticLog(detail.result === 'SUCCESS' ? 'RECONCILE_SUCCESS' : 'RECONCILE_UNCERTAIN', context, { result: detail.result, outgoingCommandId: detail.matchedOutgoingCommandId });
         console.log?.('[EAS][FAKE][RECONCILE]', detail);
@@ -801,7 +819,7 @@
         if (context.autoMode && !startSnapshotPhase(context)) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Falha ao persistir fase de snapshot.' };
         diagnosticLog('SNAPSHOT_CAPTURE_START', context, { targetReady: true });
         const observed = readOutgoingCommands(targetWindow);
-        const snapshotDetail = { source: observed.source, targetReady: true, snapshotAvailable: observed.available, snapshotReason: observed.reason,
+        const snapshotDetail = { source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds, targetReady: true, snapshotAvailable: observed.available, snapshotReason: observed.reason,
             outgoingContainerFound: observed.outgoingContainerFound, outgoingRowsFound: observed.outgoingRowsFound,
             outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null, documentUrl: targetWindow.location.href };
         if (observed.available) {
@@ -811,7 +829,7 @@
         diagnosticLog('SNAPSHOT_SOURCE_CHECK', context, snapshotDetail);
         logSnapshotSourceEvidence(context, targetWindow, observed);
         diagnosticLog('SNAPSHOT_CAPTURE_RESULT', context, snapshotDetail);
-        if (context.autoMode && !observed.available && ['CONTAINER_MISSING', 'DOM_LOADING'].includes(observed.reason)) return waitBeforeAttack(context, 'WAIT_SNAPSHOT', observed.reason);
+        if (context.autoMode && !observed.available && ['CONTAINER_MISSING', 'DOM_LOADING', 'PLACE_NOT_READY'].includes(observed.reason)) return waitBeforeAttack(context, 'WAIT_SNAPSHOT', observed.reason);
         if (!persistOutgoingSnapshot(context, targetWindow)) return { valid: false, code: 'SNAPSHOT_UNAVAILABLE', message: 'Snapshot indisponivel. Nenhum ataque foi enviado.' };
         if (entry.preparationWait) { entry.preparationWait.waiting = false; entry.preparationWait.phase = 'SNAPSHOT_READY'; }
         diagnosticLog('SNAPSHOT_READY', context);
@@ -822,6 +840,7 @@
         result.entry.status = context.autoMode ? 'attacking' : 'forwarding';
         if (!saveContext(context)) return { valid: false, message: 'Falha ao persistir ataque.' };
         beforeClick();
+        if (targetWindow.EASRateLimit?.check()) return { valid: false, code: 'RATE_LIMITED', message: 'RATE_LIMITED' };
         diagnosticLog('ATTACK_SUBMIT', context);
         console.log?.('[EAS][FAKE][ATTACK]', { commandId: getCommandKey(entry, context.currentIndex), targetValidated: true, submitting: true });
         button.click();
@@ -1058,6 +1077,7 @@
     };
 
     const resumeConfirmation = (targetWindow = window) => {
+        if (targetWindow.EASRateLimit?.check()) return false;
         targetWindow.__EASFakeBootstrapMark?.('confirmationHandlerEntered');
         confirmationDiagnostic(targetWindow, 'CONFIRM_HANDLER_ENTER');
         const stored = readContext();
@@ -1126,6 +1146,7 @@
             console.log?.('[EAS][FAKE][CONFIRM] ALLOWED', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             confirmationTrace(context, index, 'allowed=true submit');
             confirmLog('submitting');
+            if (targetWindow.EASRateLimit?.check()) return false;
             diagnosticLog('CONFIRM_SUBMIT', context);
             console.log?.('[EAS][FAKE][CONFIRM] CLICKING', { commandId, attemptId: entry.confirmationAttempt.attemptId });
             submit.click();
@@ -1193,6 +1214,7 @@
     };
 
     const failAutomatic = (context, error) => {
+        if (window.EASRateLimit?.check()) return;
         diagnosticLog('ERROR', context, { message: error?.message });
         const entry = getCurrentEntry(context);
         if (!entry) return;
@@ -1208,6 +1230,11 @@
     };
 
     const automaticControl = (targetWindow, action) => {
+        if (action === 'resume-rate-limit') {
+            if (!targetWindow.EASRateLimit?.resumeUnsent()) return false;
+            return resumeAutomatic(targetWindow);
+        }
+        if (action !== 'stop' && targetWindow.EASRateLimit?.check()) return false;
         const stored = readContext();
         if (!stored?.autoMode || stored.executionTab !== targetWindow.name) return false;
         const context = normalizeContext(stored);
@@ -1249,7 +1276,7 @@
         const labels = { pending: 'Aguardando', preparing: 'Preparando...', prepared: 'Preparado',
             attacking: 'Atacando...', 'confirm-page': 'Confirmando...', confirming: 'Confirmando...',
             submitted: 'Enviado', error: 'Pausado por erro' };
-        const text = `Execução automática | Atual: ${entry?.villageName || entry?.villageId || '-'} \u2192 ${entry?.target || '-'} | Estado: ${labels[entry?.status] || entry?.status || 'Concluído'} | Total: ${counts.total} | Concluídos: ${counts.completed} | Restantes: ${counts.remaining} | Erros: ${counts.errors} | Pulados: ${counts.skipped}${context.paused ? ' | ' + (context.errors.at(-1)?.reason || '') : ''}`;
+        const text = `Execução automática | Atual: ${entry?.villageName || entry?.villageId || '-'} \u2192 ${entry?.target || '-'} | Estado: ${labels[entry?.status] || entry?.status || 'Concluído'} | Total: ${counts.total} | Concluídos: ${counts.completed} | Restantes: ${counts.remaining} | Erros: ${counts.errors} | Pulados: ${counts.skipped}${context.paused ? ' | ' + (context.rateLimit?.state === 'RATE_LIMITED' ? 'RATE_LIMITED: recuperacao manual necessaria.' : context.errors.at(-1)?.reason || '') : ''}`;
         if (panel.dataset.autoText === text) return;
         panel.dataset.autoText = text;
         panel.textContent = '';
@@ -1270,6 +1297,7 @@
     };
 
     const resumeAutomatic = (targetWindow = window) => {
+        if (targetWindow.EASRateLimit?.check()) return false;
         targetWindow.__EASFakeBootstrapMark?.('resumeEntered');
         confirmationDiagnostic(targetWindow, 'AUTO_RESUME_ENTER');
         const stored = readContext();
@@ -1296,6 +1324,7 @@
         targetWindow.__easFakesAuto = runtime;
         const schedule = (delay) => { if (!runtime.stopped) runtime.timer = setTimeout(tick, delay); };
         const tick = () => {
+            if (targetWindow.EASRateLimit?.check()) return runtime.stop();
             if (runtime.stopped || runtime.document !== targetWindow.document) {
                 confirmationDiagnostic(targetWindow, 'AUTO_TICK_GUARD', runtime.stopped ? 'RUNTIME_STOPPED' : 'RUNTIME_DOCUMENT_CHANGED');
                 return runtime.stop();

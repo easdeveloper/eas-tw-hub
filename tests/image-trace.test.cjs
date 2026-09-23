@@ -3,7 +3,7 @@ const source=fs.readFileSync('core/image-trace.js','utf8');
 function fixture(){
  let callback,observations=0;const imgs=[],listeners={},pending=[];
  const doc={scripts:[],querySelectorAll:()=>imgs,addEventListener:(name,fn)=>listeners[name]=fn};
- const root={document:doc,location:{href:'https://game/game.php'},EASLocalBuild:{id:'local-test'},performance:{getEntriesByType:()=>[{name:'https://game/st/a.gif',initiatorType:'img',startTime:5,duration:2,transferSize:0,responseStatus:404}]},MutationObserver:class{constructor(fn){callback=fn;}observe(){observations++;}takeRecords(){return pending.splice(0);}}};
+ const root={document:doc,location:{href:'https://game/game.php'},EASLocalBuild:{id:'local-test'},performance:{getEntriesByType:()=>[{name:'https://game/st/a.gif',initiatorType:'img',startTime:5,duration:2,transferSize:0,responseStatus:404}]},MutationObserver:class{constructor(fn){callback=fn;}observe(){observations++;}disconnect(){}takeRecords(){return pending.splice(0);}}};
  root.atob=atob; const sandbox={window:{},unsafeWindow:root,URL};vm.createContext(sandbox);const run=()=>vm.runInContext(source,sandbox);run();
  const img={nodeType:1,tagName:'IMG',src:'https://game/st/a.gif',currentSrc:'',complete:false,naturalWidth:0,parentElement:{tagName:'BODY',id:'ds_body',className:''},outerHTML:'<img src="/st/a.gif">',closest:s=>s==='#ds_body'?{}:null,querySelectorAll:()=>[]};
  return {root,imgs,img,listeners,pending,run,observations:()=>observations,mutate:records=>callback(records)};
@@ -46,4 +46,12 @@ test('malformed payload remains diagnostic and CSS/CSV purposes and repeated ass
  f.root.__EASImageTraceMark({asset:'report.csv',url:'blob:https://game/c',type:'text/csv;charset=utf-8'});
  const d=f.root.EASImageTraceDebug();assert.ok(d.images[0].decodeError);assert.equal(d.images[0].pixelAddedAt,null);assert.equal(d.images[0].deltaMs,null);
  assert.equal(d.blobMap[0].easBlobPurpose,'CSS');assert.equal(d.blobMap[2].easBlobPurpose,'CSV');assert.equal(d.correlationSummary.repeatedAssets[0].distinctBlobCount,2);
+});
+
+
+test('100 tracer bootstraps/debug reads reuse hooks without requests and can dispose',()=>{
+ const f=fixture();const deny=()=>{throw Error('diagnostic network/DOM write');};
+ f.root.fetch=deny;f.root.Image=deny;f.root.XMLHttpRequest=deny;f.root.navigator={sendBeacon:deny};f.root.document.createElement=deny;
+ for(let i=0;i<100;i++){f.run();f.root.EASImageTraceDebug();}assert.equal(f.observations(),1);
+ f.root.EASImageTraceDispose();assert.equal(f.root.EASImageTraceDebug().observerActive,false);
 });

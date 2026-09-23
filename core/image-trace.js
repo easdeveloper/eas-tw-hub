@@ -4,8 +4,10 @@
     if (!root.EASLocalBuild || root.EASImageTraceDebug) return;
     try {
         const doc = root.document, limit = 300, events = [], loaderEvents = [];
-        let dropped = 0, observer = null;
+        let dropped = 0, observer = null, active = true;
         const startedAt = Date.now();
+        let navigationCount = null;
+        try { const key='eas_image_trace_navigation_count'; navigationCount=Number(root.sessionStorage.getItem(key)||0)+1; root.sessionStorage.setItem(key,String(navigationCount)); } catch {}
         const matches = img => img?.tagName === 'IMG' &&
             [img.src, img.currentSrc].some(src => String(src || '').includes('/st/'));
         const images = () => Array.from(doc.querySelectorAll('#ds_body img')).filter(matches);
@@ -31,11 +33,13 @@
         root.__EASImageTraceMark = detail => {
             try {
                 loaderEvents.push({ timestamp: Date.now(), ...detail });
+                root.__EASLogger?.debug?.('CORE', 'NETWORK_REQUEST_SOURCE', { timestamp: Date.now(), url: detail.url, caller: detail.asset, operation: detail.event, stack: detail.stack, buildId: root.EASLocalBuild.id, navigationCount, scope: 'EAS resource creation only; does not attribute IMG creator' });
                 if (loaderEvents.length > limit) loaderEvents.shift();
             } catch { /* Diagnostics cannot block loading. */ }
         };
         const consume = records => {
             try {
+                if (records.length) root.__EASLoaderTrace?.('image-observer', { childListMutations: records.filter(item => item.type === 'childList').length });
                 for (const item of records) {
                     if (item.type === 'attributes') scan(item.target, 'src-changed');
                     else for (const node of item.addedNodes) scan(node, 'added');
@@ -51,6 +55,10 @@
         };
         doc.addEventListener('load', settled, true);
         doc.addEventListener('error', settled, true);
+        root.EASImageTraceDispose = () => {
+            active = false; observer.disconnect();
+            doc.removeEventListener?.('load', settled, true); doc.removeEventListener?.('error', settled, true);
+        };
         root.EASImageTraceDebug = () => {
             consume(observer.takeRecords());
             const resources = Array.from(root.performance?.getEntriesByType('resource') || [])
@@ -91,7 +99,7 @@
             }
             return JSON.parse(JSON.stringify({ startedAt, timestamp: Date.now(), documentUrl: root.location.href,
                 localBuildId: root.EASLocalBuild.id, easVersion: root.EAS?.version || null,
-                observerActive: true, origin: 'undetermined',
+                observerActive: active, origin: 'undetermined',
                 limitations: 'MutationObserver does not expose creator stacks. Loader stacks describe EAS blob creation only, not IMG creation. Timing correlation is not causation. History is page-local; resource entries may have been evicted by the browser.',
                 droppedEvents: dropped, events: events.map(item => ({ ...item, ...correlate(item.src) })),
                 images: currentImages.map(item => ({ ...item, ...correlate(item.src) })), totalStImages: currentImages.length,
