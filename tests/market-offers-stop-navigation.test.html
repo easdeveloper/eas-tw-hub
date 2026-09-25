@@ -1,0 +1,48 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+(async()=>{
+ const failures=[];let assertions=0;
+ const equal=(a,b,label)=>{assertions++;if(JSON.stringify(a)!==JSON.stringify(b))failures.push(label+': '+JSON.stringify(a)+' != '+JSON.stringify(b));};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ localStorage.clear();sessionStorage.clear();
+ const frame=document.createElement('iframe');document.body.append(frame);
+ async function page(screen,reload=false){
+  await new Promise((resolve,reject)=>{frame.onload=resolve;frame.onerror=reject;if(reload)frame.contentWindow.location.reload();else frame.src='fixtures/loader/market-stop-page.html?screen='+screen+'&mode=own_offer&village=675';});
+  const w=frame.contentWindow;for(let n=0;n<100&&!w.fixtureState.ready&&!w.fixtureState.errors.length;n++)await wait(10);
+  equal(w.fixtureState.errors,[],screen+' errors');equal(w.fixtureState.ready,1,screen+' userscript bootstrap completed');return w;
+ }
+ let w=await page('market');const api=w.EAS.MarketOffersExecution;
+ const village={villageId:'675',available:true,updatedAt:Date.now(),resources:{wood:999999,stone:999999,iron:999999},merchants:{available:100,total:100}};
+ Object.assign(w.EAS.Data.Market,{getById:()=>village,getAll:()=>[village],refresh:()=>{throw Error('unexpected market scan');}});
+ Object.assign(w.EAS.MarketEngine,{getAvailableResources:()=>village.resources,refreshCurrentMarketVillageFromPage:()=>village,parseMarketVillageDocument:()=>({activeOfferList:[],merchants:village.merchants})});
+ const item={villageId:'675',offerResource:'iron',requestResource:'wood',offerAmount:1000,requestAmount:1000,repeatCount:16,maxTravelHours:15};
+ await api.startBatch({queue:[item,item]});await w.__EASMarketBatch.busy;
+ equal(w.fixtureState.submissions,1,'initial offer submitted once');
+ let state=api.read();state.queue[0].attempt.deadlineAt=Date.now()-1;api.save(state); // expire clock, not reconciliation evidence
+ await w.EAS.MarketOffersBatch.resume();state=api.read();equal(state.state,'uncertain','missing result pauses uncertain');
+ const attempt=JSON.stringify(state.queue[0].attempt), id=state.executionId, owner=state.executionTab;
+ const panel=w.document.getElementById(api.PANEL_ID);equal(Boolean(panel),true,'uncertain panel visible');
+ panel.querySelector('[data-action="stop"]').click();state=api.read();
+ equal(state.state,'cancelled','STOP terminal');equal(state.paused,false,'not a resumable pause');
+ equal(Boolean(w.document.getElementById(api.PANEL_ID)),false,'modal removed');
+ equal(JSON.stringify(state.queue[0].attempt),attempt,'uncertain attempt unchanged');
+ const terminal=JSON.stringify(state),elapsed=api.batchDurationMs(state,Date.now()+999999);
+ w.EAS.MarketOffersBatch.stop();equal(JSON.stringify(api.read()),terminal,'second STOP idempotent');
+ equal(w.__EASMarketBatch.timer,null,'timer cleared');equal(w.__EASMarketBatch.deferredTimer,null,'deferred inspection cleared');equal(w.__EASMarketBatch.observer,null,'observer removed');equal(w.__EASMarketBatch.storageListener,null,'listener removed');
+ for(const screen of ['overview','place','market','reload']){
+  w.name=owner; // terminal state must block even if the original tab binding survives
+  w=await page(screen,screen==='reload');
+  equal(Boolean(w.document.getElementById(api.PANEL_ID)),false,screen+' no restored modal');
+  equal(w.fixtureState.submissions,0,screen+' no submissions');equal(w.fixtureState.fetches,0,screen+' no scans');
+  equal(w.EAS.MarketOffersBatch,undefined,screen+' bootstrap does not load the cancelled controller');
+  equal(w.EAS.MarketOffersExecution.initialize(),false,screen+' direct initializer also refuses terminal execution');
+  equal(JSON.stringify(w.EASMarketOffersDebug.getExecution()),terminal,screen+' terminal state immutable');
+  equal(JSON.stringify(w.EASMarketOffersDebug.getArchive(id).queue[0].attempt),attempt,screen+' archived diagnostic survives navigation');
+  equal(w.EAS.MarketOffersExecution.batchDurationMs(w.EASMarketOffersDebug.getExecution(),Date.now()+999999),elapsed,screen+' duration frozen');
+ }
+ // Clearing active storage must retain the uncertain evidence in the diagnostic archive.
+ equal(w.EAS.MarketOffersExecution.remove('test-clear-cancelled'),true,'terminal active record can be cleared safely');
+ equal(JSON.stringify(w.EASMarketOffersDebug.getArchive(id).queue[0].attempt),attempt,'evidence survives active record removal');
+ frame.remove();document.querySelector('#result').textContent=failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions';document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
+</script>

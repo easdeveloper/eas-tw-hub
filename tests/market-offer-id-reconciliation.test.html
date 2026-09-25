@@ -1,0 +1,73 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>window.EAS={Utils:{},World:{getWorldName:()=> 'test'}};</script><script src="../services/market-offers-execution.js"></script>
+<script>
+(async()=>{
+ const failures=[],logs=[];let assertions=0;
+ const equal=(a,b,label)=>{assertions++;if(JSON.stringify(a)!==JSON.stringify(b))failures.push(label+': '+JSON.stringify(a)+' != '+JSON.stringify(b));};
+ EAS.Logger={info:(scope,event,data)=>logs.push({event,...data})};
+ const api=EAS.MarketOffersExecution,template=await(await fetch('fixtures/market-own-offer-row.html')).text();
+ const form='<form method="post" action="/game.php?screen=market&mode=own_offer&village=675"><input name=sell><input name=buy><input name=multi><input name=max_time></form>';
+ const page=ids=>new DOMParser().parseFromString(form+ids.map(id=>template.replaceAll('366457',id)).join(''),'text/html');
+ const w={location:{href:'https://test/game.php?screen=market&mode=own_offer&village=675'},game_data:{village:{id:675}}};
+ const item={id:'item-1',villageId:'675',offerResource:'iron',requestResource:'wood',amountPerOffer:1000,requestAmountPerOffer:1000,repeatCount:1,attempt:{attemptId:'attempt-1',itemIdentity:'immutable-config'}};
+ const context={executionId:'execution-1'};
+ function baseline(ids){const snapshot=api.captureBatchSnapshot(page(ids),item,w);return {...snapshot,executionId:context.executionId,itemId:item.id,attemptId:item.attempt.attemptId,itemIdentity:item.attempt.itemIdentity};}
+ function reconcile(before,after){item.attempt.beforeSnapshot=before===null?null:baseline(before);w.document=page(after);return api.reconcileBatchDom(item,w,context);}
+ for(const [before,after,id] of [[[],['100'],'100'],[['99'],['99','100'],'100'],[['10','11','12'],['10','11','12','13'],'13']]){
+  const result=reconcile(before,after);equal([result.success,result.offerId],[true,id],'exact new ID '+id);
+ }
+ equal([baseline([]).available,baseline([]).offerIds],[true,[]],'empty complete own_offer form proves valid empty baseline without table ID');
+ equal(reconcile(null,['100']).uncertain,true,'null baseline is never empty');
+ equal(reconcile(['99'],['99']).success,false,'old compatible ID never proves creation');
+ equal(reconcile([],[]).success,false,'no difference waits');
+ item.attempt.deadlineAt=Date.now()-1;equal(api.reconcileBatchDom(item,w,context).uncertain,true,'no difference after deadline is uncertain');delete item.attempt.deadlineAt;
+ equal(reconcile([],['100','101']).uncertain,true,'multiple new IDs uncertain');
+ reconcile([],['100']);w.document.querySelector('[data-id]').setAttribute('data-wanted_wood','2000');equal(api.reconcileBatchDom(item,w,context).uncertain,true,'new wrong requested amount uncertain');
+ reconcile([],['100']);w.document.querySelector('[data-id]').setAttribute('data-count','2');w.document.querySelector('#offer_count_100').textContent='2';equal(api.reconcileBatchDom(item,w,context).uncertain,true,'wrong count uncertain');
+ reconcile([],['100']);w.document.querySelector('img').remove();equal(api.reconcileBatchDom(item,w,context).uncertain,true,'omitted offered evidence never inferred from plan');
+ const broken=page(['100']);broken.querySelector('[data-id]').id='offer_101';equal(api.captureBatchSnapshot(broken,item,w).available,false,'cross identity conflict unavailable');
+ const duplicated=page(['100','100']);equal(api.captureBatchSnapshot(duplicated,item,w).offerIds,['100'],'IDs normalized/deduplicated');
+ const absent=new DOMParser().parseFromString('<body></body>','text/html');equal(api.captureBatchSnapshot(absent,item,w).available,false,'unknown page structure unavailable');
+ const missing=page(['100']);missing.querySelector('[data-id]').removeAttribute('data-id');equal(api.captureBatchSnapshot(missing,item,w).available,false,'malformed row never silently empty');
+ reconcile([],['100']);item.attempt.beforeSnapshot.attemptId='other';equal(api.reconcileBatchDom(item,w,context).uncertain,true,'another attempt baseline rejected');
+ reconcile([],['100']);item.attempt.beforeSnapshot.sourceVillageId='999';equal(api.reconcileBatchDom(item,w,context).uncertain,true,'another village baseline rejected');
+ reconcile([],['100']);item.attempt.beforeSnapshot=JSON.parse(JSON.stringify(item.attempt.beforeSnapshot));equal(api.reconcileBatchDom(item,w,context).success,true,'serialized baseline restores same identity');
+ reconcile([],['100']);item.attempt.beforeSnapshot.executionId='other';equal(api.reconcileBatchDom(item,w,context).uncertain,true,'another execution baseline rejected');
+ reconcile([],['100']);item.attempt.beforeSnapshot.itemIdentity='different-config';equal(api.reconcileBatchDom(item,w,context).uncertain,true,'different configuration baseline rejected');
+ equal(logs.some(log=>log.event==='OFFER_RECONCILE'&&log.result==='SUCCESS'&&log.matchedOfferId==='13'&&JSON.stringify(log.newOfferIds)==='["13"]'),true,'central logger exposes ID diff and match');
+ const nativeTemplate=await(await fetch('fixtures/market-own-offer-native-icons.html')).text();
+ const nativePage=ids=>new DOMParser().parseFromString(form+ids.map(id=>nativeTemplate.replaceAll('369361',id)).join(''),'text/html');
+ const nativeRow=api.captureBatchSnapshot(nativePage(['369361']),item,w).rows[0];
+ equal({id:nativeRow.offerId,count:nativeRow.count,offerResource:nativeRow.offerResource,offerAmount:nativeRow.offerAmount,wantedResource:nativeRow.requestResource,wantedAmount:nativeRow.requestAmount},
+  {id:'369361',count:33,offerResource:'iron',offerAmount:1000,wantedResource:'stone',wantedAmount:1000},'exact live HTML parses 33 x 1000 iron for stone');
+ function nativeCase(before,after,offer='iron',wanted='stone'){
+  Object.assign(item,{offerResource:offer,requestResource:wanted,repeatCount:33});
+  const build=ids=>{const doc=nativePage(ids);for(const row of doc.querySelectorAll('tr.offer_container')){
+   const icons=row.querySelectorAll('.icon.header');icons[0].className='icon header '+offer;icons[1].className='icon header '+wanted;
+   icons[0].setAttribute('data-title','not used');icons[1].setAttribute('data-title','not used');
+   for(const resource of ['wood','stone','iron'])row.setAttribute('data-wanted_'+resource,resource===wanted?'1000':'0');
+  }return doc;};
+  item.attempt.beforeSnapshot={...api.captureBatchSnapshot(build(before),item,w),executionId:context.executionId,itemId:item.id,attemptId:item.attempt.attemptId,itemIdentity:item.attempt.itemIdentity};
+  w.document=build(after);return api.reconcileBatchDom(item,w,context);
+ }
+ for(const offer of ['wood','stone','iron'])for(const wanted of ['wood','stone','iron'])if(offer!==wanted){
+  equal(nativeCase([],['369361'],offer,wanted).success,true,offer+' -> '+wanted+' empty BEFORE');
+  equal(nativeCase(['369360'],['369360','369361'],offer,wanted).offerId,'369361',offer+' -> '+wanted+' old IDs excluded');
+ }
+ equal(nativeCase([],['369361','369362']).uncertain,true,'multiple native IDs remain uncertain');
+ equal(nativeCase(['369361'],['369361']).success,false,'old native ID cannot be reused');
+ nativeCase([],['369361']);item.repeatCount=34;equal(api.reconcileBatchDom(item,w,context).uncertain,true,'real count mismatch rejected');
+ equal(logs.filter(log=>log.event==='OFFER_MATCH').at(-1).mismatchFields.includes('count'),true,'matcher diagnoses count mismatch');
+ nativeCase([],['369361']);const resourceCells=w.document.querySelectorAll('td .nowrap');resourceCells[1].lastChild.textContent='500';
+ equal(api.reconcileBatchDom(item,w,context).uncertain,true,'visible wanted amount must agree with wanted attributes');
+ equal(logs.filter(log=>log.event==='OFFER_MATCH').at(-1).mismatchFields.includes('wantedAmountConsistency'),true,'matcher diagnoses attribute disagreement');
+ nativeCase([],['369361']);w.document.querySelector('tr').insertAdjacentHTML('afterbegin','<td>irrelevant 9999</td>');
+ equal(api.reconcileBatchDom(item,w,context).success,true,'resource cells independent of global TD indices');
+ nativeCase([],['369361']);w.document.querySelector('.icon.header.iron').classList.add('wood');
+ equal(api.reconcileBatchDom(item,w,context).uncertain,true,'ambiguous resource class cannot silently match');
+ nativeCase([],['369361']);w.document.querySelector('td .nowrap').innerHTML='<span class="icon header iron"></span>1.50';
+ equal(api.reconcileBatchDom(item,w,context).uncertain,true,'malformed grouping is not normalized into another integer');
+ equal(logs.some(log=>log.event==='OFFER_MATCH'&&log.newOfferId==='369361'&&log.compatible&&log.parsed.count===33&&log.parsed.offerAmount===1000&&log.mismatchFields.length===0),true,'structured matcher records successful native offer');
+ document.querySelector('#result').textContent=failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions';document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
+</script>

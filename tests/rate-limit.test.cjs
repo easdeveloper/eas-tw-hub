@@ -13,6 +13,18 @@ function fixture(storage=new Map(),text='',entries=[]){
 }
 const state=()=>new Map([['eas_tw_fakes_execution',JSON.stringify({executionTab:'tab',currentIndex:0,queue:[{status:'pending'}],paused:false})]]);
 const read=f=>JSON.parse(f.storage.get('eas_tw_fakes_execution'));
+test('429 never resurrects a stopped Market execution, including legacy USER_STOP',()=>{
+ for(const terminal of [{state:'cancelled',paused:false,finishedAt:123},{state:'paused',paused:true,pauseReason:'USER_STOP'}]){
+  const key='eas_tw_market_offers_execution',record={batchAuthorization:{plan:'queue'},executionTab:'tab',revision:2,queue:[{attempt:{attemptId:'uncertain'}}],...terminal};
+  const storage=new Map([[key,JSON.stringify(record)]]),f=fixture(storage);f.root.EASRateLimit.reportStatus(429);assert.deepEqual(JSON.parse(storage.get(key)),record);
+ }
+});
+test('HTTP 429 persists Market batch pause before runtime bootstrap and preserves attempt',()=>{
+ const key='eas_tw_market_offers_execution',attempt={attemptId:'offer-1',submitAt:123,beforeSnapshot:{matchingQuantity:0}};
+ const storage=new Map([[key,JSON.stringify({batchAuthorization:{plan:'authorized'},executionTab:'tab',revision:2,queue:[{attempt}],currentIndex:0})]]);
+ const f=fixture(storage);f.root.EASRateLimit.reportStatus(429);const actual=JSON.parse(storage.get(key));
+ assert.equal(actual.state,'rate_limited');assert.equal(actual.paused,true);assert.deepEqual(actual.queue[0].attempt,attempt);assert.equal(actual.revision,3);
+});
 test('100 resumes reuse one passive observer and create no requests',()=>{const f=fixture(state());for(let i=0;i<100;i++){f.run();f.root.EASRateLimit.check();}assert.equal(f.observers(),1);assert.equal(read(f).paused,false);});
 test('HTTP 429 pauses persistently, stops timers and never automatically recovers',()=>{const f=fixture(state());f.emit([{responseStatus:429}]);assert.equal(read(f).rateLimit.state,'RATE_LIMITED');assert.equal(read(f).paused,true);assert.ok(f.stops()>0);for(let i=0;i<100;i++)f.root.EASRateLimit.check();assert.equal(f.logs.length,1);assert.equal(f.root.EASRateLimit.resumeUnsent(),false);});
 test('blocked game page pauses before runtime startup',()=>{const f=fixture(state(),'Solicita\u00e7\u00e3o bloqueada. Voc\u00ea est\u00e1 realizando muitos pedidos aos nossos servidores.');assert.equal(read(f).rateLimit.reason,'BLOCKED_PAGE');assert.equal(read(f).paused,true);});

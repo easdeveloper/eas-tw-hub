@@ -8,6 +8,20 @@
     const mark = reason => {
         blocked ||= { state: 'RATE_LIMITED', reason, detectedAt: Date.now() };
         root.__easFakesAuto?.stop?.();
+        root.__EASMarketBatch?.stopLocal?.();
+        try {
+            const marketKey = 'eas_tw_market_offers_execution';
+            const market = JSON.parse(root.localStorage.getItem(marketKey) || 'null');
+            if (market?.batchAuthorization && market.executionTab === root.name && !market.endedAt && !market.finishedAt &&
+                !market.batchAuthorization.revokedAt && market.pauseReason !== 'USER_STOP' &&
+                !['rate_limited', 'cancelled', 'canceled', 'user_stopped', 'completed'].includes(market.state)) {
+                market.paused = true; market.state = 'rate_limited'; market.pauseReason = 'RATE_LIMITED';
+                market.revision = Number(market.revision || 0) + 1;
+                root.localStorage.setItem(marketKey, JSON.stringify(market));
+                const item = market.queue?.[market.currentIndex];
+                root.__EASLogger?.warn?.('MARKET', 'MARKET_RATE_LIMITED', { executionId: market.executionId, itemId: item?.id, attemptId: item?.attempt?.attemptId, reason });
+            }
+        } catch { /* Blocking remains in force even if persistence fails. */ }
         const context = read();
         if (context?.executionTab === root.name && !context.endedAt && !context.finishedAt && context.rateLimit?.state !== 'RATE_LIMITED') {
             context.paused = true; context.rateLimit = { ...blocked };

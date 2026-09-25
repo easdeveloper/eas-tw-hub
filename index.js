@@ -151,6 +151,8 @@
         try {
             const execution = JSON.parse(localStorage.getItem('eas_tw_market_offers_execution') || 'null');
             if (!execution || Number(execution.version) < 3 || execution.endedAt || execution.finishedAt) return null;
+            if (execution.batchAuthorization && (execution.batchAuthorization.revokedAt || execution.pauseReason === 'USER_STOP' ||
+                !['running', 'paused', 'rate_limited', 'uncertain', 'error'].includes(execution.state))) return null;
             const currentIndex = (execution.queue || []).findIndex((item) => !['created', 'skipped', 'cancelled', 'canceled'].includes(item.status));
             return { execution, item: currentIndex >= 0 ? execution.queue[currentIndex] : null, currentIndex };
         } catch { return null; }
@@ -158,6 +160,7 @@
 
     const shouldInitializeMarketOfferExecution = () => {
         const url = new URL(location.href); const active = getActiveMarketExecution();
+        if (active?.execution.batchAuthorization) return active.execution.executionTab === window.name;
         if (!active || url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer') return false;
         const villageId = String(window.game_data?.village?.id || url.searchParams.get('village') || '');
         return !active.item || villageId === String(active.item.villageId);

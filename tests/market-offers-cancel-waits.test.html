@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre><input name="multi" value="1">
+<script>window.game_data={world:'test',player:{id:7},village:{id:9}};window.EAS={Utils:{},MarketOffersExecution:{},World:{getWorldName:()=> 'test'}};</script>
+<script src="../services/market-offers-execution.js"></script>
+<script>
+(async()=>{
+ const failures=[];let assertions=0,sequence=0,observers=0;const timers=new Map(),listeners=new Map();
+ const equal=(a,b,label)=>{assertions++;if(JSON.stringify(a)!==JSON.stringify(b))failures.push(label+': '+JSON.stringify(a));};
+ const owner={setTimeout(fn){const id=++sequence;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);},addEventListener(type,fn){listeners.set(type,fn);},removeEventListener(type){listeners.delete(type);},MutationObserver:class{observe(){observers++;}disconnect(){observers--;}}};
+ const api=EAS.MarketOffersExecution;
+ let controller=new AbortController(),promise=api.waitForMaxTravelTimeInput(document,5000,owner,controller.signal).catch(e=>e.message);
+ equal([timers.size,observers],[1,1],'waiting element owns timeout and observer');controller.abort();equal(await promise,'PREPARATION_CANCELLED','element wait aborted');equal([timers.size,observers],[0,0],'element resources removed');
+ controller=new AbortController();promise=api.setOfferRepeatCount({readyState:'loading',querySelector:s=>document.querySelector(s)},{repeatCount:16},owner,controller.signal).catch(e=>e.message);
+ equal(listeners.has('load'),true,'load listener registered');controller.abort();equal(await promise,'PREPARATION_CANCELLED','load wait aborted');equal(listeners.size,0,'load listener removed');
+ controller=new AbortController();promise=api.setOfferRepeatCount({readyState:'complete',querySelector:s=>document.querySelector(s)},{repeatCount:16},owner,controller.signal).catch(e=>e.message);
+ equal(timers.size,1,'stabilization timeout owned');controller.abort();equal(await promise,'PREPARATION_CANCELLED','stabilization wait aborted');equal(timers.size,0,'stabilization timeout removed');equal(document.querySelector('[name=multi]').value,'1','no field change after cancellation');
+ const context={version:3,executionId:'legacy-stop',state:'paused',paused:true,pauseReason:'USER_STOP',createdAt:100,pausedAt:200,batchAuthorization:{authorizedAt:100},queue:[{status:'verification-required',attempt:{attemptId:'keep',beforeSnapshot:{matchingQuantity:4}}}]};
+ localStorage.setItem(api.STORAGE_KEY,JSON.stringify(context));const migrated=api.read();equal([migrated.state,migrated.paused,migrated.finishedAt,migrated.batchAuthorization.revokedAt],['cancelled',false,200,200],'old USER_STOP normalized once');
+ equal(api.batchDurationMs(migrated,999999),100,'legacy stop duration frozen');equal(api.getArchivedBatch('legacy-stop').queue[0].attempt,context.queue[0].attempt,'legacy uncertain evidence archived');
+ const stale={...migrated};api.save(migrated);equal(api.save(stale),false,'old async revision cannot overwrite terminal record');
+ api.remove('test');equal(api.getArchivedBatch('legacy-stop').queue[0].attempt,context.queue[0].attempt,'clearing cannot erase archived uncertainty');
+ document.querySelector('#result').textContent=failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions';document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
+</script>

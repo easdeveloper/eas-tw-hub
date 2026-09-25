@@ -1,0 +1,55 @@
+<!doctype html><meta charset="utf-8"><title>Market batch dispatcher</title><pre id="result">running</pre>
+<form method="post" action="?screen=market&mode=own_offer&village=9">
+<input name="sell" value="1000"><input name="buy" value="1000"><input name="multi" value="16"><input name="max_time" value="15">
+<input type="hidden" name="res_sell" value="iron"><input type="hidden" name="res_buy" value="wood"><button type="submit">Criar</button></form>
+<table id="own_offers_table"></table>
+<script>
+window.addEventListener('error',e=>{document.title='FAIL';document.getElementById('result').textContent=e.error?.stack||e.message;});
+window.game_data={world:'test',player:{id:7},village:{id:9}};
+window.EAS={MarketOffersExecution:{},Utils:{escapeHtml:String},World:{getWorldName:()=> 'test'},MarketEngine:{calculateMerchantsRequired:()=>16,parseMarketVillageDocument:doc=>({activeOfferList:doc._offers||[],merchants:{available:100,total:100}})}};
+</script><script src="../core/utils.js"></script><script src="../services/market-execution-ui.js"></script><script src="../services/market-offers-execution.js"></script><script src="../services/market-offers-batch.js"></script>
+<script>
+(async()=>{const errors=[];let assertions=0,clicks=0,batchMode=false;const equal=(a,b,label)=>{assertions++;if(JSON.stringify(a)!==JSON.stringify(b))errors.push(label+': '+JSON.stringify(a));};
+await new Promise(resolve=>document.readyState==='complete'?resolve():window.addEventListener('load',resolve,{once:true}));
+history.replaceState(null,'','?screen=market&mode=own_offer&village=9');
+const addRow=(id,count=16)=>document.querySelector('#own_offers_table').insertAdjacentHTML('beforeend',`<tr class="offer_container" id="offer_${id}" data-id="${id}" data-count="${count}" data-wanted_wood="1000" data-wanted_stone="0" data-wanted_iron="0" data-offer-resource="iron" data-offer-amount="1000"><td><input name="id_${id}" type="checkbox"></td><td id="offer_count_${id}">${count}</td></tr>`);
+const api=EAS.MarketOffersExecution,form=document.querySelector('form'),button=form.querySelector('button');
+form.addEventListener('submit',event=>{event.preventDefault();clicks++;const state=JSON.parse(localStorage.getItem(api.STORAGE_KEY));if(!batchMode)equal(state.queue[0].attempt.attemptId,'attempt-1','attempt exists BEFORE native dispatch');else{equal(Boolean(state.queue[state.currentIndex].attempt.submitAt),true,'batch marker persisted before submit');addRow(String(100+clicks));}});
+const item=api.normalizeItem({id:'item',villageId:'9',offerResource:'iron',requestResource:'wood',offerAmount:1000,requestAmount:1000,repeatCount:16,maxTravelHours:15});
+localStorage.removeItem(api.STORAGE_KEY);
+const context={version:3,executionId:'batch-browser',batchAuthorization:{plan:'test'},revision:0,currentIndex:0,queue:[item]};
+equal(api.save(context),true,'persist authorized queue');
+const prepared={form,submit:button};
+equal(api.submitPreparedOffer({context,item,prepared,commit:()=>false}).sent,false,'failed persistence blocks submission');
+equal(clicks,0,'no click before persistence');
+const commit=()=>{if(item.attempt)return false;item.attempt={attemptId:'attempt-1',submitAt:Date.now()};return api.save(context)&&api.read().queue[0].attempt.attemptId==='attempt-1';};
+equal(api.submitPreparedOffer({context,item,prepared,commit}).sent,true,'authorized prepared offer automatically uses shared dispatcher');
+equal(api.submitPreparedOffer({context,item,prepared,commit}).sent,false,'same attempt cannot submit twice');equal(clicks,1,'one native submit');
+form.elements.multi.value='15';equal(api.submitPreparedOffer({context,item,prepared,commit:()=>true}).sent,false,'changed quantity blocks dispatch');form.elements.multi.value='16';
+window.EASRateLimit={check:()=>true};equal(api.submitPreparedOffer({context,item,prepared,commit:()=>true}).sent,false,'429 blocks dispatch');delete window.EASRateLimit;
+item.attempt.itemIdentity='configured-offer';item.attempt.beforeSnapshot={...api.captureBatchSnapshot(document,item),executionId:context.executionId,itemId:item.id,attemptId:item.attempt.attemptId,itemIdentity:item.attempt.itemIdentity};
+equal(api.reconcileBatchDom(item,window,context).success,false,'empty unchanged result not success');
+addRow('100');equal(api.reconcileBatchDom(item,window,context).success,true,'new compatible ID reconciles');
+addRow('101');equal(api.reconcileBatchDom(item,window,context).uncertain,true,'multiple IDs do not reconcile');
+document.querySelector('#own_offers_table').innerHTML='';
+localStorage.removeItem(api.STORAGE_KEY);
+batchMode=true;clicks=0;document._offers=[];
+history.replaceState(null,'','?screen=market&mode=own_offer&village=9');window.EASLocalBuild={execute(){}};
+// Chrome virtual-time can advance the entire budget before the browser-process
+// lock callback is delivered. This DOM fixture uses a deterministic lock adapter;
+// concurrency and duplicate resumes are covered by the controller tests.
+equal(typeof navigator.locks?.request,'function','Web Locks supported by browser');
+const nativeLockRequest=navigator.locks.request;
+navigator.locks.request=async(name,options,callback)=>callback({name});
+const village={villageId:'9',available:true,updatedAt:Date.now(),resources:{wood:999999,stone:999999,iron:999999},merchants:{available:100,total:100}};
+EAS.Data={Market:{getById:()=>village,getAll:()=>[village],refresh:()=>{throw Error('unexpected network scan');}}};
+Object.assign(EAS.MarketEngine,{getAvailableResources:()=>village.resources,refreshCurrentMarketVillageFromPage:()=>village,getCache:()=>({}),cacheVillages:()=>[village]});
+EAS.MarketOffersBatch.start({queue:[{...item,attempt:null},{...item,attempt:null}]});
+const deadline=Date.now()+7000;while(!api.read()?.endedAt&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+equal(clicks,2,'real preparation plus shared dispatcher submits both offers automatically');
+equal(api.read()?.state,'completed','two offers reconciled and queue completed');
+equal(new Set(api.read()?.queue.map(row=>row.attempt?.attemptId)).size,2,'independent attempt identities');
+equal(api.read()?.queue.map(row=>row.attempt.beforeSnapshot.offerIds),[[],['101']],'second offer has a new baseline');
+EAS.MarketOffersBatch.stopLocal();navigator.locks.request=nativeLockRequest;localStorage.removeItem(api.STORAGE_KEY);
+document.getElementById('result').textContent=errors.length?'FAIL\n'+errors.join('\n'):'PASS '+assertions+' assertions';document.title=errors.length?'FAIL':'PASS';})();
+</script>

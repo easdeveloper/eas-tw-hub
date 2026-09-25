@@ -14,6 +14,39 @@
     const MAX_ADVANCE_ATTEMPTS = 2;
     const MARKET_SELECTORS = { repetitions: 'input[name="multi"]', maxTravelTime: 'input[name="max_time"]', createButton: 'input[type="submit"][value="Criar"]' };
     const TERMINAL = new Set(['created', 'skipped', 'cancelled', 'canceled']);
+    const BATCH_TERMINAL = new Set(['cancelled', 'canceled', 'user_stopped', 'completed']);
+    const BATCH_RECOVERABLE = new Set(['running', 'paused', 'rate_limited', 'uncertain', 'error']);
+    const batchTerminal = context => Boolean(context?.batchAuthorization && (context.endedAt || context.finishedAt ||
+        BATCH_TERMINAL.has(context.state) || context.pauseReason === 'USER_STOP' || context.batchAuthorization.revokedAt));
+    const canResumeBatch = context => Boolean(context?.batchAuthorization && !batchTerminal(context) && BATCH_RECOVERABLE.has(context.state));
+    const finalizeBatchStop = context => {
+        if (context.state === 'cancelled' && context.finishedAt) return context;
+        const finishedAt = context.finishedAt || context.endedAt || context.stoppedAt || context.pausedAt || Date.now();
+        context.stoppedFromState = context.state; context.state = 'cancelled'; context.paused = false;
+        context.stopReason = 'USER_STOP'; context.pauseReason = null;
+        context.startedAt ||= context.batchAuthorization.authorizedAt || context.createdAt || finishedAt;
+        context.finishedAt = finishedAt; context.endedAt = finishedAt;
+        context.batchAuthorization = { ...context.batchAuthorization, revokedAt: finishedAt };
+        delete context.nextAt; delete context.navigationTarget;
+        // Keep item status, uncertain attempt and snapshots untouched for diagnosis.
+        return context;
+    };
+    const batchDurationMs = (context, now = Date.now()) => {
+        const start = Number(context.startedAt || context.batchAuthorization?.authorizedAt || context.createdAt);
+        const end = Number(context.finishedAt || context.endedAt || now);
+        return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0;
+    };
+    const ARCHIVE_PREFIX = 'eas_tw_market_offers_archive:';
+    const archiveBatch = context => {
+        if (!batchTerminal(context)) return false;
+        try {
+            const key = ARCHIVE_PREFIX + context.executionId;
+            if (localStorage.getItem(key)) return true;
+            const text = JSON.stringify(context); localStorage.setItem(key, text);
+            return localStorage.getItem(key) === text;
+        } catch { return false; }
+    };
+    const getArchivedBatch = executionId => { try { return JSON.parse(localStorage.getItem(ARCHIVE_PREFIX + executionId) || 'null'); } catch { return null; } };
     const amount = (value) => Math.max(0, Math.floor(Number(value) || 0));
     const isOwnOfferPage = (targetWindow = window) => { try { const params = new URL(targetWindow.location.href).searchParams; return params.get('screen') === 'market' && params.get('mode') === 'own_offer'; } catch { return false; } };
     const getDebugLogs = () => { try { return JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]'); } catch { return []; } };
@@ -22,11 +55,26 @@
     const logSmartOffer = (action, data = {}, error = null) => { const payload = { ...data, timestamp: Date.now() }; logMarketOfferExecution(`smartOffers.${action}`, payload); if (error) EAS.Log?.error?.('market.smartOffers', action, error, payload); else EAS.Log?.info?.('market.smartOffers', action, payload); return payload; };
     const recordItemEvent = (context, item, event, data = {}, targetWindow = window) => { const url = new URL(targetWindow.location.href); const entry = logMarketOfferExecution(event, { executionId: context?.executionId, itemId: item?.id, villageId: item?.villageId, ...data }); if (item) { item.diagnostic ||= {}; Object.assign(item.diagnostic, { executionId: context?.executionId, itemId: item.id, villageId: item.villageId, villageName: item.villageName, offerResource: item.offerResource, receiveResource: item.requestResource, amountPerOffer: item.amountPerOffer, repetitions: item.repeatCount, totalOffer: item.totalOfferAmount, expectedMerchants: item.merchantsRequired, currentUrl: url.href, pageMode: url.searchParams.get('mode'), persistedStatus: item.status, currentRuntimeStatus: getRuntime(targetWindow)?.preparing ? 'preparing' : item.status, lastEvent: event, lastEventAt: entry.timestamp, ...data }); item.diagnosticEvents = [...(item.diagnosticEvents || []), entry].slice(-20); if (context) save(context); } return entry; };
     const summarizeOfferExecution = (execution) => { const queue = execution?.queue || []; const activeIndex = queue.findIndex((item, index) => index >= Number(execution?.currentIndex || 0) && !TERMINAL.has(item.status)); const currentIndex = activeIndex < 0 ? queue.length : activeIndex; const currentItem = queue[currentIndex] || null; const nextItem = queue.slice(currentIndex + 1).find((item) => !TERMINAL.has(item.status)) || null; const statuses = { pending: 0, prepared: 0, submitting: 0, created: 0, skipped: 0, error: 0 }; queue.forEach((item) => { if (Object.hasOwn(statuses, item.status)) statuses[item.status] += 1; }); return { executionVersion: execution?.version ?? null, currentIndex, queueLength: queue.length, statuses, currentItemId: currentItem?.id || null, currentItemVillageId: currentItem?.villageId || null, nextItemId: nextItem?.id || null, nextItemVillageId: nextItem?.villageId || null }; };
-    const read = () => { try { const context = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (context && (!Number.isFinite(Number(context.version)) || Number(context.version) < EXECUTION_VERSION)) { logMarketOfferExecution('execution-cleared', { reason: 'obsolete-version', summary: summarizeOfferExecution(context) }); localStorage.removeItem(STORAGE_KEY); return null; } return context; } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'read-execution', message: error.message }); return null; } };
-    const save = (context) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(context)); return true; } catch { return false; } };
-    const remove = (reason = 'explicit-remove') => { const execution = read(); logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); try { localStorage.removeItem(STORAGE_KEY); } catch {} };
+    const read = () => { try { const context = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (context && (!Number.isFinite(Number(context.version)) || Number(context.version) < EXECUTION_VERSION)) { logMarketOfferExecution('execution-cleared', { reason: 'obsolete-version', summary: summarizeOfferExecution(context) }); localStorage.removeItem(STORAGE_KEY); return null; } if (context?.batchAuthorization && context.pauseReason === 'USER_STOP') { finalizeBatchStop(context); save(context); archiveBatch(context); } return context; } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'read-execution', message: error.message }); return null; } };
+    const save = (context) => {
+        try {
+            const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            if (previous?.batchAuthorization && previous.executionId !== context.executionId && (!isExecutionFinished(previous) || !archiveBatch(previous))) return false;
+            if (context.batchAuthorization) {
+                if (previous && previous.executionId === context.executionId && Number(previous.revision || 0) !== Number(context.revision || 0)) return false;
+                if (previous && previous.executionId !== context.executionId && !isExecutionFinished(previous)) return false;
+                if (previous?.batchAuthorization && previous.executionId !== context.executionId && !archiveBatch(previous)) return false;
+                const candidate = { ...context, revision: Number(context.revision || 0) + 1 };
+                const text = JSON.stringify(candidate); localStorage.setItem(STORAGE_KEY, text);
+                if (localStorage.getItem(STORAGE_KEY) !== text) return false;
+                context.revision = candidate.revision; return true;
+            }
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(context)); return true;
+        } catch { return false; }
+    };
+    const remove = (reason = 'explicit-remove') => { const execution = read(); if (execution?.batchAuthorization && !archiveBatch(execution)) return false; logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); try { localStorage.removeItem(STORAGE_KEY); return true; } catch { return false; } };
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
-    const isExecutionFinished = (execution) => Boolean(execution && (execution.finishedAt || execution.endedAt || (execution.queue || []).every((item) => TERMINAL.has(item.status))));
+    const isExecutionFinished = (execution) => Boolean(execution && (batchTerminal(execution) || execution.finishedAt || execution.endedAt || (execution.queue || []).every((item) => TERMINAL.has(item.status))));
     const getMenuRuntime = (targetWindow = window) => targetWindow.EASMarketOfferMenuRuntime ||= { listenerInitialized: false, executionWindows: new Map(), handledExecutions: new Set(), channel: null };
     const completionSummary = (execution) => ({ created: (execution?.queue || []).filter((item) => item.status === 'created').length, errors: (execution?.queue || []).filter((item) => ['error', 'verification-required'].includes(item.status)).length, skipped: (execution?.queue || []).filter((item) => ['skipped', 'cancelled', 'canceled'].includes(item.status)).length });
     const refreshExistingHubPanel = (targetWindow = window, execution = read()) => {
@@ -126,18 +174,28 @@
         if (debug) console.debug('[EAS Market Offer]', { fieldAfter: multiInput.value });
         return { valid: Number(multiInput.value) === repeatCount, input: multiInput, repeatCount, apply, message: Number(multiInput.value) === repeatCount ? null : 'Não foi possível preencher Quantas vezes oferecer.' };
     };
-    const setOfferRepeatCount = async (doc, item, targetWindow = window) => {
+    const preparationWait = (setup, signal) => new Promise((resolve, reject) => {
+        signal?.throwIfAborted();
+        let cleanup = () => {};
+        const finish = (value, error) => { cleanup(); signal?.removeEventListener('abort', cancel); error ? reject(error) : resolve(value); };
+        const cancel = () => finish(null, Error('PREPARATION_CANCELLED'));
+        signal?.addEventListener('abort', cancel, { once: true });
+        cleanup = setup(value => finish(value)) || cleanup;
+    });
+    const setOfferRepeatCount = async (doc, item, targetWindow = window, signal) => {
+        signal?.throwIfAborted();
         const input = findRepeatField(doc); const expected = Number(item.repeatCount); if (!input) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
         if (!Number.isInteger(expected) || expected <= 0) return { valid: false, message: 'repeatCount inválido.' };
-        const sleep = (milliseconds) => new Promise((resolve) => targetWindow.setTimeout(resolve, milliseconds)); const startedAt = Date.now(); const initialValue = input.value; const timeline = [{ elapsedMs: 0, phase: 'start', readyState: doc.readyState, value: input.value }];
-        if (doc.readyState !== 'complete') await new Promise((resolve) => targetWindow.addEventListener('load', resolve, { once: true }));
+        const sleep = milliseconds => preparationWait(resolve => { const timer = targetWindow.setTimeout(resolve, milliseconds); return () => targetWindow.clearTimeout(timer); }, signal); const startedAt = Date.now(); const initialValue = input.value; const timeline = [{ elapsedMs: 0, phase: 'start', readyState: doc.readyState, value: input.value }];
+        if (doc.readyState !== 'complete') await preparationWait(resolve => { targetWindow.addEventListener('load', resolve, { once: true }); return () => targetWindow.removeEventListener('load', resolve); }, signal);
+        signal?.throwIfAborted();
         const navigation = targetWindow.performance?.getEntriesByType?.('navigation')?.[0]; timeline.push({ elapsedMs: Date.now() - startedAt, phase: 'window.load', readyState: doc.readyState, value: input.value, domContentLoadedMs: Math.round(navigation?.domContentLoadedEventEnd || 0), loadMs: Math.round(navigation?.loadEventEnd || 0) });
         let observedValue = input.value;
-        for (let sample = 1; sample <= 10; sample += 1) { await sleep(50); if (input.value !== observedValue) { observedValue = input.value; timeline.push({ elapsedMs: Date.now() - startedAt, phase: 'tribal-initialization', value: input.value }); } }
+        for (let sample = 1; sample <= 10; sample += 1) { await sleep(50); signal?.throwIfAborted(); if (input.value !== observedValue) { observedValue = input.value; timeline.push({ elapsedMs: Date.now() - startedAt, phase: 'tribal-initialization', value: input.value }); } }
         let result = null; let stableAttempt = null; let overwriteDetectedAtMs = null;
         for (let attempt = 1; attempt <= 5; attempt += 1) {
-            const before = input.value; result = fillRepeatCount(doc, item, targetWindow); timeline.push({ elapsedMs: Date.now() - startedAt, phase: `fill-${attempt}`, before, after: input.value });
-            await sleep(200); const actual = Number(input.value); timeline.push({ elapsedMs: Date.now() - startedAt, phase: `verify-${attempt}`, value: input.value });
+            signal?.throwIfAborted(); const before = input.value; result = fillRepeatCount(doc, item, targetWindow); timeline.push({ elapsedMs: Date.now() - startedAt, phase: `fill-${attempt}`, before, after: input.value });
+            await sleep(200); signal?.throwIfAborted(); const actual = Number(input.value); timeline.push({ elapsedMs: Date.now() - startedAt, phase: `verify-${attempt}`, value: input.value });
             if (actual === expected) { stableAttempt = attempt; break; }
             overwriteDetectedAtMs = Date.now() - startedAt; timeline.push({ elapsedMs: overwriteDetectedAtMs, phase: `overwrite-after-fill-${attempt}`, expected, actual });
         }
@@ -147,7 +205,17 @@
     };
     const findSubmit = (doc, form) => form?.querySelector(`${MARKET_SELECTORS.createButton}, [name="create_offer"], button[type="submit"], input[type="submit"], [data-action="create-offer"]`) || doc.querySelector(`${MARKET_SELECTORS.createButton}, [name="create_offer"], [data-action="create-offer"]`);
     const waitForElement = (doc, selector, timeoutMs = 5000, targetWindow = window) => EAS.Utils.waitForElement(selector, { document: doc, timeoutMs, targetWindow });
-    const waitForMaxTravelTimeInput = (doc, timeoutMs = 5000, targetWindow = window) => waitForElement(doc, MARKET_SELECTORS.maxTravelTime, timeoutMs, targetWindow);
+    const waitForMaxTravelTimeInput = (doc, timeoutMs = 5000, targetWindow = window, signal) => {
+        if (!signal) return waitForElement(doc, MARKET_SELECTORS.maxTravelTime, timeoutMs, targetWindow);
+        signal.throwIfAborted(); const existing = doc.querySelector(MARKET_SELECTORS.maxTravelTime);
+        if (existing) return Promise.resolve(existing);
+        return preparationWait(resolve => {
+            const observer = new targetWindow.MutationObserver(() => { const node = doc.querySelector(MARKET_SELECTORS.maxTravelTime); if (node) resolve(node); });
+            observer.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+            const timer = targetWindow.setTimeout(() => resolve(null), timeoutMs);
+            return () => { observer.disconnect(); targetWindow.clearTimeout(timer); };
+        }, signal);
+    };
     const chooseResource = (doc, kind, resource, targetWindow = window) => {
         const names = kind === 'offer' ? ['res_sell', 'sell_resource', 'offer_resource'] : ['res_buy', 'buy_resource', 'request_resource'];
         const select = names.map((name) => doc.querySelector(`select[name="${name}"], select#${name}`)).find(Boolean);
@@ -210,23 +278,26 @@
     };
     const reconcileQueueItem = async (context, item) => { let validation = validateQueueItem(item); const staleOnly = validation.reasons.length === 1 && validation.reasons[0] === 'Dados alterados ou desatualizados'; if (staleOnly) { EAS.Log?.warn?.('market.execution', 'stale', { executionId: context.executionId, villageId: item.villageId, offerIndex: context.queue.indexOf(item), ...validation.snapshot }); try { await EAS.Data.Market.refresh({requestedBy:'market-offers-execution',reason:'active-operation', villageId: item.villageId, forceRefresh: true, executionId: context.executionId }); validation = validateQueueItem(item); if (validation.valid) EAS.Log?.info?.('market.execution', 'reconciled', { executionId: context.executionId, villageId: item.villageId, offerIndex: context.queue.indexOf(item), ...validation.snapshot }); } catch (error) { EAS.Log?.error?.('market.execution', 'reconcileError', error, { executionId: context.executionId, villageId: item.villageId, state: 'reconciling-stale' }); } } if (validation.valid && validation.snapshot.changedFields.includes('revision')) { const internal = /^smart-offers-executor/.test(validation.snapshot.lastMutationSource); EAS.Log?.[internal ? 'info' : 'warn']?.('market.execution', internal ? 'internalMutationReconciled' : 'externalMutationReconciled', { executionId: context.executionId, villageId: item.villageId, offerIndex: context.queue.indexOf(item), ...validation.snapshot }); promoteExecutionSnapshot(context, validation.village); validation = validateQueueItem(item); } if (!validation.valid) EAS.Log?.warn?.('market.execution', 'stale', { executionId: context.executionId, villageId: item.villageId, offerIndex: context.queue.indexOf(item), reasons: validation.reasons, ...validation.snapshot }); return validation; };
     const promoteExecutionSnapshot = (context, village) => { if (!village) return; const resources = EAS.MarketEngine.getAvailableResources(village); const activeOffers = village.activeOfferList?.length || 0; context.marketSnapshots ||= {}; context.marketSnapshots[village.villageId] = { revision: village.revision, resources, merchants: village.merchants.available, activeOffers, lastMutationSource: village.lastMutationSource, updatedAt: village.updatedAt }; context.queue.filter((entry) => !TERMINAL.has(entry.status) && String(entry.villageId) === String(village.villageId)).forEach((entry) => { entry.expectedRevision = village.revision; entry.expectedResources = resources; entry.expectedMerchants = village.merchants.available; entry.expectedActiveOffers = activeOffers; entry.expectedLastMutationSource = village.lastMutationSource; }); EAS.Log?.info?.('market.execution', 'snapshotPromoted', { executionId: context.executionId, villageId: village.villageId, revision: village.revision, resources, merchants: village.merchants.available, activeOffers, lastMutationSource: village.lastMutationSource }); };
-    const prepareItem = async (context, targetWindow) => {
+    const prepareItem = async (context, targetWindow, { signal } = {}) => {
+        signal?.throwIfAborted();
         syncIndex(context); const item = current(context); if (!item || getVillageId(targetWindow) !== String(item.villageId)) return { valid: false, message: 'Abra o Mercado da aldeia correta.' };
-        const validation = await reconcileQueueItem(context, item); if (!validation.valid) { item.status = 'error'; item.error = validation.reasons.join(', '); save(context); return { valid: false, message: item.error }; }
+        const validation = await reconcileQueueItem(context, item); signal?.throwIfAborted(); if (!validation.valid) { item.status = 'error'; item.error = validation.reasons.join(', '); save(context); return { valid: false, message: item.error }; }
         const doc = targetWindow.document; const offerAmount = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestAmount = findField(doc, ['buy', 'request_amount', 'amount_buy']); const repeatCount = findRepeatField(doc);
         if (!offerAmount || !requestAmount || !chooseResource(doc, 'offer', item.offerResource, targetWindow) || !chooseResource(doc, 'request', item.requestResource, targetWindow)) return { valid: false, message: 'Campos de criação de oferta não encontrados.' };
-        const form = offerAmount.closest('form') || requestAmount.closest('form'); const submit = findSubmit(doc, form); if (submit) submit.disabled = true;
+        const form = offerAmount.closest('form') || requestAmount.closest('form'); const submit = findSubmit(doc, form);
+        if (submit) { const wasDisabled = submit.disabled; signal?.addEventListener('abort', () => { submit.disabled = wasDisabled; }, { once: true }); submit.disabled = true; }
         recordItemEvent(context, item, 'smart-offer-form-detected', { formDetected: Boolean(form), createButtonDetected: Boolean(submit) }, targetWindow);
         if (!repeatCount) return { valid: false, message: 'Campo Quantas vezes oferecer não encontrado.' };
         setValue(offerAmount, item.amountPerOffer, targetWindow); setValue(requestAmount, item.requestAmountPerOffer, targetWindow);
         const configuredMaxTravelHours = Math.max(1, amount(item.maxTravelHours || context.smartOfferConfig?.maxTravelHours || DEFAULT_MAX_TRAVEL_HOURS)); let maxTimeInput = doc.querySelector(MARKET_SELECTORS.maxTravelTime);
         recordItemEvent(context, item, 'smart-offer-max-time-search', { multiFound: Boolean(repeatCount), maxTimeFound: Boolean(maxTimeInput), configuredMaxTravelHours, displayedMaxTravelHours: maxTimeInput?.value ?? null, pageMode: new URL(targetWindow.location.href).searchParams.get('mode'), currentUrl: targetWindow.location.href }, targetWindow);
-        if (!maxTimeInput) maxTimeInput = await waitForMaxTravelTimeInput(doc, 5000, targetWindow);
+        if (!maxTimeInput) maxTimeInput = await waitForMaxTravelTimeInput(doc, 5000, targetWindow, signal);
+        signal?.throwIfAborted();
         if (maxTimeInput) recordItemEvent(context, item, 'smart-offer-max-time-found', { maxTimeFound: true, configuredMaxTravelHours, displayedMaxTravelHours: maxTimeInput.value }, targetWindow);
         const durationResult = setMaxTravelHours(doc, configuredMaxTravelHours, targetWindow, maxTimeInput); item.durationDiagnostics = durationResult;
         if (!durationResult.valid) { recordItemEvent(context, item, maxTimeInput ? 'smart-offer-max-time-validation-failed' : 'smart-offer-max-time-not-found', { multiFound: Boolean(repeatCount), maxTimeFound: Boolean(maxTimeInput), configuredMaxTravelHours, displayedMaxTravelHours: maxTimeInput?.value ?? null, durationResult }, targetWindow); return { valid: false, message: durationResult.message }; }
         recordItemEvent(context, item, 'smart-offer-max-time-filled', { multiFound: true, maxTimeFound: Boolean(maxTimeInput), configuredMaxTravelHours, displayedMaxTravelHours: durationResult.value, selector: durationResult.selector }, targetWindow);
-        const repeatResult = await setOfferRepeatCount(doc, item, targetWindow); if (!repeatResult.valid) return repeatResult;
+        const repeatResult = await setOfferRepeatCount(doc, item, targetWindow, signal); signal?.throwIfAborted(); if (!repeatResult.valid) return repeatResult;
         if (Number(repeatCount.value) !== Number(item.repeatCount)) return { valid: false, message: `Não foi possível configurar a quantidade de repetições. Esperado: ${item.repeatCount}. Atual: ${repeatCount.value}.` };
         if (submit) submit.disabled = false; item.status = 'prepared'; item.error = null; item.repeatFillDiagnostics = repeatResult.diagnostics; item.previousSnapshot = snapshotOffers(doc, item); item.beforeOfferCount = item.previousSnapshot.offerCount; item.beforeMatchingOfferCount = item.previousSnapshot.matchingOffers; item.beforeMatchingQuantity = item.previousSnapshot.matchingQuantity; recordItemEvent(context, item, 'smart-offer-form-values-applied', { formDetected: true, createButtonDetected: Boolean(submit), beforeOfferCount: item.beforeOfferCount, beforeMatchingOfferCount: item.beforeMatchingOfferCount, maxTravelHours: item.maxTravelHours, durationResult }, targetWindow); save(context);
         return { valid: true, item, form, submit, message: `Oferta preparada: ${item.repeatCount} × ${item.offerAmount} por ${item.requestAmount}. Clique em Criar no jogo.` };
@@ -327,7 +398,7 @@
             const active = current(context); if (submissionLocked || !active || active.status !== 'prepared' || !preparedSubmit) return;
             const repeatInput = findRepeatField(doc); const offerInput = findField(doc, ['sell', 'offer_amount', 'amount_sell']); const requestInput = findField(doc, ['buy', 'request_amount', 'amount_buy']);
             if (Number(repeatInput?.value) !== active.repeatCount || Number(offerInput?.value) !== active.amountPerOffer || Number(requestInput?.value) !== active.requestAmountPerOffer) { active.status = 'form-changed'; active.errorKind = 'form-changed'; active.retrySafe = false; active.error = 'Os dados mudaram. A oferta precisa ser preparada novamente.'; save(context); render(active.error, 'error'); return; }
-            submissionLocked = true; active.previousSnapshot = snapshotOffers(doc, active); active.beforeOfferCount = active.previousSnapshot.offerCount; active.beforeMatchingOfferCount = active.previousSnapshot.matchingOffers; active.beforeMatchingQuantity = active.previousSnapshot.matchingQuantity; save(context); beginVerification(); recordItemEvent(context, active, 'smart-offer-create-button-found', { createButtonDetected: true }, targetWindow); preparedSubmit.click(); recordItemEvent(context, active, 'smart-offer-create-clicked', { clickTimestamp: active.clickTimestamp }, targetWindow);
+            submissionLocked = true; active.previousSnapshot = snapshotOffers(doc, active); active.beforeOfferCount = active.previousSnapshot.offerCount; active.beforeMatchingOfferCount = active.previousSnapshot.matchingOffers; active.beforeMatchingQuantity = active.previousSnapshot.matchingQuantity; save(context); beginVerification(); recordItemEvent(context, active, 'smart-offer-create-button-found', { createButtonDetected: true }, targetWindow); const submitted = submitPreparedOffer({ context, item: active, prepared: { submit: preparedSubmit, form: preparedSubmit.form }, targetWindow, commit: () => { if (active.attempt?.submitAt) return false; active.attempt = { attemptId: `${context.executionId}:${active.id}:${Date.now()}:${Math.random()}`, executionId: context.executionId, itemId: active.id, submitAt: Date.now() }; return save(context) && read()?.queue?.find(entry => entry.id === active.id)?.attempt?.attemptId === active.attempt.attemptId; } }); if (!submitted.sent) { stop(); render('Submissao bloqueada; verifique o resultado antes de tentar novamente.', 'error'); return; } recordItemEvent(context, active, 'smart-offer-create-clicked', { clickTimestamp: active.clickTimestamp }, targetWindow);
         };
         const recalculatePending = () => {
             let config = {}; try { config = JSON.parse(localStorage.getItem('eas_tw_market_offers_config') || '{}'); } catch {}
@@ -340,10 +411,196 @@
         else if (['pending', 'opening', 'preparing', 'prepared'].includes(item.status)) { if (item.status === 'preparing') { runtime.preparing = false; runtime.preparedItemId = null; recordItemEvent(context, item, 'smart-offer-preparation-resumed', { panelExists: Boolean(doc.getElementById(PANEL_ID)) }, targetWindow); } arm(); }
         return true;
     };
-    EAS.MarketOffersExecution.start = (context) => { const maxTravelHours = Math.max(1, amount(context.smartOfferConfig?.maxTravelHours || context.maxTravelHours || DEFAULT_MAX_TRAVEL_HOURS)); const queue = (context.queue || []).map((item) => normalizeItem({ ...item, maxTravelHours: item.maxTravelHours || maxTravelHours, status: 'pending', error: null })); const normalized = { ...context, smartOfferConfig: { ...(context.smartOfferConfig || {}), maxTravelHours }, calculationMode: context.calculationMode || 'per-village', version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, openerExpected: true, returnTarget: 'market-offers-menu', world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; logMarketOfferExecution('smart-offer-execution-start', { executionId: normalized.executionId, queueLength: queue.length, maxTravelHours }); queue.forEach((item) => recordItemEvent(normalized, item, 'smart-offer-item-loaded', { maxTravelHours }, window)); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
-    const initializeMarketOfferExecutionIfNeeded = (targetWindow = window) => { const url = new URL(targetWindow.location.href); const pageData = { screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), villageId: getVillageId(targetWindow), url: url.href }; logMarketOfferExecution('page-loaded', pageData); logMarketOfferExecution('auto-init-start'); if (isOwnOfferPage(targetWindow)) logMarketOfferExecution('smart-offer-page-detected', pageData); else { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-screen', ...pageData }); return false; } const execution = read(); if (!execution) { logMarketOfferExecution('execution-missing'); logMarketOfferExecution('smart-offer-resume-skipped-no-active-execution', pageData); return false; } logMarketOfferExecution('execution-found', summarizeOfferExecution(execution)); const item = getCurrentPendingOfferItem(execution); logMarketOfferExecution(item ? 'current-item-found' : 'current-item-missing', summarizeOfferExecution(execution)); if (!item && !execution.queue?.length) { logMarketOfferExecution('auto-init-skipped', { reason: 'no-current-item' }); return false; } if (item && getVillageId(targetWindow) !== String(item.villageId)) { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-village', currentVillageId: getVillageId(targetWindow), expectedVillageId: item.villageId }); return false; } return mount(targetWindow); };
+    EAS.MarketOffersExecution.start = (context) => { if (read()?.batchAuthorization && !isExecutionFinished(read())) return false; const maxTravelHours = Math.max(1, amount(context.smartOfferConfig?.maxTravelHours || context.maxTravelHours || DEFAULT_MAX_TRAVEL_HOURS)); const queue = (context.queue || []).map((item) => normalizeItem({ ...item, maxTravelHours: item.maxTravelHours || maxTravelHours, status: 'pending', error: null })); const normalized = { ...context, smartOfferConfig: { ...(context.smartOfferConfig || {}), maxTravelHours }, calculationMode: context.calculationMode || 'per-village', version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, openerExpected: true, returnTarget: 'market-offers-menu', world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; logMarketOfferExecution('smart-offer-execution-start', { executionId: normalized.executionId, queueLength: queue.length, maxTravelHours }); queue.forEach((item) => recordItemEvent(normalized, item, 'smart-offer-item-loaded', { maxTravelHours }, window)); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
+    const initializeMarketOfferExecutionIfNeeded = (targetWindow = window) => { const batch = read(); if (batch?.batchAuthorization) { if (!canResumeBatch(batch)) { disposeBatch(batch, targetWindow); return false; } return batch.executionTab === targetWindow.name ? EAS.MarketOffersExecution.resumeBatch() : false; } const url = new URL(targetWindow.location.href); const pageData = { screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), villageId: getVillageId(targetWindow), url: url.href }; logMarketOfferExecution('page-loaded', pageData); logMarketOfferExecution('auto-init-start'); if (isOwnOfferPage(targetWindow)) logMarketOfferExecution('smart-offer-page-detected', pageData); else { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-screen', ...pageData }); return false; } const execution = read(); if (!execution) { logMarketOfferExecution('execution-missing'); logMarketOfferExecution('smart-offer-resume-skipped-no-active-execution', pageData); return false; } logMarketOfferExecution('execution-found', summarizeOfferExecution(execution)); const item = getCurrentPendingOfferItem(execution); logMarketOfferExecution(item ? 'current-item-found' : 'current-item-missing', summarizeOfferExecution(execution)); if (!item && !execution.queue?.length) { logMarketOfferExecution('auto-init-skipped', { reason: 'no-current-item' }); return false; } if (item && getVillageId(targetWindow) !== String(item.villageId)) { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-village', currentVillageId: getVillageId(targetWindow), expectedVillageId: item.villageId }); return false; } return mount(targetWindow); };
     EAS.MarketOffersExecution.initialize = () => initializeMarketOfferExecutionIfNeeded(window);
-    window.EASMarketOffersDebug = { getLogs: getDebugLogs, clearLogs: clearDebugLogs, getExecution: read, getRuntime: () => getRuntime(window), exportDiagnostic: () => exportDiagnostic(window) };
+
+    // Batch adapters reuse existing preparation/parsers. No transport selector is used for offers.
+    const batchFormValues = form => {
+        const value = names => names.map(name => form?.querySelector(`select[name="${name}"], input[name="${name}"]:checked, input[name="${name}"][type="hidden"], input[name="${name}"]:not([type="radio"]):not([type="checkbox"])`)).find(Boolean)?.value;
+        return { sell: value(['sell', 'offer_amount', 'amount_sell']), buy: value(['buy', 'request_amount', 'amount_buy']),
+            multi: value(['multi']), maxTime: value(['max_time']), sellResource: value(['res_sell', 'sell_resource', 'offer_resource']), buyResource: value(['res_buy', 'buy_resource', 'request_resource']) };
+    };
+    const validateBatchForm = (item, form, button, targetWindow = window) => {
+        if (!form || !button || button.disabled || button.isConnected === false || !form.contains(button) || String(form.method).toLowerCase() !== 'post') return false;
+        const action = new URL(form.getAttribute('action') || targetWindow.location.href, targetWindow.location.href);
+        if (action.origin !== targetWindow.location.origin || action.searchParams.get('screen') !== 'market' || action.searchParams.get('mode') !== 'own_offer') return false;
+        const values = batchFormValues(form);
+        return Number(values.sell) === item.amountPerOffer && Number(values.buy) === item.requestAmountPerOffer &&
+            Number(values.multi) === item.repeatCount && Number(values.maxTime) === item.maxTravelHours &&
+            values.sellResource === item.offerResource && values.buyResource === item.requestResource;
+    };
+    const submitPreparedOffer = ({ context, item, prepared, targetWindow = window, commit }) => {
+        if (!prepared?.submit || prepared.submit.disabled || targetWindow.EASRateLimit?.check()) return { sent: false, reason: 'SUBMIT_BLOCKED' };
+        if (context.batchAuthorization && !validateBatchForm(item, prepared.form, prepared.submit, targetWindow)) return { sent: false, reason: 'FORM_CHANGED' };
+        const doc = targetWindow.document;
+        if (Number(findRepeatField(doc)?.value) !== item.repeatCount ||
+            Number(findField(doc, ['sell','offer_amount','amount_sell'])?.value) !== item.amountPerOffer ||
+            Number(findField(doc, ['buy','request_amount','amount_buy'])?.value) !== item.requestAmountPerOffer) return { sent: false, reason: 'FORM_CHANGED' };
+        if (commit() !== true || targetWindow.EASRateLimit?.check()) return { sent: false, reason: 'PERSISTENCE_OR_RATE_LIMIT' };
+        prepared.submit.click();
+        return { sent: true };
+    };
+    const inspectBatchConfirmation = (item, targetWindow = window) => {
+        const forms = [...targetWindow.document.querySelectorAll('form')].filter(form => !form.closest('[id^="eas-"]'));
+        for (const form of forms) {
+            const button = [...form.querySelectorAll('input[type="submit"],button[type="submit"]')].find(node => /^confirmar$/i.test((node.value || node.textContent || '').trim()));
+            if (!button || !validateBatchForm(item, form, button, targetWindow)) continue;
+            const fields = [...form.querySelectorAll('input,select,textarea')].filter(node => ['sell','buy','multi','max_time','res_sell','res_buy'].includes(node.name));
+            if (fields.length >= 6 && fields.every(node => node.type === 'hidden')) return { valid: true, button, form };
+        }
+        return null;
+    };
+    // Native identity parser shared by BEFORE and AFTER. Absence is never coerced to [].
+    const captureBatchSnapshot = (doc, item, targetWindow = window) => {
+        const source = 'own-offer-rows';
+        const unavailable = reason => ({ available: false, source, reason, offerIds: null, rows: [] });
+        const url = new URL(targetWindow.location.href);
+        if (url.searchParams.get('screen') !== 'market' || url.searchParams.get('mode') !== 'own_offer' ||
+            String(url.searchParams.get('village') || targetWindow.game_data?.village?.id) !== String(item.villageId) ||
+            (targetWindow.game_data?.village?.id && String(targetWindow.game_data.village.id) !== String(item.villageId))) return unavailable('SOURCE_PAGE_MISMATCH');
+        if (doc.readyState !== 'complete' || doc.querySelector('form#login, input[name="password"]')) return unavailable('PAGE_NOT_READY');
+        const nodes = [...doc.querySelectorAll('tr.offer_container')];
+        const form = doc.querySelector('[name="sell"]')?.closest('form');
+        const action = form && new URL(form.getAttribute('action') || url.href, url.href);
+        const nativeForm = form && String(form.method).toLowerCase() === 'post' && action.origin === url.origin &&
+            action.searchParams.get('screen') === 'market' && action.searchParams.get('mode') === 'own_offer' &&
+            ['sell','buy','multi','max_time'].every(name => form.querySelector(`[name="${name}"]`));
+        if (!nodes.length && !nativeForm && !doc.querySelector('#own_offers_table, [data-own-offers], .own_offers')) return unavailable('OWN_OFFERS_STRUCTURE_MISSING');
+        const integer = value => /^\d+$/.test(String(value ?? '').trim()) ? Number(value) : null;
+        const idOf = value => /^\d+$/.test(String(value ?? '').trim()) ? String(value).trim().replace(/^0+(?=\d)/, '') : null;
+        const rows = new Map();
+        for (const row of nodes) {
+            const id = idOf(row.getAttribute('data-id'));
+            if (!id || id === '0') return unavailable('OFFER_ID_MISSING');
+            const references = [row.id, ...[...row.querySelectorAll('input[name^="id_"]')].map(node => node.name),
+                ...[...row.querySelectorAll('[id^="offer_count_"], [id^="offer_time_"], [id^="offerText_"]')].map(node => node.id)].filter(Boolean);
+            if (references.some(value => !/^(offer_|id_|offer_count_|offer_time_|offerText_)\d+$/.test(value) || idOf(value.match(/\d+$/)?.[0]) !== id)) return unavailable('OFFER_ID_CONFLICT');
+            const count = integer(row.getAttribute('data-count'));
+            const countNode = row.querySelector(`[id="offer_count_${id}"]`);
+            if (countNode && integer(countNode.textContent.trim()) !== count) return unavailable('OFFER_COUNT_CONFLICT');
+            const wanted = ['wood','stone','iron'].map(resource => ({ resource, amount: integer(row.getAttribute(`data-wanted_${resource}`)) }));
+            const requested = wanted.filter(entry => entry.amount > 0);
+            const request = wanted.every(entry => entry.amount !== null) && requested.length === 1 ? requested[0] : null;
+            // Resolve resource cells by their icons, never by global TD positions or translated titles.
+            const resourceNames = ['wood','stone','iron'];
+            const nativeSelector = '.icon.header.wood, .icon.header.stone, .icon.header.iron';
+            const nativeCells = [...row.querySelectorAll('td')].filter(cell => cell.querySelector(nativeSelector));
+            const cellAmount = cell => {
+                const text = cell.textContent.trim().replace(/[\s\u00a0]/g, '');
+                if (!/^(?:\d+|\d{1,3}(?:\.\d{3})+)$/.test(text)) return null;
+                const value = Number(text.replace(/\./g, ''));
+                return Number.isSafeInteger(value) && value > 0 ? value : null;
+            };
+            const nativeValues = nativeCells.map(cell => {
+                const resources = [...new Set([...cell.querySelectorAll(nativeSelector)].flatMap(icon => resourceNames.filter(resource => icon.classList.contains(resource))))];
+                return { resource: resources.length === 1 ? resources[0] : null, amount: cellAmount(cell) };
+            });
+            // Retain the existing IMG/data-attribute variant for layouts already supported.
+            const cells = [...row.querySelectorAll('td')].map(cell => {
+                const resources = [...new Set([...cell.querySelectorAll('img[src*="wood"], img[src*="stone"], img[src*="iron"]')].map(img => img.getAttribute('src').match(/(wood|stone|iron)/)?.[1]))];
+                const value = cellAmount(cell);
+                return resources.length === 1 && value !== null ? { resource: resources[0], amount: value } : null;
+            }).filter(Boolean);
+            const explicitResource = row.dataset.offerResource || row.querySelector('[data-offer-resource]')?.dataset.offerResource;
+            const explicitAmount = integer(row.dataset.offerAmount);
+            const native = nativeCells.length > 0;
+            const offered = native ? nativeValues[0] : explicitResource && explicitAmount !== null ? { resource: explicitResource, amount: explicitAmount } : cells[0] || null;
+            const visibleRequest = native ? nativeValues[1] : cells.length > 1 ? cells[1] : null;
+            const parseIssues = [];
+            if (native && nativeValues.length !== 2) parseIssues.push('resourceCells');
+            if (!offered?.resource) parseIssues.push('offerResource');
+            if (!(offered?.amount > 0)) parseIssues.push('offerAmount');
+            if (!request) parseIssues.push('wantedAttributes');
+            if (native && !visibleRequest?.resource) parseIssues.push('wantedResource');
+            if (native && !(visibleRequest?.amount > 0)) parseIssues.push('wantedAmount');
+            if (visibleRequest && request && visibleRequest.resource !== request.resource) parseIssues.push('wantedResourceConsistency');
+            if (visibleRequest && request && visibleRequest.amount !== request.amount) parseIssues.push('wantedAmountConsistency');
+            if (native && explicitResource && explicitResource !== offered?.resource) parseIssues.push('offerResourceConsistency');
+            if (native && explicitAmount !== null && explicitAmount !== offered?.amount) parseIssues.push('offerAmountConsistency');
+            if (!(count > 0)) parseIssues.push('count');
+            const parsed = { offerId: id, count, offerResource: offered?.resource || null, offerAmount: offered?.amount ?? null,
+                requestResource: request?.resource || null, requestAmount: request?.amount ?? null,
+                parseIssues, compatibleEvidence: parseIssues.length === 0 };
+            if (rows.has(id) && JSON.stringify(rows.get(id)) !== JSON.stringify(parsed)) return unavailable('DUPLICATE_OFFER_CONFLICT');
+            rows.set(id, parsed);
+        }
+        return { available: true, source, reason: null, sourceVillageId: String(item.villageId), offerIds: [...rows.keys()], rows: [...rows.values()], capturedAt: Date.now() };
+    };
+    const reconcileBatchDom = (item, targetWindow = window, context = read()) => {
+        const before = item.attempt?.beforeSnapshot, after = captureBatchSnapshot(targetWindow.document, item, targetWindow);
+        const identityValid = before?.executionId === context?.executionId && before?.itemId === item.id &&
+            before?.attemptId === item.attempt?.attemptId && before?.sourceVillageId === String(item.villageId) && before?.itemIdentity === item.attempt?.itemIdentity;
+        const validBefore = before?.available === true && Array.isArray(before.offerIds) && identityValid;
+        const newOfferIds = validBefore && after.available ? after.offerIds.filter(id => !before.offerIds.includes(id)) : [];
+        let result = 'WAIT', reason = 'NO_NEW_OFFER', matched = null;
+        if (!validBefore) { result = 'UNCERTAIN'; reason = 'BASELINE_UNAVAILABLE_OR_MISMATCH'; }
+        else if (!after.available) reason = after.reason;
+        else if (newOfferIds.length > 1) { result = 'UNCERTAIN'; reason = 'MULTIPLE_NEW_OFFERS'; }
+        else if (newOfferIds.length === 1) {
+            const row = after.rows.find(entry => entry.offerId === newOfferIds[0]);
+            const expected = { offerResource: item.offerResource, offerAmount: item.amountPerOffer, wantedResource: item.requestResource, wantedAmount: item.requestAmountPerOffer, count: item.repeatCount };
+            const parsed = row ? { id: row.offerId, count: row.count, offerResource: row.offerResource, offerAmount: row.offerAmount, wantedResource: row.requestResource, wantedAmount: row.requestAmount } : null;
+            const mismatchFields = [...new Set([...(row?.parseIssues || []), ...Object.keys(expected).filter(key => parsed?.[key] !== expected[key])])];
+            const compatible = Boolean(row?.compatibleEvidence && mismatchFields.length === 0);
+            try { EAS.Logger?.info?.('MARKET', 'OFFER_MATCH', { executionId: context?.executionId, itemId: item.id, attemptId: item.attempt?.attemptId,
+                newOfferId: newOfferIds[0], expected, parsed, compatible, mismatchFields }); } catch {}
+            if (compatible) { result = 'SUCCESS'; reason = 'NEW_COMPATIBLE_OFFER_ID'; matched = row; }
+            else { result = 'UNCERTAIN'; reason = 'NEW_OFFER_INCOMPATIBLE_OR_UNREADABLE'; }
+        }
+        if (result === 'WAIT' && Date.now() >= item.attempt?.deadlineAt) { result = 'UNCERTAIN'; reason = after.available ? 'NO_NEW_OFFER_TIMEOUT' : after.reason; }
+        try { EAS.Logger?.info?.('MARKET', 'OFFER_RECONCILE', { executionId: context?.executionId, itemId: item.id, attemptId: item.attempt?.attemptId,
+            sourceVillageId: String(item.villageId), source: after.source, beforeOfferIds: before?.offerIds ?? null,
+            afterOfferIds: after.offerIds, newOfferIds, matchedOfferId: matched?.offerId || null, result, reason,
+            candidate: newOfferIds.length === 1 ? after.rows.find(row => row.offerId === newOfferIds[0]) : null,
+            expected: { offerResource: item.offerResource, requestResource: item.requestResource, offerAmount: item.amountPerOffer, requestAmount: item.requestAmountPerOffer, count: item.repeatCount } }); } catch {}
+        return { success: result === 'SUCCESS', uncertain: result === 'UNCERTAIN', reason, offerId: matched?.offerId || null,
+            evidence: 'new-compatible-offer-id', detectedAmount: matched?.offerAmount, detectedQuantity: matched?.count };
+    };
+    const commitBatchResult = (context, item, result, targetWindow) => {
+        const village = EAS.MarketEngine.refreshCurrentMarketVillageFromPage(targetWindow.document, item.villageId);
+        promoteExecutionSnapshot(context, village); if (!save(context)) throw Error('CACHE_PROMOTION_PERSIST_FAILED');
+        addHistory(item, 'created'); emit({ type: 'offer-created', executionId: context.executionId, queueItemId: item.id });
+    };
+    const disposeBatch = (context, targetWindow = window) => {
+        const panel = targetWindow.document.getElementById(PANEL_ID);
+        if (panel && (!context || panel.dataset.executionId === context.executionId)) EAS.Market.ExecutionPanel.dispose(panel);
+    };
+    const renderBatch = (context, controls, targetWindow) => {
+        const latest = read();
+        if (latest?.executionId === context.executionId && batchTerminal(latest) && latest.state !== 'completed') { disposeBatch(latest, targetWindow); return; }
+        if (batchTerminal(context) && context.state !== 'completed') { disposeBatch(context, targetWindow); return; }
+        const ui = EAS.Market.ExecutionPanel;
+        const panel = ui.mount({ targetWindow, executionId: context.executionId, type: 'smart-offers', title: 'Execucao de Ofertas Inteligentes', legacyId: PANEL_ID });
+        const item = context.queue[context.currentIndex], summary = completionSummary(context);
+        const finished = Boolean(context.endedAt), owned = context.executionTab === targetWindow.name;
+        const actions = finished ? [] : [{ key: 'stop', label: 'PARAR', onClick: controls.stop }];
+        if (owned && context.state !== 'running' && item && !item.attempt?.submitAt && !['rate_limited', 'uncertain'].includes(context.state)) {
+            actions.push({ key: 'continue', label: 'Continuar fila autorizada', onClick: controls.resume });
+            actions.push({ key: 'skip', label: 'Pular oferta', onClick: controls.skip });
+        }
+        ui.update(panel, { fields: [
+            { key: 'total', label: 'Total', value: context.queue.length },
+            { key: 'completed', label: 'Concluidas', value: summary.created },
+            { key: 'remaining', label: 'Restantes', value: context.queue.length - summary.created - summary.skipped },
+            { key: 'errors', label: 'Erros', value: summary.errors }, { key: 'skipped', label: 'Puladas', value: summary.skipped },
+            { key: 'origin', label: 'Aldeia origem', value: item?.villageName || item?.villageId || '-' },
+            { key: 'offer', label: 'Oferta', value: item ? `${item.repeatCount} x ${item.offerAmount} ${item.offerResource} por ${item.requestAmount} ${item.requestResource}` : '-' },
+            { key: 'state', label: 'Estado', value: context.state !== 'running' ? context.state : item?.attempt?.state || item?.status || 'completed' },
+            { key: 'duration', label: 'Tempo total', value: `${Math.floor(batchDurationMs(context) / 1000)}s` }
+        ], progress: { completed: summary.created, total: context.queue.length }, status: finished ? 'completed' : context.paused ? 'warning' : 'preparing',
+        message: finished ? `Execucao concluida. Planejadas: ${context.queue.length}. Concluidas: ${summary.created}. Puladas: ${summary.skipped}. Erros: ${summary.errors}.` : context.pauseReason || 'Executando somente a fila autorizada.', actions });
+    };
+    const loadBatch = async () => {
+        if (!EAS.MarketOffersBatch) await window.EASLoader.loadScript('services/market-offers-batch.js', { reason: 'authorized-market-batch' });
+        return EAS.MarketOffersBatch;
+    };
+    Object.assign(EAS.MarketOffersExecution, { captureBatchSnapshot, canResumeBatch, finalizeBatchStop, archiveBatch, getArchivedBatch, batchDurationMs, disposeBatch, submitPreparedOffer, validateBatchForm, inspectBatchConfirmation, reconcileBatchDom, commitBatchResult, renderBatch,
+        refreshBatchVillage: (item, targetWindow) => EAS.MarketEngine.refreshCurrentMarketVillageFromPage(targetWindow.document, item.villageId),
+        startBatch: async context => (await loadBatch()).start(context),
+        resumeBatch: async () => { const batch = await loadBatch(); await batch.resume(); return true; },
+        stopBatch: async () => (await loadBatch()).stop() });
+    window.EASMarketOffersDebug = { getLogs: getDebugLogs, clearLogs: clearDebugLogs, getExecution: read, getArchive: getArchivedBatch, getRuntime: () => getRuntime(window), exportDiagnostic: () => exportDiagnostic(window) };
     if (localStorage.getItem('eas_tw_market_offers_debug') === 'true' && !window.__easMarketOffersErrorLogging) { window.__easMarketOffersErrorLogging = true; window.addEventListener('error', (event) => logMarketOfferExecution('unexpected-error', { message: event.message, stack: event.error?.stack, file: event.filename, line: event.lineno, item: current(read()), url: location.href })); window.addEventListener('unhandledrejection', (event) => logMarketOfferExecution('unexpected-error', { message: event.reason?.message || String(event.reason), stack: event.reason?.stack, item: current(read()), url: location.href })); }
     registerMarketOfferMenuListener(window);
     Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, DEBUG_LOG_KEY, CHANNEL_NAME, EXECUTION_WINDOW_KEY, RETURN_MESSAGE_SOURCE, EXECUTION_VERSION, DEFAULT_MAX_TRAVEL_HOURS, MAX_AUTOMATIC_RETRIES, MAX_ADVANCE_ATTEMPTS, MARKET_SELECTORS, PANEL_ID, isOwnOfferPage, read, save, remove, current, getCurrentPendingOfferItem, getNextPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, getRuntime, getMenuRuntime, cleanupMarketOfferRuntime, registerPrepareAttempt, getDebugLogs, clearDebugLogs, logMarketOfferExecution, logSmartOffer, recordItemEvent, summarizeOfferExecution, completionSummary, isExecutionFinished, refreshExistingHubPanel, handleReturnMessage, registerMarketOfferMenuListener, renderReturnFallback, returnToMarketMenu, exportDiagnostic, injectLoader, watchExecutionWindow, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, reconcileQueueItem, reconcileUncertainOffer, compatibleOffer, promoteExecutionSnapshot, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, waitForElement, waitForMaxTravelTimeInput, setMaxTravelHours, snapshotOffers, detectOfferCreationSuccess, detectCreatedSmartOffer, classifyOfferResult, errorMessage, finishSuccess, advanceMarketOfferExecution, recoverAdvance, offerActionState, finishError });
