@@ -2,6 +2,7 @@ const test = require('node:test'), assert = require('node:assert/strict'), vm = 
 const source = fs.readFileSync('services/market-offers-batch.js', 'utf8');
 const executionSource = fs.readFileSync('services/market-offers-execution.js', 'utf8');
 const lifecycle = executionSource.slice(executionSource.indexOf('    const BATCH_TERMINAL'), executionSource.indexOf('    const amount ='));
+const summaryRules = executionSource.slice(executionSource.indexOf('    const isManualError'), executionSource.indexOf('    const refreshExistingHubPanel'));
 function fixture(options = {}) {
     let stored = null, now = 1000, clicks = 0, prepares = 0, sequence = 0;
     const timers = new Map(), attempts = [], logs = [], archives = new Map(); let panel = false;
@@ -21,8 +22,8 @@ function fixture(options = {}) {
             assert.equal(stored.queue[stored.currentIndex].attempt.beforeSnapshot.attemptId,item.attempt.attemptId);
             clicks++; attempts.push(item.attempt.attemptId); return { sent: true };
         },
-        reconcileBatchDom: () => ({ success: !options.uncertain && !options.ambiguous, uncertain: Boolean(options.ambiguous), reason: 'MULTIPLE_NEW_OFFERS', evidence: 'new-compatible-offer-id' }),
-        inspectBatchConfirmation: () => options.confirmation ? { valid: true, button: { click() { options.confirmations = (options.confirmations || 0) + 1; assert.ok(stored.queue[0].attempt.confirmAt); } } } : null, errorMessage: () => '', commitBatchResult() {}
+        reconcileBatchDom: () => ({ success: !options.uncertain && !options.ambiguous && stored.currentIndex !== options.uncertainAt, uncertain: Boolean(options.ambiguous), reason: 'MULTIPLE_NEW_OFFERS', evidence: 'new-compatible-offer-id' }),
+        inspectBatchConfirmation: () => options.confirmation ? { valid: true, button: { click() { options.confirmations = (options.confirmations || 0) + 1; assert.ok(stored.queue[0].attempt.confirmAt); } } } : null, errorMessage: () => options.gameError || '', commitBatchResult() {}
     };
     const w = { AbortController, name: '', location: { href: 'https://example.test/game.php?screen=market&mode=own_offer&village=9', origin: 'https://example.test', assign(url) { this.href = url; } },
         document: { body: {} }, EASLocalBuild: { execute() {} }, navigator: { locks: { request: async (key, opts, callback) => callback({}) } },
@@ -31,7 +32,7 @@ function fixture(options = {}) {
         MutationObserver: class { observe() {} disconnect() {} }
     };
     const EAS = { MarketOffersExecution: api, Logger: { info(...args) { if (options.loggerFailure) throw Error('logger'); logs.push(args); } } };
-    function load() { delete EAS.MarketOffersBatch; delete w.__EASMarketBatch; vm.runInNewContext(lifecycle + '\nObject.assign(EAS.MarketOffersExecution,{canResumeBatch,finalizeBatchStop,archiveBatch,getArchivedBatch,batchDurationMs});\n' + source, { EAS, window: w, URL, Date: { now: () => now }, Math, console, localStorage: {getItem:key=>archives.get(key)||null,setItem:(key,value)=>archives.set(key,value)} }); }
+    function load() { delete EAS.MarketOffersBatch; delete w.__EASMarketBatch; vm.runInNewContext(lifecycle + summaryRules + '\nObject.assign(EAS.MarketOffersExecution,{canResumeBatch,finalizeBatchStop,archiveBatch,getArchivedBatch,batchDurationMs,canMarkErrorAndSkip,completionSummary});\n' + source, { EAS, window: w, URL, Date: { now: () => now }, Math, console, localStorage: {getItem:key=>archives.get(key)||null,setItem:(key,value)=>archives.set(key,value)} }); }
     const f = { api, w, options, state: () => copy(stored), clicks: () => clicks, prepares: () => prepares, attempts, logs,
         batch: () => EAS.MarketOffersBatch, timers, panel:()=>panel, reload() { timers.clear(); panel=false; load(); },
         async tick(ms = 0) { now += ms; const ready = [...timers].filter(([, v]) => v.at <= now); for (const [id, entry] of ready) { if (timers.delete(id)) entry.fn(); } await EAS.MarketOffersBatch.resume(); },
@@ -137,4 +138,58 @@ test('persistent safety state wins over a stale paused=false compatibility flag'
 test('ambiguous ID reconciliation pauses immediately without another submission',async()=>{
     const f=fixture({ambiguous:true});await f.start(2);await f.tick();assert.equal(f.state().state,'uncertain');
     assert.equal(f.state().currentIndex,0);await f.tick(10000);f.reload();await f.batch().resume();assert.equal(f.clicks(),1);
+});
+const manualIdentity = f => { const c=f.state(),item=c.queue[c.currentIndex];return {executionId:c.executionId,itemId:item.id,attemptId:item.attempt.attemptId}; };
+test('84 planned: 71 completed, item 72 uncertain, manual error skip, resume item 73 and finish without resending 72',async()=>{
+    const f=fixture({uncertainAt:71,gameError:'Erro retornado pelo jogo'});await f.start(84);
+    for(let index=0;index<71;index++){await f.tick();await f.tick(700);}
+    const completed=JSON.stringify(f.state().queue.slice(0,71));
+    assert.equal(f.state().currentIndex,71);assert.equal(f.clicks(),72);
+    await f.tick();assert.equal(f.state().state,'uncertain');
+    const before=f.state().queue[71],identity=manualIdentity(f);
+    assert.equal(before.attempt.failureEvidence.gameError,'Erro retornado pelo jogo');
+    const results=await Promise.all([f.batch().markErrorAndSkip(identity),f.batch().markErrorAndSkip(identity)]);
+    assert.equal(results.filter(Boolean).length,1);assert.equal(f.state().currentIndex,72);
+    const skipped=f.state().queue[71];assert.equal(skipped.manualResolution.outcome,'error');assert.ok(skipped.attempt.revokedAt);
+    assert.equal(skipped.attempt.attemptId,before.attempt.attemptId);assert.deepEqual(skipped.attempt.beforeSnapshot,before.attempt.beforeSnapshot);
+    assert.deepEqual(skipped.attempt.failureEvidence,before.attempt.failureEvidence);assert.equal(skipped.error,before.error);
+    assert.equal(JSON.stringify(f.state().queue.slice(0,71)),completed);assert.equal(f.state().queue[72].attempt,null);
+    f.reload();await f.batch().resume();assert.equal(f.clicks(),72); // F5 between the decision and item 73
+    assert.equal(await f.batch().markErrorAndSkip(identity),false);
+    for(let index=72;index<84;index++){await f.tick(700);await f.tick();}
+    assert.equal(f.state().state,'completed');assert.equal(f.clicks(),84);assert.equal(new Set(f.attempts).size,84);
+    assert.equal(f.attempts.filter(id=>id===identity.attemptId).length,1);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.api.completionSummary(f.state()))),{created:83,errors:1,skipped:0});
+    assert.equal(JSON.stringify(f.state().queue.slice(0,71)),completed);
+    assert.notEqual(f.state().queue[72].attempt.attemptId,identity.attemptId);
+    assert.equal(f.state().queue[72].attempt.beforeSnapshot.offerIds.length,72);
+});
+test('manual error skip is unavailable while running or before submission and never bypasses STOP',async()=>{
+    const f=fixture();await f.start(2);const identity=manualIdentity(f);
+    assert.equal(f.api.canMarkErrorAndSkip(f.state()),false);assert.equal(await f.batch().markErrorAndSkip(identity),false);
+    f.batch().stop();assert.equal(await f.batch().markErrorAndSkip(identity),false);assert.equal(f.state().currentIndex,0);
+    const g=fixture({missingSnapshot:true});await g.start();assert.equal(g.api.canMarkErrorAndSkip(g.state()),false);
+});
+test('manual error skip persists before advance and refuses wrong identity or failed storage',async()=>{
+    const f=fixture({uncertain:true});await f.start(2);await f.tick(10001);const identity=manualIdentity(f);
+    assert.equal(await f.batch().markErrorAndSkip({...identity,attemptId:'wrong'}),false);assert.equal(f.state().currentIndex,0);
+    f.options.storageFailure=true;assert.equal(await f.batch().markErrorAndSkip(identity),false);
+    assert.equal(f.state().currentIndex,0);assert.equal(f.state().state,'uncertain');assert.equal(f.clicks(),1);
+});
+test('manual error skip on final item finishes with error rather than claiming success',async()=>{
+    const f=fixture({uncertain:true});await f.start(1);await f.tick(10001);const identity=manualIdentity(f);
+    assert.equal(await f.batch().markErrorAndSkip(identity),true);assert.equal(f.state().state,'completed');assert.equal(f.state().currentIndex,1);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.api.completionSummary(f.state()))),{created:0,errors:1,skipped:0});
+    assert.equal(await f.batch().markErrorAndSkip(identity),false);assert.equal(f.clicks(),1);
+});
+test('old recovery button cannot resolve a subsequent uncertain item',async()=>{
+    const f=fixture({uncertain:true});await f.start(2);await f.tick(10001);const old=manualIdentity(f);
+    await f.batch().markErrorAndSkip(old);await f.tick(700);await f.tick(10001);
+    assert.equal(f.state().currentIndex,1);assert.equal(f.api.canMarkErrorAndSkip(f.state()),true);
+    assert.equal(await f.batch().markErrorAndSkip(old),false);assert.equal(f.state().currentIndex,1);assert.equal(f.clicks(),2);
+});
+test('post-submit error permits manual resolution but rate limit never does',async()=>{
+    const f=fixture({uncertain:true});await f.start();await f.tick(10001);const c=f.state();c.state='error';c.queue[0].status='error';f.api.save(c);
+    assert.equal(f.api.canMarkErrorAndSkip(f.state()),true);f.options.rateLimited=true;
+    assert.equal(await f.batch().markErrorAndSkip(manualIdentity(f)),false);assert.equal(f.state().state,'rate_limited');assert.equal(f.state().currentIndex,0);
 });

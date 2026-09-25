@@ -54,10 +54,19 @@
         return latest?.executionId === context.executionId && latest.revision === context.revision &&
             latest.state === 'running' && !latest.paused && active(latest) && owned(latest);
     };
-    const render = context => api.renderBatch?.(context, { stop, resume: continueUnsent, skip }, w);
+    const render = context => api.renderBatch?.(context, { stop, resume: continueUnsent, skip, markErrorAndSkip }, w);
+    const preserveFailureEvidence = (item, reason) => {
+        if (!item?.attempt?.submitAt || item.attempt.failureEvidence) return;
+        // Diagnostic capture only: no change to error detection or reconciliation decisions.
+        let afterSnapshot = null, gameError = null;
+        try { afterSnapshot = api.captureBatchSnapshot(w.document, item, w); } catch {}
+        try { gameError = api.errorMessage(w.document); } catch {}
+        item.attempt.failureEvidence = { recordedAt: Date.now(), reason, gameError, afterSnapshot };
+    };
     const pause = (context, state, reason) => {
         stopLocal(); context.paused = true; context.state = state; context.pauseReason = reason;
         const item = current(context);
+        if (['uncertain', 'error'].includes(state)) preserveFailureEvidence(item, reason);
         if (item) { item.error = reason; item.retrySafe = false; if (state === 'uncertain') item.status = 'verification-required'; else if (state === 'error') item.status = 'error'; }
         try { persist(context); } catch { /* No action follows failed persistence. */ }
         log(state === 'rate_limited' ? 'MARKET_RATE_LIMITED' : state === 'uncertain' ? 'MARKET_UNCERTAIN' : 'MARKET_ERROR', context, item, { result: reason });
@@ -108,6 +117,10 @@
         if (plan(context) !== context.batchAuthorization.plan) return pause(context, 'error', 'AUTHORIZED_QUEUE_CHANGED');
         const item = current(context);
         if (!item) return pause(context, 'error', 'CURRENT_ITEM_MISSING');
+        if (item.manualResolution || item.attempt?.revokedAt) {
+            stopLocal(); context.paused = true; context.state = 'error'; context.pauseReason = 'MANUALLY_RESOLVED_ATTEMPT';
+            persist(context); render(context); return false;
+        }
         if (!validAttempt(context, item)) return pause(context, 'uncertain', 'ATTEMPT_IDENTITY_MISMATCH');
         if (context.nextAt > Date.now()) { schedule(context.nextAt - Date.now()); return true; }
         const url = new URL(w.location.href);
@@ -230,6 +243,42 @@
         if (context.currentIndex === context.queue.length) { context.endedAt = Date.now(); context.finishedAt = context.endedAt; context.state = 'completed'; }
         persist(context); render(context); return true;
     };
+    const markErrorAndSkip = identity => {
+        if (!identity || rt.busy || !w.navigator?.locks?.request) return Promise.resolve(false);
+        rt.busy = w.navigator.locks.request('eas-market-offers-execution', { ifAvailable: true }, lock => {
+            if (!lock) return false;
+            const context = api.read(), item = context && current(context);
+            if (!owned(context) || !api.canMarkErrorAndSkip(context) || !validAttempt(context, item) ||
+                context.executionId !== identity.executionId || item.id !== identity.itemId || item.attempt.attemptId !== identity.attemptId) return false;
+            if (rateLimited(context)) return false;
+            stopLocal();
+            preserveFailureEvidence(item, context.pauseReason);
+            const decidedAt = Date.now();
+            item.manualResolution = { outcome: 'error', action: 'mark-error-and-skip', decidedAt,
+                executionId: context.executionId, itemId: item.id, attemptId: item.attempt.attemptId,
+                previousStatus: item.status, previousState: context.state, previousAttemptState: item.attempt.state, reason: context.pauseReason };
+            item.status = 'skipped'; item.retrySafe = false;
+            item.attempt.revokedAt = decidedAt; item.attempt.revocationReason = 'MANUAL_ERROR_SKIP'; item.attempt.state = 'manually-skipped';
+            context.currentIndex++; context.paused = false; context.pauseReason = null; context.state = 'running';
+            delete context.navigationTarget;
+            context.nextAt = decidedAt + DELAY;
+            if (context.currentIndex === context.queue.length) {
+                context.state = 'completed'; context.endedAt = decidedAt; context.finishedAt = decidedAt; delete context.nextAt;
+            }
+            persist(context); // One durable decision + one index advance, before scheduling another item.
+            log('MARKET_ITEM_MANUALLY_SKIPPED', context, item, { outcome: 'error' });
+            log(context.endedAt ? 'MARKET_QUEUE_COMPLETED' : 'MARKET_QUEUE_ADVANCE', context, current(context));
+            render(context);
+            if (!context.endedAt && unchanged(context)) schedule(DELAY); else detach();
+            return true;
+        }).catch(error => {
+            stopLocal(); const context = api.read();
+            log('MARKET_ERROR', context, context && current(context), { result: String(error.message) });
+            if (context) render(context);
+            return false;
+        }).finally(() => { rt.busy = null; });
+        return rt.busy;
+    };
     const start = input => {
         const existing = api.read();
         if (existing && !api.isExecutionFinished(existing)) throw Error('EXISTING_MARKET_EXECUTION');
@@ -247,5 +296,5 @@
         persist(context); w.name = context.executionTab;
         log('MARKET_QUEUE_CREATED', context, current(context)); resume(); return context;
     };
-    EAS.MarketOffersBatch = { start, resume, stop, continueUnsent, skip, owned, active, stopLocal };
+    EAS.MarketOffersBatch = { start, resume, stop, continueUnsent, skip, markErrorAndSkip, owned, active, stopLocal };
 })();

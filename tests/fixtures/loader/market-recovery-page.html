@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>Market lifecycle fixture</title><body id="ds_body">
+<div id="wood">999999</div><div id="stone">999999</div><div id="iron">999999</div><div id="storage">2000000</div><div id="market_merchant_available_count">100</div><div id="market_merchant_total_count">100</div>
+<form method="post" action="?screen=market&mode=own_offer&village=675">
+<input name="sell" value="0"><input name="buy" value="0"><input name="multi" value="1"><input name="max_time" value="15">
+<input name="res_sell" type="radio" value="iron" checked><input name="res_buy" type="radio" value="wood" checked>
+<input type="submit" name="create_offer" value="Criar"></form><table id="own_offers_table"></table>
+<script>
+window.game_data={world:'test',player:{id:7,villages:1},village:{id:675,x:511,y:443,name:'test'},units:['spear','spy']};
+window.fixtureState={fetches:0,ready:0,errors:[],submissions:0};
+window.fetch=async()=>{fixtureState.fetches++;throw Error('Unexpected HTTP');};
+window.alert=message=>fixtureState.errors.push('alert: '+message);
+addEventListener('error',event=>fixtureState.errors.push(event.message));
+addEventListener('eas-tw-hub-error',event=>fixtureState.errors.push(event.detail.message));
+addEventListener('eas-tw-hub-ready',()=>fixtureState.ready++);
+document.querySelector('form').addEventListener('submit',event=>{
+ event.preventDefault();fixtureState.submissions++;
+ const state=EAS.MarketOffersExecution.read(),item=state.queue[state.currentIndex];
+ const history=JSON.parse(sessionStorage.getItem('test-offer-submissions')||'[]');history.push(item.id);sessionStorage.setItem('test-offer-submissions',JSON.stringify(history));
+ if(state.currentIndex===0){const error=document.createElement('div');error.className='error';error.textContent='Oferta recusada pelo jogo';document.body.append(error);}
+ else document.querySelector('#own_offers_table').innerHTML='<tr class="offer_container" id="offer_101" data-id="101" data-count="16" data-wanted_wood="1000" data-wanted_stone="0" data-wanted_iron="0"><td><input name="id_101" type="checkbox"></td><td><span class="icon header iron"></span>1.000</td><td><span class="icon header wood"></span>1.000</td><td id="offer_count_101">16</td></tr>';
+});
+// Virtual-time Chrome needs a deterministic adapter for browser-process locks.
+navigator.locks.request=async(name,options,callback)=>callback({name});
+</script><script src="../../../local-test/eas-tw-local.user.js"></script>

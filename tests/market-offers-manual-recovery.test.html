@@ -1,0 +1,34 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+(async()=>{
+ const failures=[];let assertions=0;const equal=(a,b,label)=>{assertions++;if(JSON.stringify(a)!==JSON.stringify(b))failures.push(label+': '+JSON.stringify(a)+' != '+JSON.stringify(b));};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));localStorage.clear();sessionStorage.clear();
+ const frame=document.createElement('iframe');document.body.append(frame);
+ async function load(reload=false){await new Promise(resolve=>{frame.onload=resolve;if(reload)frame.contentWindow.location.reload();else frame.src='fixtures/loader/market-recovery-page.html?screen=market&mode=own_offer&village=675';});const w=frame.contentWindow;for(let n=0;n<100&&!w.fixtureState.ready;n++)await wait(10);return w;}
+ let w=await load(),api=w.EAS.MarketOffersExecution;
+ const item={villageId:'675',offerResource:'iron',requestResource:'wood',offerAmount:1000,requestAmount:1000,repeatCount:16,maxTravelHours:15};
+ await api.startBatch({queue:[item,item]});
+ equal(Boolean(w.document.querySelector('[data-action="mark-error-skip"]')),false,'manual recovery hidden during normal execution');
+ await w.__EASMarketBatch.busy;await w.EAS.MarketOffersBatch.resume();
+ equal(api.read().state,'uncertain','native game error requires manual decision');
+ const failed=JSON.stringify(api.read().queue[0]),identity=api.read().queue[0].attempt.attemptId;
+ const button=w.document.querySelector('[data-action="mark-error-skip"]');equal(button?.textContent,'Marcar erro e pular','specific manual button visible');
+ equal(Boolean(w.document.querySelector('[data-action="stop"]')),true,'STOP remains a separate action');
+ const handler=button.onclick;const results=await Promise.all([handler(),handler()]);equal(results.filter(Boolean).length,1,'double click resolves one item only');
+ equal(api.read().currentIndex,1,'advance exactly one item');equal(api.read().queue[1].attempt,null,'next attempt not reused');
+ const resolved=JSON.stringify(api.read().queue[0]);equal(api.read().queue[0].attempt.attemptId,identity,'old attempt preserved');
+ equal(api.read().queue[0].attempt.failureEvidence.gameError,'Erro do Mercado: Oferta recusada pelo jogo','native game error preserved');
+ equal(Boolean(w.document.querySelector('[data-action="mark-error-skip"]')),false,'manual recovery hidden after decision');
+ w=await load(true);api=w.EAS.MarketOffersExecution;
+ for(let n=0;n<120&&!api.read().endedAt;n++)await wait(25);
+ equal(api.read().state,'completed','userscript resumes next item after F5');
+ equal(JSON.stringify(api.read().queue[0]),resolved,'F5 and next item do not modify resolved error');
+ equal(api.completionSummary(api.read()),{created:1,errors:1,skipped:0},'error is separate from ordinary skip');
+ const submissions=JSON.parse(sessionStorage.getItem('test-offer-submissions'));
+ equal(submissions.length,2,'exactly two authorized submissions total');equal(new Set(submissions).size,2,'failed offer never resent');
+ equal(w.fixtureState.fetches,0,'no background scan introduced');
+ equal(w.document.querySelector('[data-field="remaining"] span')?.textContent,'0','remaining count reaches zero');
+ equal(JSON.parse(failed).attempt.beforeSnapshot,api.read().queue[0].attempt.beforeSnapshot,'BEFORE snapshot preserved');
+ frame.remove();document.querySelector('#result').textContent=failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions';document.title=failures.length?'FAIL':'PASS';
+})().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
+</script>

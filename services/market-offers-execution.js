@@ -54,7 +54,7 @@
     const logMarketOfferExecution = (event, data = {}) => { const entry = { timestamp: Date.now(), pageUrl: location.href, villageId: window.game_data?.village?.id ?? null, event, data }; try { const logs = getDebugLogs(); logs.push(entry); localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(logs.slice(-200))); } catch {} console.debug('[EAS Market Offers]', event, data); return entry; };
     const logSmartOffer = (action, data = {}, error = null) => { const payload = { ...data, timestamp: Date.now() }; logMarketOfferExecution(`smartOffers.${action}`, payload); if (error) EAS.Log?.error?.('market.smartOffers', action, error, payload); else EAS.Log?.info?.('market.smartOffers', action, payload); return payload; };
     const recordItemEvent = (context, item, event, data = {}, targetWindow = window) => { const url = new URL(targetWindow.location.href); const entry = logMarketOfferExecution(event, { executionId: context?.executionId, itemId: item?.id, villageId: item?.villageId, ...data }); if (item) { item.diagnostic ||= {}; Object.assign(item.diagnostic, { executionId: context?.executionId, itemId: item.id, villageId: item.villageId, villageName: item.villageName, offerResource: item.offerResource, receiveResource: item.requestResource, amountPerOffer: item.amountPerOffer, repetitions: item.repeatCount, totalOffer: item.totalOfferAmount, expectedMerchants: item.merchantsRequired, currentUrl: url.href, pageMode: url.searchParams.get('mode'), persistedStatus: item.status, currentRuntimeStatus: getRuntime(targetWindow)?.preparing ? 'preparing' : item.status, lastEvent: event, lastEventAt: entry.timestamp, ...data }); item.diagnosticEvents = [...(item.diagnosticEvents || []), entry].slice(-20); if (context) save(context); } return entry; };
-    const summarizeOfferExecution = (execution) => { const queue = execution?.queue || []; const activeIndex = queue.findIndex((item, index) => index >= Number(execution?.currentIndex || 0) && !TERMINAL.has(item.status)); const currentIndex = activeIndex < 0 ? queue.length : activeIndex; const currentItem = queue[currentIndex] || null; const nextItem = queue.slice(currentIndex + 1).find((item) => !TERMINAL.has(item.status)) || null; const statuses = { pending: 0, prepared: 0, submitting: 0, created: 0, skipped: 0, error: 0 }; queue.forEach((item) => { if (Object.hasOwn(statuses, item.status)) statuses[item.status] += 1; }); return { executionVersion: execution?.version ?? null, currentIndex, queueLength: queue.length, statuses, currentItemId: currentItem?.id || null, currentItemVillageId: currentItem?.villageId || null, nextItemId: nextItem?.id || null, nextItemVillageId: nextItem?.villageId || null }; };
+    const summarizeOfferExecution = (execution) => { const queue = execution?.queue || []; const activeIndex = queue.findIndex((item, index) => index >= Number(execution?.currentIndex || 0) && !TERMINAL.has(item.status)); const currentIndex = activeIndex < 0 ? queue.length : activeIndex; const currentItem = queue[currentIndex] || null; const nextItem = queue.slice(currentIndex + 1).find((item) => !TERMINAL.has(item.status)) || null; const statuses = { pending: 0, prepared: 0, submitting: 0, created: 0, skipped: 0, error: 0 }; queue.forEach((item) => { const status = isManualError(item) ? 'error' : item.status; if (Object.hasOwn(statuses, status)) statuses[status] += 1; }); return { executionVersion: execution?.version ?? null, currentIndex, queueLength: queue.length, statuses, currentItemId: currentItem?.id || null, currentItemVillageId: currentItem?.villageId || null, nextItemId: nextItem?.id || null, nextItemVillageId: nextItem?.villageId || null }; };
     const read = () => { try { const context = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (context && (!Number.isFinite(Number(context.version)) || Number(context.version) < EXECUTION_VERSION)) { logMarketOfferExecution('execution-cleared', { reason: 'obsolete-version', summary: summarizeOfferExecution(context) }); localStorage.removeItem(STORAGE_KEY); return null; } if (context?.batchAuthorization && context.pauseReason === 'USER_STOP') { finalizeBatchStop(context); save(context); archiveBatch(context); } return context; } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'read-execution', message: error.message }); return null; } };
     const save = (context) => {
         try {
@@ -76,7 +76,14 @@
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
     const isExecutionFinished = (execution) => Boolean(execution && (batchTerminal(execution) || execution.finishedAt || execution.endedAt || (execution.queue || []).every((item) => TERMINAL.has(item.status))));
     const getMenuRuntime = (targetWindow = window) => targetWindow.EASMarketOfferMenuRuntime ||= { listenerInitialized: false, executionWindows: new Map(), handledExecutions: new Set(), channel: null };
-    const completionSummary = (execution) => ({ created: (execution?.queue || []).filter((item) => item.status === 'created').length, errors: (execution?.queue || []).filter((item) => ['error', 'verification-required'].includes(item.status)).length, skipped: (execution?.queue || []).filter((item) => ['skipped', 'cancelled', 'canceled'].includes(item.status)).length });
+    const isManualError = item => item.status === 'skipped' && item.manualResolution?.outcome === 'error';
+    const completionSummary = (execution) => ({ created: (execution?.queue || []).filter((item) => item.status === 'created').length, errors: (execution?.queue || []).filter((item) => isManualError(item) || ['error', 'verification-required'].includes(item.status)).length, skipped: (execution?.queue || []).filter((item) => ['skipped', 'cancelled', 'canceled'].includes(item.status) && !isManualError(item)).length });
+    const canMarkErrorAndSkip = context => {
+        const item = context?.queue?.[context.currentIndex];
+        return Boolean(canResumeBatch(context) && context.paused && ['uncertain', 'error'].includes(context.state) &&
+            ['verification-required', 'error'].includes(item?.status) && item.attempt?.submitAt && item.attempt.attemptId &&
+            !item.manualResolution && !item.attempt.revokedAt);
+    };
     const refreshExistingHubPanel = (targetWindow = window, execution = read()) => {
         const doc = targetWindow.document; const panel = doc?.querySelector('#eas-tw-hub-root, #eas-tw-hub-panel, #eas-market-offers');
         if (!panel) return false;
@@ -575,6 +582,10 @@
         const item = context.queue[context.currentIndex], summary = completionSummary(context);
         const finished = Boolean(context.endedAt), owned = context.executionTab === targetWindow.name;
         const actions = finished ? [] : [{ key: 'stop', label: 'PARAR', onClick: controls.stop }];
+        if (owned && canMarkErrorAndSkip(context)) {
+            const identity = { executionId: context.executionId, itemId: item.id, attemptId: item.attempt.attemptId };
+            actions.push({ key: 'mark-error-skip', label: 'Marcar erro e pular', onClick: () => controls.markErrorAndSkip(identity) });
+        }
         if (owned && context.state !== 'running' && item && !item.attempt?.submitAt && !['rate_limited', 'uncertain'].includes(context.state)) {
             actions.push({ key: 'continue', label: 'Continuar fila autorizada', onClick: controls.resume });
             actions.push({ key: 'skip', label: 'Pular oferta', onClick: controls.skip });
@@ -582,7 +593,7 @@
         ui.update(panel, { fields: [
             { key: 'total', label: 'Total', value: context.queue.length },
             { key: 'completed', label: 'Concluidas', value: summary.created },
-            { key: 'remaining', label: 'Restantes', value: context.queue.length - summary.created - summary.skipped },
+            { key: 'remaining', label: 'Restantes', value: context.queue.length - summary.created - summary.skipped - context.queue.filter(isManualError).length },
             { key: 'errors', label: 'Erros', value: summary.errors }, { key: 'skipped', label: 'Puladas', value: summary.skipped },
             { key: 'origin', label: 'Aldeia origem', value: item?.villageName || item?.villageId || '-' },
             { key: 'offer', label: 'Oferta', value: item ? `${item.repeatCount} x ${item.offerAmount} ${item.offerResource} por ${item.requestAmount} ${item.requestResource}` : '-' },
@@ -595,7 +606,7 @@
         if (!EAS.MarketOffersBatch) await window.EASLoader.loadScript('services/market-offers-batch.js', { reason: 'authorized-market-batch' });
         return EAS.MarketOffersBatch;
     };
-    Object.assign(EAS.MarketOffersExecution, { captureBatchSnapshot, canResumeBatch, finalizeBatchStop, archiveBatch, getArchivedBatch, batchDurationMs, disposeBatch, submitPreparedOffer, validateBatchForm, inspectBatchConfirmation, reconcileBatchDom, commitBatchResult, renderBatch,
+    Object.assign(EAS.MarketOffersExecution, { canMarkErrorAndSkip, captureBatchSnapshot, canResumeBatch, finalizeBatchStop, archiveBatch, getArchivedBatch, batchDurationMs, disposeBatch, submitPreparedOffer, validateBatchForm, inspectBatchConfirmation, reconcileBatchDom, commitBatchResult, renderBatch,
         refreshBatchVillage: (item, targetWindow) => EAS.MarketEngine.refreshCurrentMarketVillageFromPage(targetWindow.document, item.villageId),
         startBatch: async context => (await loadBatch()).start(context),
         resumeBatch: async () => { const batch = await loadBatch(); await batch.resume(); return true; },

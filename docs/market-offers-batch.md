@@ -147,3 +147,28 @@ as seis combinacoes de recursos, baseline vazio/com ofertas antigas, unidade
 1000/quantidade 33, multiplos IDs, campos inconsistentes e TDs adicionais.
 Esta correcao altera somente parser/matcher e diagnosticos: lifecycle, snapshot
 persistido, autorizacao, submissao, Violentmonkey, Fake e no-resend permanecem.
+
+## Recuperacao manual de resultado incerto
+
+`Marcar erro e pular` aparece apenas na aba proprietaria, em uncertain/error
+apos submissao, para a tentativa atual sem decisao anterior. O callback carrega
+executionId/itemId/attemptId do botao; clique repetido ou botao antigo nao pode
+resolver o item seguinte. A decisao usa o mesmo Web Lock do executor, verifica a
+identidade e persiste com read-back antes de agendar a continuacao.
+
+O item recebe status terminal skipped e manualResolution.outcome=error.
+Conserva erro/diagnosticos, attemptId, BEFORE e evidencias AFTER; a tentativa
+recebe revokedAt/revocationReason e nao pode executar novamente. failureEvidence
+e uma captura diagnostica passiva da pausa (ou da decisao em registros antigos),
+incluindo erro do jogo e leitura AFTER; nao altera deteccao/reconciliacao.
+Somente timers/observer/espera do item atual sao cancelados. A autorizacao da fila
+permanece valida e o proximo item usa a preparacao normal e um novo snapshot.
+
+Resumo central: a decisao manual conta como erro, nao como sucesso nem skip
+simples. No caso 84/71/item72, o final e 83 concluidas, 1 erro, 0 puladas comuns,
+0 restantes. O item com erro continua visivel como pulado manualmente. PARAR
+mantem seu significado separado: cancelamento terminal da fila inteira.
+
+Regressoes: caso 84 com erro no 72; clique duplo; callback antigo quando o proximo
+item tambem esta uncertain; F5 entre decisao e proximo envio; erro no ultimo item;
+falha de persistencia; RATE_LIMITED; ausencia do botao durante execucao normal.
