@@ -1,0 +1,54 @@
+<!doctype html><meta charset="utf-8"><title>Arrival local userscript fixture</title><body id="ds_body">
+<span id="serverDate">25/09/2026</span><span id="serverTime">00:00:00</span>
+<table id="village_info"><tr><td>South #0008</td></tr><tr><td>524|438</td></tr></table>
+<script>
+window.fixtureState={ready:0,fetches:0,submits:0,errors:[]};
+const fixtureParams=new URL(location.href).searchParams;
+window.game_data={world:'arrival-local',player:{id:7,villages:1},village:{id:103586,x:500,y:500,name:'Source'},units:['spear','spy']};
+window.Timing={getCurrentServerTime:()=>Date.UTC(2026,8,25)+performance.now()};
+window.fetch=async()=>{fixtureState.fetches++;throw Error('Unexpected bootstrap request');};
+window.alert=message=>fixtureState.errors.push(message);
+addEventListener('eas-tw-hub-ready',()=>fixtureState.ready++);
+addEventListener('eas-tw-hub-error',event=>fixtureState.errors.push(event.detail.message));
+if(new URL(location.href).searchParams.get('phase')==='prepare'){
+ document.getElementById('village_info').remove();
+ const form=document.createElement('form');form.id='command-data-form';form.action='?screen=place';
+ form.innerHTML='<div id="command_target"></div><div id="command_actions"></div><div id="place_target"><input name="input" style="display:none"><div class="village-item"><span class="village-name">South #0008 (524|438)</span></div></div><input id="unit_input_spy" name="spy" data-all-count="50"><input id="unit_input_spear" name="spear" data-all-count="20"><button type="button" id="target_support">Support</button><button type="button" id="target_attack">Attack</button>';
+ form.querySelector('#target_support').onclick=()=>fixtureState.preparedSupport=(fixtureState.preparedSupport||0)+1;
+ form.querySelector('#target_attack').onclick=()=>fixtureState.preparedAttack=(fixtureState.preparedAttack||0)+1;
+ document.body.append(form);
+}
+if(new URL(location.href).searchParams.get('try')==='confirm'){
+ document.getElementById('village_info').remove();
+ const form=document.createElement('form');form.id='command-data-form';form.action='?screen=place&action=command';
+ form.innerHTML='<input name="support" value="true"><input name="x" value="524"><input name="y" value="438"><input name="source_village" value="103586"><input name="village" value="103586"><input name="spy" value="5"><input name="spear" value="0"><button type="button" id="troop_confirm_submit">Enviar apoio</button>';
+ if(fixtureParams.get('type')==='attack')form.querySelector('[name="support"]').name='attack';
+ form.querySelector('button').onclick=()=>{
+  fixtureState.submits++;
+  const mission=EAS.MissionScheduler.load().missions[0];
+  fixtureState.persistedBeforeClick=Boolean(mission.verification?.baseline && mission.submitAuthorization?.used && mission.finalClickConsumed);
+  if(fixtureParams.get('return')==='yes'){
+   sessionStorage.setItem('arrival-fixture-posts',String(Number(sessionStorage.getItem('arrival-fixture-posts')||0)+1));
+   location.href='arrival-page.html?screen=place&village=103586&phase=after&type='+fixtureParams.get('type')+'&delayed='+fixtureParams.get('delayed');
+  }
+ };document.body.append(form);
+}
+if(fixtureParams.get('phase')==='after'){
+ document.getElementById('village_info').remove();
+ const form=document.createElement('form');form.id='command-data-form';
+ form.innerHTML='<div id="command_target"></div><div id="command_actions"></div>';document.body.append(form);
+ // Read the persisted context through the scheduler after bootstrap. The fixture
+ // adds only native outgoing DOM; it cannot mark the mission as completed.
+ addEventListener('eas-tw-hub-ready',()=>{
+  const add=()=>{
+   const mission=EAS.MissionScheduler.load().missions[0],v=mission.verification;
+   const table=document.createElement('table');
+   const date=new Date(v.submitWallTimeMs+v.travelTimeMs+8);
+   const arrival=EAS.MassSnipeExecution.formatDateTime(date);
+   table.innerHTML='<tbody><tr class="command-row"><td><span class="quickedit-out" data-id="1091585556"><a href="?screen=info_command&village=103586&id=1091585556&type=own"><span class="command_hover_details" data-command-id="1091585556" data-command-type="'+mission.commandType+'"></span><span class="quickedit-label">South #0008 (524|438)</span></a></span></td><td>'+arrival+'</td></tr></tbody>';
+   document.body.append(table);
+  };
+  setTimeout(add,fixtureParams.get('delayed')==='yes'?700:0);
+ },{once:true});
+}
+</script><script src="../../../local-test/eas-tw-local.user.js"></script>

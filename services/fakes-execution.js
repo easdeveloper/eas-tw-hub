@@ -223,7 +223,7 @@
         return `${index}:${entry?.villageId || 0}:${entry?.target || ''}`;
     };
 
-    const readOutgoingCommands = (targetWindow) => {
+    const readOutgoingCommands = (targetWindow, { readRowEvidence } = {}) => {
         const doc = targetWindow.document;
         const container = doc.querySelector('#commands_outgoings');
         const globalRows = Array.from(doc.querySelectorAll?.('.command-row') || []);
@@ -272,6 +272,9 @@
             const coordinates = [...String(label?.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].map(match => match[1]);
             const command = { id: ids[0], sourceVillageId: home || village, type: icon?.dataset.commandType || null,
                 target: coordinates.length === 1 ? coordinates[0] : null };
+            // Optional read-only enrichment for other executors. Identity,
+            // ownership and availability still come from this single parser.
+            if (readRowEvidence) command.evidence = readRowEvidence(row);
             const previous = commands.get(command.id);
             if (previous && JSON.stringify(previous) !== JSON.stringify(command)) return result(false, [], 'CONFLICTING_DUPLICATE');
             commands.set(command.id, command);

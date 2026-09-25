@@ -1,0 +1,52 @@
+<!doctype html><meta charset="utf-8"><title>Arrival page mount tests</title><pre id="result">running</pre>
+<script>
+(async()=>{const failures=[];let count=0;const check=(v,label)=>{count++;if(!v)failures.push(label);};const delay=ms=>new Promise(r=>setTimeout(r,ms));
+const frame=document.createElement('iframe');document.body.append(frame);
+try{
+frame.src='fixtures/loader/arrival-info-page.html?village=481&screen=info_village&id=9113#524;438';await new Promise(r=>frame.onload=r);
+for(let i=0;i<100&&!frame.contentWindow.fixtureState?.ready;i++)await delay(20);
+const w=frame.contentWindow,d=w.document;
+check(w.fixtureState.ready===1&&w.fixtureState.errors.length===0,'real local userscript bootstrap succeeded');
+check(!d.querySelector('#village_info'),'fixture does not provide synthetic target container');
+check(d.querySelectorAll('.command_hover_details[data-command-type="attack"]').length===26,'26 attack markers');
+check(d.querySelectorAll('.command_hover_details[data-command-type="support"]').length===65,'65 support markers');
+check(d.querySelectorAll('#eas-arrival-actions button').length===2,'bootstrap mounts ATTACK/SUPPORT from reported URL');
+check(d.querySelectorAll('[data-eas-snip]').length===25,'one SNIP per attack row, including multiple/mixed markers');
+const mounted=w.EAS.Logger.entries().find(event=>event.event==='ARRIVAL_PAGE_MOUNTED');
+check(mounted?.data.commandRows===78&&mounted.data.attackRows===25&&mounted.data.snipeButtonsInserted===25,'central logger exposes row and insertion counts');
+check([...d.querySelectorAll('tr.command-row')].filter(r=>!r.querySelector('[data-command-type="attack"]')).every(r=>!r.querySelector('[data-eas-snip]')),'support-only rows never get SNIP');
+await w.EASLocalBuild.execute('index.js',{reason:'ui-regression-reinjection'});w.EAS.ArrivalPlanner.initialize();w.EAS.ArrivalPlanner.initialize();
+check(d.querySelectorAll('#eas-arrival-actions').length===1&&d.querySelectorAll('[data-eas-snip]').length===25,'bootstrap and mount reinjection idempotent');
+const runtime=w.EAS.Runtime.get('arrival-page');
+check(runtime?.resources.observers.size===1,'single scoped observer');
+const added=d.querySelector('tr.command-row').cloneNode(true);added.querySelectorAll('[data-eas-snip]').forEach(n=>n.remove());
+added.querySelectorAll('[data-command-id]').forEach(n=>n.dataset.commandId='999001');added.querySelector('.quickedit-out').dataset.id='999001';
+d.querySelector('tbody').append(added);await delay(150);
+check(added.querySelectorAll('[data-eas-snip]').length===1&&added.querySelector('[data-eas-snip]').dataset.easSnip==='999001','dynamic insertion mounted with correct identity');
+added.querySelectorAll('[data-command-type]').forEach(n=>n.dataset.commandType='support');await delay(150);
+check(!added.querySelector('[data-eas-snip]'),'reused row becoming support loses SNIP');
+const replacement=d.querySelector('#commands_incomings').cloneNode(true);replacement.querySelectorAll('[data-eas-snip]').forEach(n=>n.remove());d.querySelector('#commands_incomings').replaceWith(replacement);await delay(150);
+check(d.querySelectorAll('[data-eas-snip]').length===25,'replacement table remounted');
+await delay(200);check(runtime.resources.timers.size===0,'own insertions settle without perpetual callbacks');
+w.EAS.Runtime.dispose('arrival-page');const detached=d.querySelector('tr.command-row').cloneNode(true);detached.querySelectorAll('[data-eas-snip]').forEach(n=>n.remove());d.querySelector('tbody').append(detached);await delay(150);
+check(!detached.querySelector('[data-eas-snip]'),'Runtime.dispose disconnects observer');
+w.EAS.ArrivalPlanner.initialize();await delay(150);check(detached.querySelectorAll('[data-eas-snip]').length===1,'explicit remount after dispose works');
+check(w.fixtureState.fetches===0,'UI mount and dynamic updates never request map_info');
+const original=w.location.href;
+w.history.replaceState({},'',original.replace('#524;438','#525;438'));
+check(w.EAS.ArrivalPlanner.resolveTarget().coords==='525|438','URL target is read afresh');
+const conflicting=d.createElement('table');conflicting.id='village_info';conflicting.innerHTML='<tr><td>524|438</td></tr>';d.querySelector('#content_value').append(conflicting);
+check(w.EAS.ArrivalPlanner.resolveTarget()===null,'contradictory DOM and URL target rejected');
+w.EAS.ArrivalPlanner.initialize();check(!d.querySelector('#eas-arrival-actions'),'refused mount does not leave stale actions');
+check(w.EAS.Logger.entries().some(event=>event.event==='ARRIVAL_PAGE_MOUNT_REFUSED'&&event.data.reason==='TARGET_URL_DOM_MISMATCH'),'central logger explains refused mount');
+conflicting.remove();w.history.replaceState({},'',original);
+frame.src='fixtures/loader/arrival-info-page.html?legacy=1&village=481&screen=info_village&id=9113#524;438';await new Promise(r=>frame.onload=r);
+for(let i=0;i<100&&!frame.contentWindow.fixtureState?.ready;i++)await delay(20);
+const legacy=frame.contentWindow;
+check(legacy.__EASFakeBootstrapMark&&legacy.EASFakeBootstrapDebug.silentExistingUIBranch===true,'exercises existing UI silent branch');
+check(legacy.fixtureState.ready===1&&legacy.fixtureState.errors.length===0,'silent bootstrap completes');
+check(legacy.document.querySelectorAll('#eas-arrival-actions button').length===2&&legacy.document.querySelectorAll('[data-eas-snip]').length===25,'silent existing UI branch also mounts Arrival');
+check(legacy.fixtureState.fetches===0,'silent mount has no background requests');
+}catch(error){failures.push(error.stack);}finally{frame.remove();}
+document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${count} assertions`;document.title=failures.length?'FAIL':'PASS';})();
+</script>

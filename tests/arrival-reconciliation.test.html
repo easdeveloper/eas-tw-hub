@@ -1,0 +1,52 @@
+<!doctype html><meta charset="utf-8"><title>Arrival reconciliation tests</title><pre id="result">running</pre>
+<script>
+(async()=>{
+ const failures=[];let assertions=0;const check=(v,m)=>{assertions++;if(!v)failures.push(m);};
+ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const frame=document.createElement('iframe');document.body.append(frame);
+ const wait=async fn=>{for(let i=0;i<150&&!fn();i++)await delay(20);if(!fn())throw Error('Fixture did not stabilize');};
+ const navigate=async query=>{frame.src='fixtures/loader/arrival-page.html?'+query;await new Promise(r=>frame.onload=r);await wait(()=>frame.contentWindow.fixtureState?.ready);return frame.contentWindow;};
+ try{
+  for(const type of ['support','attack']){
+   localStorage.removeItem('eas_tw_scheduler_v2');
+   let w=await navigate('screen=info_village&id=9113&village=103586');
+   w.sessionStorage.removeItem('arrival-fixture-posts');
+   const now=w.EAS.ArrivalPlanner.clock(),id='reconcile-'+type,attemptId=crypto.randomUUID(),tab='tab-'+type;
+   const s=w.EAS.MissionScheduler;
+   const mission=s.createMission({id,sourceModule:'arrival-planner',mode:type,type,commandType:type,villageId:'103586',villageCoord:'500|500',targetCoord:'524|438',targetVillageId:'9113',troops:{spy:5},expectedTroopsSnapshot:{spy:5},attemptId,arrivalAuthorized:true,sendAtMs:now+120000,sendTimestamp:w.EAS.ArrivalPlanner.legacyTime(now+120000),travelTimeMs:600000,status:'waiting',troopMode:'custom',preparedTroops:{spy:5},attackProcess:1,tabExecutionId:tab});
+   const state=s.load();state.activeMissionId=id;state.tabExecutions={[tab]:{missionId:id,tabExecutionId:tab,expectedVillageId:'103586',expectedTargetCoord:'524|438'}};s.persist(state);
+   w=await navigate('screen=place&phase=prepare&village=103586&eas_mission='+id+'&eas_scheduled_execution='+tab);
+   let current=w.EAS.MissionScheduler.load().missions[0];
+   check(current.outgoingBaseline?.commandIds.length===0,'real shared reader captured valid empty baseline '+type);
+   const baseline=JSON.stringify(current.outgoingBaseline);
+   w=await navigate('screen=place&try=confirm&village=103586&type='+type+'&return=yes&delayed=yes');
+   current=w.EAS.MissionScheduler.load().missions[0];
+   check(JSON.stringify(current.outgoingBaseline)===baseline,'baseline survives full navigation '+type);
+   w.EAS.MissionScheduler.updateMission(id,{sendAtMs:w.EAS.ArrivalPlanner.clock()});
+   const nextPage=new Promise(resolve=>frame.onload=resolve);
+   await w.EAS.ScheduledMissionExecution.executeScheduledAttackSend(current);
+   check(w.fixtureState.submits===1&&w.fixtureState.persistedBeforeClick,'native action once, evidence persisted before navigation '+type);
+   await nextPage;w=frame.contentWindow;await wait(()=>w.fixtureState.ready);
+   check(!new URL(w.location.href).searchParams.has('eas_mission'),'redirect strips EAS parameters '+type);
+   check(w.EAS.MissionScheduler.load().missions[0].status==='submitting','empty first return stays pending '+type);
+   const runtime=w.EAS.ScheduledMissionExecution.runtimeFor(),job=runtime.arrivalReconciliation;
+   await w.EAS.ScheduledMissionExecution.initialize();w.EAS.ArrivalExecution.outcome(w.EAS.MissionScheduler.load().missions[0],w);
+   check(runtime.arrivalReconciliation===job,'duplicate bootstrap shares verification '+type);
+   await wait(()=>w.EAS.MissionScheduler.load().missions[0].completed);
+   current=w.EAS.MissionScheduler.load().missions[0];
+   check(current.status==='sent'&&current.verification.status==='proven','completed after delayed outgoing '+type);
+   check(current.outgoingCommandId==='1091585556'&&current.verification.submitAttemptId===attemptId,'real ID and immutable attempt preserved '+type);
+   check(current.verification.attempts>1&&current.verification.attempts<=8,'bounded retry '+type);
+   check(current.verification.evidence.arrival?.precisionMs===1,'native arrival milliseconds parsed via existing date parser '+type);
+   check(!runtime.arrivalReconciliation,'job stopped on proof '+type);
+   check(w.sessionStorage.getItem('arrival-fixture-posts')==='1'&&w.fixtureState.fetches===0,'one final action, zero verification requests '+type);
+   await w.EAS.ScheduledMissionExecution.executeScheduledAttackSend(current);
+   check(w.sessionStorage.getItem('arrival-fixture-posts')==='1','consumed attempt cannot submit twice '+type);
+   w=await navigate('screen=place&village=103586&phase=prepare');
+   check(w.fixtureState.submits===0&&!w.fixtureState.preparedAttack&&!w.fixtureState.preparedSupport,'completed F5 no resend '+type);
+  }
+ }catch(error){failures.push(error.stack);}finally{frame.remove();localStorage.removeItem('eas_tw_scheduler_v2');}
+ document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS - ${assertions} assertions`;
+ document.title=failures.length?'FAIL':'PASS';
+})();
+</script>

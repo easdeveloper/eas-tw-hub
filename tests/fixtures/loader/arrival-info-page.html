@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><title>Arrival info_village bootstrap fixture</title><body id="ds_body">
+<span id="serverDate">25/09/2026</span><span id="serverTime">00:00:00</span>
+<div id="content_value"><h2>South #0008 (524|438)</h2><table class="vis"><tr><td>524|438</td></tr></table><div id="commands_incomings"><table><tbody></tbody></table></div></div>
+<script>
+// Reproduce the reported URL and marker counts without the old synthetic #village_info.
+window.fixtureState={ready:0,fetches:0,errors:[]};
+window.game_data={world:'arrival-ui',player:{id:7,villages:1},village:{id:481,x:500,y:500},units:['spy','spear']};
+window.Timing={getCurrentServerTime:()=>Date.UTC(2026,8,25)+performance.now()};
+window.fetch=async()=>{fixtureState.fetches++;throw Error('Unexpected request');};
+window.alert=message=>fixtureState.errors.push(message);
+if(new URL(location.href).searchParams.has('legacy')){
+ // Existing UI + silent userscript entry: previously returned before Arrival mount.
+ window.EAS={UI:{toggle(){},FloatingPanel:{initialize(){}}},Minting:{},Runtime:{},Log:{},Data:{Troops:{}},Selectors:{},Adapters:{},
+  Utils:{parseCoordinate:value=>{const m=String(value).match(/(\d{1,3})\|(\d{1,3})/);return m?{coordinate:m[0]}:null;}},
+  World:{getServerDateTime:()=>({available:true,date:'25/09/2026',time:'00:00:00'})},
+  MissionScheduler:{load:()=>({missions:[]}),initialize(){},log(){}},FakesExecution:{resume:()=>false},
+  SupportExecution:{initialize:()=>false},MarketOffersExecution:{initialize:()=>false}};
+}
+addEventListener('eas-tw-hub-ready',()=>fixtureState.ready++);
+addEventListener('eas-tw-hub-error',event=>fixtureState.errors.push(event.detail.message));
+const rows=document.querySelector('tbody');
+for(let i=0;i<78;i++){
+ const id=String(1050744433+i),attack=i<25;
+ const marker=type=>`<span class="command_hover_details" data-command-id="${id}" data-command-type="${type}"></span>`;
+ const row=document.createElement('tr');row.className='command-row';
+ row.innerHTML=`<td><span class="quickedit-out" data-id="${id}">${marker(attack?'attack':'support')}${i===0?marker('attack'):''}${i<12?marker('support'):''}<span class="quickedit-label">[A] - Nobre</span></span></td><td>hoje às 02:29:39:<span class="grey small">782</span></td><td><span data-endtime="1790314179">...</span></td>`;
+ rows.append(row);
+}
+</script><script src="../../../local-test/eas-tw-local.user.js"></script>

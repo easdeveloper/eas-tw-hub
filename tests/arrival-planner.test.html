@@ -1,0 +1,76 @@
+<!doctype html><meta charset="utf-8"><title>Arrival tests</title><pre id="result">running</pre>
+<div id="serverDate">25/09/2026</div><div id="serverTime">00:00:00</div>
+<table id="village_info"><tr><td><h2>South #0008</h2></td></tr><tr><td>524|438</td></tr></table>
+<table id="incomings"><tbody>
+<tr class="command-row"><td><span class="quickedit-out" data-id="1050744433"><span class="command_hover_details" data-command-id="1050744433" data-command-type="attack"></span><span class="quickedit-label">[A] - Nobre</span></span></td><td>hoje às 02:29:39: <span class="grey small">782</span></td><td><span data-endtime="1790314179">...</span></td></tr>
+<tr class="command-row"><td><span class="quickedit-out" data-id="2137233775"><span class="command_hover_details" data-command-id="2137233775" data-command-type="attack"></span><span class="quickedit-label">[A] - Nobre</span></span></td><td>hoje às 02:31:24:<span class="grey small">446</span></td><td>...</td></tr>
+<tr class="command-row"><td><span class="commandicon-ally command_hover_details" data-command-id="1423383990" data-command-type="support"></span></td><td>hoje às 19:49:58:<span class="grey small">807</span></td><td>...</td></tr>
+</tbody></table>
+<script>
+history.replaceState({}, '', '?screen=info_village&id=9113&village=103586');
+window.game_data={world:'arrival-test',player:{id:7},village:{id:103586},units:['spy','spear']};
+let now=Date.UTC(2026,8,25),clicks=0;
+// Deterministic Web Locks contract under Chrome's virtual clock.
+const locksHeld=new Set();Object.defineProperty(navigator,'locks',{configurable:true,value:{request:async(name,options,callback)=>{if(locksHeld.has(name))return callback(null);locksHeld.add(name);try{return await callback({name});}finally{locksHeld.delete(name);}}}});
+window.Timing={getCurrentServerTime:()=>now};
+window.EAS={Selectors:{},Adapters:{},World:{getWorldName:()=> 'arrival-test', getPlayer:()=>({id:7}),getServerNowTimestamp:()=>now,getServerDateTime:()=>({available:true,date:'25/09/2026',time:'00:00:00'})},
+ Data:{Troops:{getUnits:()=>['spy','spear'],getById:()=>({ownHome:{spy:50}})},Villages:{getAll:()=>[{id:103586}]}},Logger:{info(){}},UI:{},Utils:{}};
+</script>
+<script src="../core/utils.js"></script><script src="../core/ui.js"></script>
+<script src="../services/mission-scheduler.js"></script><script src="../services/scheduled-mission-execution.js"></script>
+<script src="../services/mass-snipe-execution.js"></script><script src="../services/mass-snipe-precise.js"></script>
+<script src="../services/arrival-planner.js"></script><script src="../services/arrival-execution.js"></script>
+<script>
+(async()=>{const errors=[];let count=0;const check=(value,label)=>{count++;if(!value)errors.push(label)};
+try {
+const a=EAS.ArrivalPlanner,x=EAS.ArrivalExecution,s=EAS.MissionScheduler,e=EAS.ScheduledMissionExecution;
+localStorage.removeItem(s.STORAGE_KEY);
+check(a.initialize(),'valid target'); a.initialize();
+check(document.querySelectorAll('#eas-arrival-actions').length===1,'singleton panel');
+check(document.querySelectorAll('#eas-arrival-actions button').length===2,'attack/support once');
+check(document.querySelectorAll('[data-eas-snip]').length===2,'attack only, no duplicates');
+const rows=document.querySelectorAll('tr.command-row');const one=a.parseIncoming(rows[0]),two=a.parseIncoming(rows[1]);
+check(one.enemyCommandId==='1050744433'&&two.enemyCommandId==='2137233775','same name distinct IDs');
+check(one.enemyArrivalMs%1000===782&&two.enemyArrivalMs%1000===446,'real nested milliseconds');
+check(a.parseIncoming(rows[2])===null,'support never SNIP');
+rows[1].cells[1].textContent='amanhã às 02:31:24.446';check(a.parseIncoming(rows[1]).enemyArrivalMs===Date.UTC(2026,8,26,2,31,24,446),'tomorrow server calendar');
+rows[1].cells[1].textContent='27/09/2026 02:31:24.446';check(a.parseIncoming(rows[1]).enemyArrivalMs===Date.UTC(2026,8,27,2,31,24,446),'explicit date');
+const modal=a.open('snipe_support',{id:'9113',coords:'524|438',name:'South'},one);
+check(modal.win.body.querySelector('[data-desired]').textContent.includes('982'),'default offset');
+modal.win.body.querySelector('[data-offset]').value=300;modal.win.body.querySelector('[data-offset]').dispatchEvent(new Event('input'));
+check(modal.win.body.querySelector('[data-desired]').textContent.includes('02:29:40:082'),'changed offset');modal.close();
+let mapCalls=0,abortedRequest=false;
+EAS.Data.Troops.getAll=()=>({'103586':{ownHome:{spy:50}}});
+window.fetch=async(url,{signal})=>{mapCalls++;return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>{abortedRequest=true;reject(new DOMException('cancelled','AbortError'));},{once:true}));};
+const cancelModal=a.open('snipe_support',{id:'9113',coords:'524|438',name:'South'},one);
+cancelModal.win.body.querySelector('[data-search]').click();await Promise.resolve();
+cancelModal.win.element.querySelector('[data-eas-action="close"]').click();await Promise.resolve();
+check(mapCalls===1&&abortedRequest,'modal title close aborts pending map_info, no later villages');
+const mission=s.createMission({id:'arrival-one',sourceModule:'arrival-planner',mode:'snipe_support',type:'support',commandType:'support',villageId:'103586',targetCoord:'524|438',targetVillageId:'9113',troops:{spy:5},expectedTroopsSnapshot:{spy:5},attemptId:'persistent-attempt',travelTimeMs:600000,outgoingBaseline:{missionId:'arrival-one',attemptId:'persistent-attempt',sourceVillageId:'103586',targetCoord:'524|438',commandType:'support',capturedAt:Date.now(),commandIds:[]},arrivalAuthorized:true,sendAtMs:now+1000,sendTimestamp:now+1000,status:'confirmation-ready',tabExecutionId:'tab-1',submitAuthorization:{missionId:'arrival-one',attemptId:'persistent-attempt',allowedStage:'attack-confirmation',used:false}});
+const state=s.load();state.tabExecutions={'tab-1':{missionId:mission.id,tabExecutionId:'tab-1',expectedVillageId:'103586',expectedTargetCoord:'524|438'}};s.persist(state);
+history.replaceState({},'',`?screen=place&try=confirm&village=103586&eas_mission=${mission.id}&eas_scheduled_execution=tab-1`);
+const form=document.createElement('form');form.id='command-data-form';form.action='?screen=place&action=command';
+form.innerHTML='<input name="support" value="true"><input name="x" value="524"><input name="y" value="438"><input name="source_village" value="103586"><input name="village" value="103586"><input name="spy" value="5"><input name="spear" value="0"><button id="troop_confirm_submit" type="button">Enviar apoio</button>';
+document.body.append(form);form.querySelector('button').onclick=()=>{clicks++;check(s.load().missions[0].finalClickConsumed===true,'persist/read-back before actual click');};
+check(x.context(mission).valid,'real support confirmation fields');
+for(const [field,value] of [['x','525'],['source_village','9'],['spy','6'],['support','false']]){const input=form.elements.namedItem(field),old=input.value;input.value=value;check(!x.context(mission).valid,'reject wrong '+field);input.value=old;}
+check(x.arm(mission),'existing precise scheduler armed');const timer=e.runtimeFor().arrivalTimer;check(!x.arm(mission)&&e.runtimeFor().arrivalTimer===timer,'no duplicate timer');
+// Stop the real timer without revoking mission for the deterministic deadline test.
+s.updateMission(mission.id,{arrivalAuthorized:false});x.cancelTimer(window);s.updateMission(mission.id,{arrivalAuthorized:true});
+now+=1000;
+await Promise.all([e.executeScheduledAttackSend(mission),e.executeScheduledAttackSend(mission)]);
+check(clicks===1,'exclusive concurrent submit once');
+check(s.load().missions[0].submitAttemptId==='persistent-attempt','attempt preserved across final send');
+const raw=JSON.parse(localStorage.getItem(s.STORAGE_KEY));localStorage.setItem(s.STORAGE_KEY,JSON.stringify(raw));
+check(!x.allowed(s.load().missions[0]),'consumed persisted attempt cannot resume');
+x.outcome(s.load().missions[0],window);await e.executeScheduledAttackSend(mission);
+check(clicks===1&&s.load().missions[0].status==='submitting','pending verification never resends');
+x.stopReconciliation(window);const pending=s.load().missions[0];s.updateMission(mission.id,{verification:{...pending.verification,attempts:8}});x.outcome(s.load().missions[0],window);
+check(clicks===1&&s.load().missions[0].status==='verification-required','exhausted verification no resend');
+s.updateMission(mission.id,{status:'confirmation-ready',arrivalAuthorized:true,finalClickConsumed:false,submitAttemptId:null});
+await e.executeScheduledAttackSend(mission);
+check(clicks===1&&!x.arm(s.load().missions[0]),'immutable attempt lock survives stale scheduler-context overwrite');
+s.updateMission(mission.id,{status:'completed'});check(!x.arm(s.load().missions[0]),'completed never armed');
+}catch(error){errors.push(error.stack)}
+document.getElementById('result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS — ${count} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>

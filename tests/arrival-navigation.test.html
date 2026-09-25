@@ -1,0 +1,38 @@
+<!doctype html><meta charset="utf-8"><title>Arrival navigation tests</title><pre id="result">running</pre>
+<script>
+(async()=>{const failures=[];let assertions=0;const check=(v,m)=>{assertions++;if(!v)failures.push(m);};const delay=ms=>new Promise(r=>setTimeout(r,ms));
+const frame=document.createElement('iframe');document.body.append(frame);
+const navigate=async query=>{frame.src='fixtures/loader/arrival-page.html?'+query;await new Promise(r=>frame.onload=r);for(let i=0;i<100&&!frame.contentWindow.fixtureState?.ready;i++)await delay(20);return frame.contentWindow;};
+try{
+localStorage.removeItem('eas_tw_scheduler_v2');
+let w=await navigate('screen=info_village&id=9113&village=103586');
+check(w.fixtureState.ready===1,'local VM bootstrap once');check(w.fixtureState.errors.length===0,'bootstrap no error: '+w.fixtureState.errors.join(','));
+check(w.document.querySelectorAll('#eas-arrival-actions button').length===2,'local static factory exposes arrival buttons');
+check(w.fixtureState.fetches===0&&w.fixtureState.submits===0,'idle info page zero request/send');
+const now=Math.floor(w.EAS.ArrivalPlanner.clock());
+const mission=w.EAS.MissionScheduler.createMission({id:'arrival-navigation',sourceModule:'arrival-planner',mode:'snipe_support',type:'support',commandType:'support',villageId:'103586',targetCoord:'524|438',targetVillageId:'9113',troops:{spy:5},expectedTroopsSnapshot:{spy:5},attemptId:'nav-attempt',travelTimeMs:600000,arrivalAuthorized:true,sendAtMs:now+120000,sendTimestamp:w.EAS.ArrivalPlanner.legacyTime(now+120000),status:'confirmation-ready',attackProcess:2,tabExecutionId:'nav-tab',submitAuthorization:{missionId:'arrival-navigation',attemptId:'nav-attempt',allowedStage:'attack-confirmation',used:false}});
+const state=w.EAS.MissionScheduler.load();state.activeMissionId=mission.id;state.tabExecutions={'nav-tab':{missionId:mission.id,tabExecutionId:'nav-tab',expectedVillageId:'103586',expectedTargetCoord:'524|438'}};w.EAS.MissionScheduler.persist(state);
+w.EAS.MissionScheduler.updateMission(mission.id,{status:'waiting',attackProcess:1,troopMode:'custom',preparedTroops:{spy:5}});
+w=await navigate('screen=place&phase=prepare&village=103586&eas_mission=arrival-navigation&eas_scheduled_execution=nav-tab');
+check(w.fixtureState.preparedSupport===1&&!w.fixtureState.preparedAttack,'prepares SUPPORT once using canonical resolved target');
+check(w.document.querySelector('[name="spy"]').value==='5','fills selected composition');
+check(w.EAS.MissionScheduler.load().missions[0].submitAuthorization?.attemptId==='nav-attempt','authorization persisted before opening confirmation');
+w=await navigate('screen=place&try=confirm&village=103586&eas_mission=arrival-navigation&eas_scheduled_execution=nav-tab');
+check(w.fixtureState.errors.length===0,'confirmation bootstrap no errors '+w.fixtureState.errors.join(','));
+check(w.EAS.ScheduledMissionExecution.runtimeFor().arrivalTimer?.state==='armed','restored authorized mission armed '+JSON.stringify(w.EAS.MissionScheduler.load().logs.slice(-8)));
+const timer=w.EAS.ScheduledMissionExecution.runtimeFor().arrivalTimer;await w.EAS.ScheduledMissionExecution.initialize();
+check(w.EAS.ScheduledMissionExecution.runtimeFor().arrivalTimer===timer,'reinjection timer singleton');
+check(w.fixtureState.submits===0&&w.fixtureState.fetches===0,'no early send or bootstrap map_info');
+w=await navigate('screen=place&try=confirm&village=103586');
+check(w.EAS.ScheduledMissionExecution.runtimeFor().arrivalTimer?.state==='armed','full navigation resume from session binding '+JSON.stringify(w.EAS.MissionScheduler.load().logs.slice(-8)));
+check(w.EAS.MissionScheduler.load().missions[0].attemptId==='nav-attempt','persistent attempt survives navigation');
+w.EAS.MissionScheduler.updateMission(mission.id,{status:'verification-required',finalClickConsumed:true,submitAttemptId:'nav-attempt',arrivalAuthorized:false});
+w=await navigate('screen=place&try=confirm&village=103586');
+check(!w.EAS.ScheduledMissionExecution.runtimeFor().arrivalTimer,'uncertain does not arm after F5');
+check(w.fixtureState.submits===0,'uncertain no resend');
+w.EAS.MissionScheduler.updateMission(mission.id,{status:'completed'});
+w=await navigate('screen=place&try=confirm&village=103586');
+check(!w.EAS.ScheduledMissionExecution.runtimeFor().arrivalTimer&&w.fixtureState.submits===0,'completed never resumes');
+}catch(e){failures.push(e.stack);}finally{frame.remove();localStorage.removeItem('eas_tw_scheduler_v2');}
+document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${assertions} assertions`;document.title=failures.length?'FAIL':'PASS';})();
+</script>

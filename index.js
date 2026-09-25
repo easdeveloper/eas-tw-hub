@@ -175,6 +175,19 @@
     };
 
     window.initializeMarketOfferExecutionIfNeeded = initializeMarketOfferExecutionIfNeeded;
+    const initializeArrivalIfNeeded = async () => {
+        const page = new URL(location.href);
+        const missionId = page.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId;
+        const mission = window.EAS?.MissionScheduler?.load?.().missions.find(item => item.id === missionId);
+        if (page.searchParams.get('screen') !== 'info_village' && mission?.sourceModule !== 'arrival-planner') return;
+        if (!window.EAS.Runtime?.create) await loadScript('core/runtime.js');
+        if (!window.EAS.Data?.Troops) await loadScript('core/game-data.js');
+        await loadScript('services/mass-snipe-execution.js');
+        await loadScript('services/mass-snipe-precise.js');
+        await loadScript('services/arrival-planner.js');
+        await loadScript('services/arrival-execution.js');
+        window.EAS.ArrivalPlanner.initialize();
+    };
     const initializeScheduledMissionIfNeeded = async () => {
         if (!window.EAS?.MissionScheduler?.load || !window.EAS?.ScheduledMissionExecution?.initialize) return false;
         return Boolean(await window.EAS.ScheduledMissionExecution.initialize(window));
@@ -335,6 +348,7 @@
                     window.__EASFakeBootstrapMark?.('silentExistingUIBranch', { fakeModuleAvailable: Boolean(window.EAS.FakesExecution?.initialize) });
                     await loadActiveFakeRuntime();
                     window.EAS.MissionScheduler?.initialize?.();
+                    await initializeArrivalIfNeeded();
                     await resumeEASRuntimeIfNeeded();
                     notifyReady();
                     return;
@@ -383,6 +397,7 @@
                 if (!window.EAS.AttackPreparation?.initialize) await loadScript('services/attack-preparation.js');
 
                 window.EAS.MissionScheduler.initialize();
+                await initializeArrivalIfNeeded();
                 const runtimeResumed = await resumeEASRuntimeIfNeeded();
                 if (runtimeResumed || window.__EAS_TW_SILENT_BOOTSTRAP__) {
                     window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: window.__EAS_TW_RUNTIME_RESUMED__?.type || 'silent-loader' });
@@ -444,6 +459,7 @@
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();
+                await initializeArrivalIfNeeded();
             const runtimeResumed = await resumeEASRuntimeIfNeeded();
             if (runtimeResumed || window.__EAS_TW_SILENT_BOOTSTRAP__) {
                 window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: window.__EAS_TW_RUNTIME_RESUMED__?.type || 'silent-loader' });
