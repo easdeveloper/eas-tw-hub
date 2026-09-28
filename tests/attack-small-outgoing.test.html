@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><title>Running</title><div id="fixture"></div><pre id="result"></pre>
+<script>window.EAS={};</script><script src="../services/fakes-execution.js"></script><script src="../services/arrival-execution.js"></script>
+<script>
+(async()=>{
+ const host=document.querySelector('#fixture'),load=async name=>(await fetch('fixtures/place/'+name)).text();
+ const small=await load('attack-small-rows.html'),ready=await load('ready-empty-outgoing.html'),mixed=await load('mixed-return-farm.html');
+ history.replaceState({},'',location.pathname+'?screen=place&village=675');
+ let n=0;const assert=(v,m)=>{if(!v)throw Error(m);n++;};
+ const read=()=>EAS.FakesExecution.readOutgoingCommands(window);
+ host.innerHTML=ready+small;let r=read();
+ assert(r.available&&r.commands.length===2,'two IDs, repeated markers deduplicated');
+ assert(r.commands.every(c=>c.type==='attack'),'small + spy and small + reqdef classify attack');
+ host.querySelectorAll('img:not([src$="attack_small.webp"])').forEach(e=>e.remove());
+ assert(read().available,'small alone');
+ for(const icon of ['spy','reqdef']){
+  host.innerHTML=ready+small;
+  const rows=host.querySelectorAll('tr');rows[icon==='spy'?1:0].remove();
+  host.querySelector('img[src$="attack_small.webp"]').remove();
+  assert(!read().available,icon+' alone fails closed');
+ }
+ host.innerHTML=ready+small.replaceAll('attack_small.webp','attack.webp');assert(read().available,'attack legacy + secondary');
+ host.innerHTML=ready+mixed+small;const before=read();
+ assert(before.available&&before.ignoredKnownCommands.length===1,'mixed return + small valid');
+ assert(before.commandIds.length===3&&!before.commandIds.includes('1858825865'),'return excluded');
+ const ret=host.querySelector('table').outerHTML;
+ const verification={baseline:{commandIds:before.commandIds,capturedAt:1000},sourceVillageId:'675',targetCoord:'508|410',commandType:'attack',submitStartedAt:1001};
+ const commandId='0:675:508|410';
+ const context={executionTab:'test',currentIndex:0,forwardingCommandType:'attack',queue:[{villageId:'675',target:'508|410',confirmationAttempt:{commandId,attemptId:'a',startedAt:1001,outgoingSnapshot:{commandId,attemptId:'a',executionId:'test',sourceVillageId:'675',target:'508|410',capturedAt:1000,beforeCommandIds:before.commandIds}}}]};
+ const fake=()=>EAS.FakesExecution.reconcileOutgoing(context,window),arrival=()=>EAS.ArrivalExecution.matchOutgoing(verification,read());
+ host.innerHTML+=ret.replaceAll('1858825865','1858825866');
+ assert(fake().result==='NO_NEW_COMMAND'&&arrival().reason==='NO_NEW_COMMAND','new return never MATCH in either executor');
+ // Synthetic reconciliation context, deliberately separate from the real marker fixture.
+ const row=host.querySelectorAll('tr')[2].cloneNode(true);
+ row.innerHTML=row.innerHTML.replaceAll('1532215952','1532215953');
+ row.cells[0].insertAdjacentHTML('beforeend','<a href="/game.php?screen=info_command&amp;type=own&amp;village=675&amp;id=1532215953"></a><span class="quickedit-label">(508|410)</span>');
+ host.querySelector('tbody').append(row);
+ assert(fake().result==='SUCCESS'&&fake().matchedOutgoingCommandId==='1532215953','Fake new small MATCH');
+ assert(arrival().match?.id==='1532215953','Arrival new small MATCH');
+ row.querySelector('.quickedit-label').textContent='(509|410)';
+ assert(fake().result==='TARGET_MISMATCH'&&!arrival().match,'target filters preserved');
+ for(const extra of ['attack_unknown.webp','return_farm.webp','support.webp']){
+  host.innerHTML=ready+small;host.querySelector('td').insertAdjacentHTML('beforeend',`<img src="/graphic/command/${extra}">`);
+  assert(!read().available,'unknown or conflicting primary '+extra);
+ }
+ host.innerHTML=ready+small;host.querySelector('[data-command-id]').dataset.commandType='support';assert(!read().available,'declared support conflicts');
+ host.innerHTML=ready+small.replaceAll('attack_small.webp','attack_small.png');assert(!read().available,'unproven small extension rejected');
+ host.innerHTML=ready+mixed;
+ const own=host.querySelector('table').outerHTML;
+ host.innerHTML=ready+Array.from({length:13},(_,i)=>own.replaceAll('1858825865',String(1858825865+i))).join('')+mixed.slice(mixed.indexOf('<table>',mixed.indexOf('</table>')+8));
+ r=read();assert(r.available&&r.commandRowCount===14&&r.ignoredKnownCommands.length===13&&r.commands[0].inventoryOnly,'synthetic 13 returns + foreign row inventory, no ownership invented');
+ document.title='PASS';document.querySelector('#result').textContent='PASS: '+n+' assertions';
+})().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack;});
+</script>

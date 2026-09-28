@@ -227,7 +227,7 @@
         const doc = targetWindow.document;
         const container = doc.querySelector('#commands_outgoings');
         const globalRows = Array.from(doc.querySelectorAll?.('.command-row') || []);
-        const rows = [...new Set([...globalRows.filter(row => row.querySelector?.('.quickedit-out[data-id]')),
+        const rows = [...new Set([...globalRows,
             ...Array.from(container?.querySelectorAll('tr.command-row') || [])])];
         const source = 'place-command-rows';
         const url = new URL(targetWindow.location.href);
@@ -236,7 +236,9 @@
             Boolean(doc.querySelector('#command_target')) && Boolean(doc.querySelector('#command_actions')) &&
             !doc.querySelector('[aria-busy="true"], .error_box, .error');
         const pageReady = placeStructureReady || Boolean(container && doc.readyState !== 'loading');
+        const ignoredKnownCommands = [], unknownCommandMarkers = [];
         const result = (available, commands, reason = null) => ({ available, commands,
+            recognizedCandidates: commands.length, ignoredKnownCommands, unknownCommandMarkers,
             reason: available && !commands.length ? 'EMPTY_OUTGOING_COMMANDS' : reason, source,
             sourceState: !available ? 'UNAVAILABLE' : commands.length ? 'ROWS_PRESENT' : 'EMPTY_CONFIRMED',
             pageReady, commandRowCount: globalRows.length || rows.length, commandIds: available ? commands.map(command => command.id) : null,
@@ -261,25 +263,54 @@
             let url;
             try { url = link ? new URL(link.href, targetWindow.location.href) : null; } catch { return result(false, [], 'INVALID_ROW'); }
             if (url && (url.origin !== new URL(targetWindow.location.href).origin || url.searchParams.get('screen') !== 'info_command' ||
-                (url.searchParams.has('type') && url.searchParams.get('type') !== 'own'))) return result(false, [], 'INVALID_ROW');
-            const ids = [quick?.dataset.id, ...(cancel ? [cancel.dataset.id] : []), ...(icon ? [icon.dataset.commandId] : []),
+                (url.searchParams.has('type') && !['own', 'other'].includes(url.searchParams.get('type'))))) return result(false, [], 'INVALID_ROW');
+            const markers = Array.from(row.querySelectorAll?.('[data-command-id], .quickedit[data-id], .quickedit-out[data-id]') || []);
+            const ids = [...(quick ? [quick.dataset.id] : []), ...markers.map(node => node.dataset.commandId ?? node.dataset.id), ...(cancel ? [cancel.dataset.id] : []), ...(icon ? [icon.dataset.commandId] : []),
                 ...(url ? [url.searchParams.get('id')] : [])].map(normalizeId);
-            if (!quick || ids.some(id => !id || id !== ids[0])) return result(false, [], 'INVALID_ROW');
+            if (!ids.length || ids.some(id => !id || id !== ids[0]) || row.querySelector('.quickedit-in')) return result(false, [], 'INVALID_ROW');
+            const types = new Set(Array.from(row.querySelectorAll?.('[data-command-type]') || []).map(node => node.dataset.commandType));
+            if (icon?.dataset.commandType) types.add(icon.dataset.commandType);
+            let secondarySpy = false;
+            for (const image of Array.from(row.querySelectorAll?.('img[src]') || [])) {
+                let path;
+                try { path = new URL(image.getAttribute('src'), targetWindow.location.href).pathname; } catch { continue; }
+                if (/\/graphic\/command\/attack\.(?:webp|png|gif)$/.test(path)) types.add('attack');
+                else if (path.endsWith('/graphic/command/attack_small.webp')) types.add('attack');
+                else if (path.endsWith('/graphic/command/spy.webp')) secondarySpy = true;
+                else if (path.endsWith('/graphic/command/return_farm.webp')) types.add('return_farm');
+                else if (path.includes('/graphic/command/')) types.add('unknown');
+            }
+            // Proven secondary only for an unambiguous ATTACK; never evidence
+            // of an attack on its own, nor an exemption for unknown main icons.
+            if (secondarySpy && !(types.size === 1 && types.has('attack'))) types.add('unknown');
+            if (types.size !== 1 || ![...COMMAND_TYPES, 'return_farm'].includes([...types][0])) {
+                unknownCommandMarkers.push({ id: ids[0], types: [...types] });
+                return result(false, [], 'UNCLASSIFIED_COMMAND_MARKERS');
+            }
             const home = cancel ? normalizeId(cancel.dataset.home) : null;
             const village = url?.searchParams.get('type') === 'own' ? normalizeId(url.searchParams.get('village')) : null;
             if (home && village && home !== village) return result(false, [], 'INVALID_ROW');
             const label = row.querySelector('.quickedit-label');
             const coordinates = [...String(label?.textContent || '').matchAll(/\((\d{1,3}\|\d{1,3})\)/g)].map(match => match[1]);
-            const command = { id: ids[0], sourceVillageId: home || village, type: icon?.dataset.commandType || null,
+            // type=other is useful inventory, but cannot prove our source village.
+            const command = { id: ids[0], sourceVillageId: url?.searchParams.get('type') === 'other' ? null : home || village, type: [...types][0],
                 target: coordinates.length === 1 ? coordinates[0] : null };
+            if (url?.searchParams.get('type') === 'other') command.inventoryOnly = true;
             // Optional read-only enrichment for other executors. Identity,
             // ownership and availability still come from this single parser.
-            if (readRowEvidence) command.evidence = readRowEvidence(row);
+            if (readRowEvidence && command.type !== 'return_farm') command.evidence = readRowEvidence(row);
             const previous = commands.get(command.id);
             if (previous && JSON.stringify(previous) !== JSON.stringify(command)) return result(false, [], 'CONFLICTING_DUPLICATE');
             commands.set(command.id, command);
         }
-        return result(true, [...commands.values()]);
+        // Keep returns in the identity map until duplicate/conflict validation is
+        // complete. Neither executor receives them as baseline or MATCH evidence.
+        const candidates = [];
+        for (const command of commands.values()) {
+            if (command.type === 'return_farm') ignoredKnownCommands.push({ id: command.id, type: command.type, classification: 'KNOWN_NON_CANDIDATE' });
+            else candidates.push(command);
+        }
+        return result(true, candidates);
     };
 
     // Evidence inventory only: no requests, getters on game_data, tokens or form values.
@@ -373,7 +404,7 @@
         const entry = getCurrentEntry(context), attempt = entry?.confirmationAttempt, baseline = attempt?.outgoingSnapshot;
         diagnosticLog('RECONCILE_START', context);
         const observed = readOutgoingCommands(targetWindow);
-        diagnosticLog('SNAPSHOT_AFTER_CAPTURED', context, { source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds, snapshotAvailable: observed.available, snapshotReason: observed.reason, outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null });
+        diagnosticLog('SNAPSHOT_AFTER_CAPTURED', context, { source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds, snapshotAvailable: observed.available, snapshotReason: observed.reason, ignoredKnownCommands: observed.ignoredKnownCommands, unknownCommandMarkers: observed.unknownCommandMarkers, outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null });
         const detail = { executionId: context.executionTab, commandId: getCommandKey(entry, context.currentIndex),
             attemptId: attempt?.attemptId || null, sourceVillageId: String(entry?.sourceVillageId || entry?.villageId || ''),
             expectedTarget: entry?.target, beforeCommandIds: baseline?.beforeCommandIds || null,
@@ -822,7 +853,7 @@
         if (context.autoMode && !startSnapshotPhase(context)) return { valid: false, code: 'PREPARATION_SCOPE_INVALID', message: 'Falha ao persistir fase de snapshot.' };
         diagnosticLog('SNAPSHOT_CAPTURE_START', context, { targetReady: true });
         const observed = readOutgoingCommands(targetWindow);
-        const snapshotDetail = { source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds, targetReady: true, snapshotAvailable: observed.available, snapshotReason: observed.reason,
+        const snapshotDetail = { source: observed.source, sourceState: observed.sourceState, pageReady: observed.pageReady, commandRowCount: observed.commandRowCount, commandIds: observed.commandIds, targetReady: true, snapshotAvailable: observed.available, snapshotReason: observed.reason, ignoredKnownCommands: observed.ignoredKnownCommands, unknownCommandMarkers: observed.unknownCommandMarkers,
             outgoingContainerFound: observed.outgoingContainerFound, outgoingRowsFound: observed.outgoingRowsFound,
             outgoingCommandIds: observed.available ? observed.commands.map(command => command.id) : null, documentUrl: targetWindow.location.href };
         if (observed.available) {

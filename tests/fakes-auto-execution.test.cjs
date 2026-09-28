@@ -70,7 +70,7 @@ function fixture(size = 3, startTime = 100000) {
             if(labels){const original=document.getElementById;document.getElementById=id=>id==='place_target'?{
                 querySelectorAll:()=>labels().map(name=>({querySelectorAll:()=>[name]})),querySelector:()=>null
             }:original(id);}
-            window.getComputedStyle=()=>({});document.defaultView=window;document.querySelectorAll=()=>[input];
+            window.getComputedStyle=()=>({});document.defaultView=window;document.querySelectorAll=selector=>selector==='.command-row'?[]:[input];
             window.FormData=class{getAll(name){return name==='input'?[input.value]:[];}};
             sandbox.location={...window.location,host:'test',origin:'https://test'};sandbox.sessionStorage={removeItem(){}};sandbox.EAS.World={};
             vm.runInContext(fs.readFileSync('services/place.js','utf8'),sandbox);

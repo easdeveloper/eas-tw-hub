@@ -169,7 +169,7 @@
         // This enriches the existing outgoing parser with timing only. Never
         // re-parse command identity/type/ownership in a parallel parser.
         for (const cell of Array.from(row.cells || [])) {
-            if (cell.querySelector('.quickedit-out')) continue;
+            if (cell.querySelector('.quickedit-out, .quickedit')) continue;
             const text = cell.textContent.replace(/\s+/g, ' ').replace(/(\d{1,2}:\d{2}:\d{2})[:.]\s*(\d{3})/, '$1:$2');
             if (!/\d{1,2}:\d{2}:\d{2}/.test(text)) continue;
             try {
@@ -193,7 +193,7 @@
     const matchOutgoing = (verification, observed) => {
         if (!observed.available) return { reason: observed.reason || 'DOM_UNAVAILABLE', candidates: [] };
         const added = observed.commands.filter(command => !verification.baseline.commandIds.includes(command.id));
-        const candidates = added.filter(command => (!command.sourceVillageId || command.sourceVillageId === verification.sourceVillageId) &&
+        const candidates = added.filter(command => !command.inventoryOnly && (!command.sourceVillageId || command.sourceVillageId === verification.sourceVillageId) &&
             command.type === verification.commandType && command.target === verification.targetCoord);
         const unknown = added.some(command => !command.type || !command.target);
         if (unknown || candidates.length > 1) return { reason: 'AMBIGUOUS_NEW_COMMANDS', candidates };

@@ -1,0 +1,67 @@
+<!doctype html><meta charset="utf-8"><title>Running</title><div id="fixture"></div><pre id="result"></pre>
+<span id="serverDate">27/09/2026</span>
+<script>window.EAS={Selectors:{},Adapters:{},World:{getServerDateTime:()=>({available:true,date:'27/09/2026',time:'22:31:33'})}};</script>
+<script src="../services/fakes-execution.js"></script>
+<script src="../services/mass-snipe-execution.js"></script>
+<script src="../services/arrival-execution.js"></script>
+<script>
+(async()=>{
+ const host=document.querySelector('#fixture');
+ const html=await(await fetch('fixtures/place/watchtower-command-row.html')).text();
+ const ready=await(await fetch('fixtures/place/ready-empty-outgoing.html')).text();
+ const legacy=await(await fetch('fixtures/place/outgoing-command-row.html')).text();
+ history.replaceState({},'',location.pathname+'?screen=place&village=675');
+ let n=0; const assert=(v,m)=>{if(!v)throw Error(m);n++;};
+ const read=()=>EAS.FakesExecution.readOutgoingCommands(window,{readRowEvidence:EAS.ArrivalExecution.readArrivalEvidence});
+ host.innerHTML=ready+html;
+ const before=read(),command=before.commands[0];
+ assert(before.available&&before.reason===null,'BEFORE classified');
+ assert(before.commands.length===1&&command.id==='30817114','repeated ID is one command');
+ assert(command.type==='attack','watchtower attack.webp with secondary spy.webp');
+ assert(command.sourceVillageId===null&&command.inventoryOnly,'other is not proof of own source');
+ assert(command.evidence.precisionMs===1&&command.evidence.arrivalMs%1000===215,'arrival milliseconds');
+ const row=host.querySelector('.command-row');
+ assert(row.querySelector('[data-endtime]').dataset.endtime==='1790571626','real epoch fixture');
+ row.cells[1].textContent='';
+ const fallback=read().commands[0].evidence;
+ assert(fallback.clock==='unix'&&fallback.arrivalMs===1790571626000,'epoch seconds parsed');
+ host.innerHTML=ready+html+legacy;
+ assert(read().available&&read().commands[1].type==='attack','legacy data-command-type retained');
+ host.innerHTML=ready+html+html;
+ assert(read().commands.length===1,'duplicate rows deduplicated');
+ host.innerHTML=ready+html;
+ host.querySelector('img').src='/graphic/command/unknown.webp';
+ assert(!read().available,'spy alone never classifies attack');
+ host.innerHTML=ready+html;
+ host.querySelector('[data-command-id]').dataset.commandType='support';
+ assert(!read().available,'conflicting type blocks');
+ host.innerHTML=ready+html;
+ host.querySelectorAll('[data-command-id]')[1].dataset.commandId='99';
+ assert(!read().available,'secondary conflicting ID blocks');
+ for(const keep of ['marker','quickedit','url']){
+  host.innerHTML=ready+html;
+  if(keep!=='marker')host.querySelectorAll('[data-command-id]').forEach(e=>e.removeAttribute('data-command-id'));
+  if(keep!=='quickedit')host.querySelector('.quickedit').removeAttribute('data-id');
+  if(keep!=='url')host.querySelector('a[href*="info_command"]').removeAttribute('href');
+  assert(read().commands[0]?.id==='30817114','ID fallback '+keep);
+ }
+ host.innerHTML=ready+html+legacy;
+ const own=host.querySelectorAll('.command-row')[1];
+ const label=document.createElement('span');label.className='quickedit-label';label.textContent='Attack (508|410)';own.cells[0].append(label);
+ const verification={baseline:{commandIds:before.commandIds,capturedAt:1000},sourceVillageId:'675',targetCoord:'508|410',commandType:'attack',submitStartedAt:1001};
+ const matched=EAS.ArrivalExecution.matchOutgoing(verification,read());
+ assert(matched.match?.id==='1091585556','AFTER only new own ID matches');
+ const commandId='0:675:508|410';
+ const context={executionTab:'test-tab',currentIndex:0,forwardingCommandType:'attack',queue:[{villageId:'675',target:'508|410',confirmationAttempt:{
+  commandId,attemptId:'test-attempt',startedAt:1001,outgoingSnapshot:{commandId,attemptId:'test-attempt',executionId:'test-tab',sourceVillageId:'675',target:'508|410',capturedAt:1000,beforeCommandIds:before.commandIds}
+ }}]};
+ const fake=EAS.FakesExecution.reconcileOutgoing(context,window);
+ assert(fake.result==='SUCCESS'&&fake.matchedOutgoingCommandId==='1091585556'&&fake.newCommandIds.length===1,'Fake AFTER only new own ID matches');
+ assert(!EAS.ArrivalExecution.matchOutgoing(verification,before).match,'baseline never new');
+ host.innerHTML=ready+html.replaceAll('30817114','30817115').replace('Explorador','Attack (508|410)');
+ assert(!EAS.ArrivalExecution.matchOutgoing(verification,read()).match,'new other command never proves own send');
+ host.innerHTML=ready+legacy+html.replace('/graphic/command/attack.webp','/graphic/command/unknown.webp');
+ assert(!read().available,'unknown row beside valid row blocks');
+ document.title='PASS';document.querySelector('#result').textContent='PASS: '+n+' assertions';
+})().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack;});
+</script>
