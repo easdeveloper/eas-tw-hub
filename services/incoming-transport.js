@@ -33,7 +33,25 @@
         for (const [key, value] of Object.entries({ village: window.game_data.village.id, screen: 'overview_villages', mode: 'incomings', type: 'unignored', subtype: 'attacks' })) url.searchParams.set(key, value);
         const response = await request(url, { signal });
         const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-        return EAS.IncomingParser.parse(doc, response.url || url.href);
+        const base = response.url || url.href;
+        try { return EAS.IncomingParser.parse(doc, base); }
+        catch (error) {
+            if (!['INCOMING_PAGINATION', 'INCOMING_PAGINATION_CONTROL', 'PARTIAL_PAGE_SELECTED'].includes(error.reasonCode)) throw error;
+            // BR143's complete attacks variant is NOT mode=incomings + page=-1.
+            // Preserve request context, never follow the global subtype=all filter.
+            const allUrl = new URL(base);
+            allUrl.searchParams.delete('mode');
+            allUrl.searchParams.set('screen', 'overview_villages');
+            allUrl.searchParams.set('page', '-1');
+            allUrl.searchParams.set('type', 'unignored');
+            allUrl.searchParams.set('subtype', 'attacks');
+            // At most one additional GET; partial rows never reach the model.
+            const allResponse = await request(allUrl, { signal });
+            const allDoc = new DOMParser().parseFromString(await allResponse.text(), 'text/html');
+            const finalUrl = allResponse.url || allUrl.href;
+            if (new URL(finalUrl).searchParams.get('page') !== '-1') throw Object.assign(Error('INCOMING_INCOMPLETE_PAGE'), { reasonCode: 'ALL_VIEW_UNCONFIRMED' });
+            return EAS.IncomingParser.parse(allDoc, finalUrl);
+        }
     });
     const travel = (attack, signal) => {
         check(signal);

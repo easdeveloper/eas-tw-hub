@@ -8,6 +8,9 @@
     const status = () => { const state = store.read(); return { ...state, socketStatus: EAS.IncomingSocket.status().state, active: Boolean(runtime), lastEventAt: store.events().at(-1)?.detectedAt || null, transportConfigured: Boolean(window.EASDiscordBridge?.configured?.()) }; };
     const schedule = (delay = 250) => {
         if (!runtime) { log('RECONCILE_SKIPPED', { reason: 'MONITOR_DISABLED' }); return; }
+        // Socket bursts cannot pull an open circuit's timer forward.
+        const state = store.read();
+        delay = Math.max(delay, (state.circuit?.retryAfter || 0) - Date.now());
         const due = Date.now() + Math.max(250, delay);
         if (timer != null && timerDue <= due) { log('RECONCILE_SKIPPED', { reason: 'DEBOUNCED', dueAt: timerDue }); return; }
         if (timer != null) runtime.clearTimeout(timer);
@@ -34,9 +37,10 @@
             hints++; lockRetries = 0; schedule();
         }).catch(() => log('RECONCILE_FAILED', { reason: 'EVENT_PERSIST_FAILED' }));
     };
-    const process = async (state, entry, runSignal, alive) => {
+    const process = async (state, entry, runSignal, alive, setStage) => {
         if (entry.baseline || entry.state === 'ENDED') return;
         if (!entry.classification && Number.isFinite(entry.firstDetectedAt)) {
+            setStage('CLASSIFICATION');
             await transport.pace(runSignal);
             entry.classification = model.classify(entry.arrivalAt, entry.firstDetectedAt, await transport.travel(entry, runSignal));
             if (!alive()) return;
@@ -45,6 +49,7 @@
         if (['pending', 'uncertain'].includes(entry.label.status) && entry.name === entry.label.value) { entry.label.status = 'applied'; entry.state = 'LABEL_APPLIED'; store.write(state); }
         const label = model.label(entry);
         if (state.config.labels && label && label !== entry.name && label !== entry.label.value && entry.label.status !== 'pending' && entry.label.status !== 'uncertain') {
+            setStage('LABEL');
             if (!alive()) return;
             await transport.pace(runSignal);
             entry.label = { status: 'pending', value: label }; store.write(state);
@@ -53,6 +58,7 @@
             if (!alive()) return; store.write(state); transport.check(runSignal);
         }
         if (!state.config.discord || !window.EASDiscordBridge?.configured?.()) return;
+        setStage('DISCORD');
         const signature = JSON.stringify(model.message(entry));
         const discord = entry.discord;
         if (discord.status === 'pending' || discord.status === 'uncertain' || discord.signature === signature || discord.failedSignature === signature) return;
@@ -91,26 +97,47 @@
             }
             lockRetries = 0;
             const state = store.read();
-            if (!state.config.enabled || state.failures >= 3) {
-                log('RECONCILE_SKIPPED', { reason: !state.config.enabled ? 'MONITOR_DISABLED' : 'FAILURE_LIMIT', failures: state.failures }); return false;
+            if (!state.config.enabled) { log('RECONCILE_SKIPPED', { reason: 'MONITOR_DISABLED' }); return false; }
+            // Migrate the old persisted terminal guard without discarding its failures.
+            if (state.failures >= 3 && !state.circuit) {
+                state.circuit = { retryAfter: Date.now() + 60000, cooldownMs: 60000 };
+                state.recoveryBaseline = true; store.write(state);
+                log('CIRCUIT_OPEN', { failures: state.failures, retryAfter: state.circuit.retryAfter });
+                log('RECOVERY_SCHEDULED', { retryAfter: state.circuit.retryAfter });
+            }
+            const recovering = Boolean(state.circuit);
+            if (recovering && Date.now() < state.circuit.retryAfter) {
+                log('RECONCILE_SKIPPED', { reason: 'CIRCUIT_OPEN', failures: state.failures, retryAfter: state.circuit.retryAfter });
+                schedule(state.circuit.retryAfter - Date.now()); return false;
             }
             const events = store.events(), eventIds = events.map(event => event.id || `${event.type}:${event.target}:${event.receivedAt}`);
             const newHint = eventIds.some(id => !state.seenEvents?.includes(id));
             if (Date.now() < state.nextReadAt) { log('RECONCILE_SKIPPED', { reason: 'READ_BACKOFF', dueAt: state.nextReadAt }); schedule(state.nextReadAt - Date.now()); return false; }
-            if (state.initialized && !newHint && Date.now() < (state.nextWatchAt || 0)) {
+            if (!recovering && state.initialized && !newHint && Date.now() < (state.nextWatchAt || 0)) {
                 log('RECONCILE_SKIPPED', { reason: 'NO_RELEVANT_CHANGE' });
                 if (Object.values(state.attacks).some(entry => !entry.baseline && entry.state !== 'ENDED' && entry.watchtower.state !== 'detected' && entry.watchtower.state !== 'not-applicable')) schedule(state.nextWatchAt - Date.now());
                 return false;
             }
+            let stage = 'PRECHECK';
+            if (recovering) log('RECOVERY_START', { failures: state.failures });
             try {
                 transport.check(runSignal);
                 // Shared across tabs/documents: even socket floods cannot bypass
                 // the minimum request interval or the persisted backoff.
                 state.nextReadAt = Date.now() + 3000; store.write(state);
+                stage = 'OVERVIEW';
                 const rows = await transport.overview(runSignal);
                 if (!alive()) return false;
                 const now = clock(), wasInitialized = state.initialized, previous = JSON.parse(JSON.stringify(state.attacks));
-                model.merge(state, rows, events, now); store.prune(state, now); store.write(state);
+                stage = 'MERGE';
+                model.merge(state, rows, events, now);
+                // Commands first seen after an unreadable gap form a silent baseline.
+                // Existing identities, sent signatures and uncertain intents stay intact.
+                if (state.recoveryBaseline) for (const entry of Object.values(state.attacks)) {
+                    if (!previous[entry.commandId]) { entry.baseline = true; entry.state = 'BASELINED'; entry.firstDetectedAt = null; }
+                }
+                store.prune(state, now); store.write(state);
+                stage = 'PROCESS';
                 if (!wasInitialized && rows.length === 0) log('BASELINE_EMPTY', { count: 0, persisted: true });
                 for (const entry of Object.values(state.attacks)) {
                     if (!previous[entry.commandId] && !entry.baseline) log('NEW_INCOMING', { commandId: entry.commandId, firstDetectedAt: entry.firstDetectedAt });
@@ -129,7 +156,7 @@
                     // A batch is capped; remaining entries resume on the next
                     // controlled reconciliation rather than a request burst.
                     if (++budget > 3) { backlog = true; break; }
-                    await process(state, entry, runSignal, alive);
+                    await process(state, entry, runSignal, alive, value => { stage = value; });
                 }
                 if (!alive()) return false;
                 const used = new Set(Object.values(state.attacks).flatMap(entry => entry.detectionEventIds || []));
@@ -138,19 +165,39 @@
                 state.hintPasses = state.hintSignature === hintSignature ? (state.hintPasses || 0) + 1 : 1;
                 state.hintSignature = hintSignature;
                 const retryHint = wasInitialized && unmatched.length > 0 && state.hintPasses < 3;
-                state.failures = 0; state.lastError = null; state.seenEvents = eventIds; state.nextWatchAt = Date.now() + (backlog || retryHint ? 3000 : 60000); store.write(state);
-                log('RECONCILE_RESULT', { count: rows.length, newCount: rows.filter(row => !previous[row.commandId] && wasInitialized).length, knownCount: rows.filter(row => Boolean(previous[row.commandId]) || !wasInitialized).length, lastReconciledAt: now });
+                state.failures = 0; state.lastError = null; state.circuit = null; state.recoveryBaseline = false; state.seenEvents = eventIds; state.nextWatchAt = Date.now() + (backlog || retryHint ? 3000 : 60000); store.write(state);
+                if (recovering) log('RECOVERY_SUCCESS', { failures: 0, count: rows.length });
+                log('RECONCILE_RESULT', { count: rows.length, newCount: rows.filter(row => !previous[row.commandId] && !state.attacks[row.commandId]?.baseline).length, knownCount: rows.filter(row => Boolean(previous[row.commandId]) || !wasInitialized).length, lastReconciledAt: now });
                 const tracked = Object.values(state.attacks).some(entry => entry.state !== 'ENDED' && !entry.baseline &&
                     (entry.label.status === 'pending' || entry.watchtower.state === 'pending' || entry.watchtower.state === 'watching' || entry.watchtower.state === 'unknown'));
                 if (backlog || retryHint) schedule(3000); else if (tracked) schedule(60000);
                 return true;
             } catch (error) {
                 if (!alive()) return false;
-                state.failures++; state.lastError = window.EASRateLimit?.check() ? 'RATE_LIMITED' : /^[A-Z_0-9]+$/.test(error?.message || '') ? error.message : 'RECONCILIATION_UNAVAILABLE';
-                state.nextReadAt = Date.now() + [5000, 15000, 60000][Math.min(2, state.failures - 1)];
-                if (state.lastError === 'RATE_LIMITED') state.failures = 3;
-                store.write(state); log('RECONCILE_FAILED', { reason: state.lastError, reasonCode: ['LOGIN_PAGE', 'GAME_ERROR', 'PARTIAL_PAGE_SELECTED', 'INCOMING_PAGINATION', 'INCOMING_PAGINATION_CONTROL', 'COMMAND_TYPE_CONFLICT', 'ORPHAN_COMMAND_MARKERS', 'EMPTY_STRUCTURE_MISSING', 'COMMAND_ROW_INVALID'].includes(error?.reasonCode) ? error.reasonCode : null, failures: state.failures });
-                if (state.failures < 3) schedule(state.nextReadAt - Date.now());
+                // Only enumerated metadata is retained; never error text, URLs or bodies.
+                const message = String(error?.message || '');
+                const reason = window.EASRateLimit?.check() || message === 'RATE_LIMITED' ? 'RATE_LIMITED'
+                    : /^INCOMING_HTTP_[1-5][0-9]{2}$/.test(message) ? message
+                    : ['INCOMING_INCOMPLETE_PAGE', 'INCOMING_PAGE_MISMATCH', 'INCOMING_DUPLICATE_CONFLICT', 'INCOMING_STORAGE_INVALID', 'INCOMING_STORAGE_LIMIT', 'INCOMING_READBACK_FAILED', 'MONITOR_STOPPED'].includes(message) ? message
+                    : error?.name === 'AbortError' ? 'REQUEST_ABORTED' : 'RECONCILIATION_UNAVAILABLE';
+                const parserReason = ['LOGIN_PAGE', 'GAME_ERROR', 'PARTIAL_PAGE_SELECTED', 'INCOMING_PAGINATION', 'INCOMING_PAGINATION_CONTROL', 'ALL_VIEW_UNCONFIRMED', 'COMMAND_TYPE_CONFLICT', 'ORPHAN_COMMAND_MARKERS', 'EMPTY_STRUCTURE_MISSING', 'COMMAND_ROW_INVALID'].includes(error?.reasonCode) ? error.reasonCode : null;
+                const failure = { timestamp: Date.now(), reason, failures: state.failures, stage,
+                    httpStatus: Number(/^INCOMING_HTTP_(\d{3})$/.exec(reason)?.[1]) || null,
+                    parserReason, paginationDetected: Boolean(parserReason && /PAGINATION|PAGE_SELECTED|ALL_VIEW/.test(parserReason)) };
+                log('RECONCILE_FAILED', failure); // Before increment and circuit transition.
+                state.failureHistory = [...(state.failureHistory || []), failure].slice(-12);
+                state.failures++; state.lastError = reason; state.recoveryBaseline = true;
+                if (reason === 'RATE_LIMITED') state.failures = Math.max(3, state.failures);
+                if (state.failures >= 3) {
+                    const cooldownMs = recovering ? Math.min(900000, state.circuit.cooldownMs * 2) : 60000;
+                    state.circuit = { cooldownMs, retryAfter: Date.now() + cooldownMs };
+                    state.nextReadAt = state.circuit.retryAfter;
+                    if (recovering) log('RECOVERY_FAILED', failure);
+                    log('CIRCUIT_OPEN', { failures: state.failures, retryAfter: state.nextReadAt });
+                    log('RECOVERY_SCHEDULED', { retryAfter: state.nextReadAt });
+                } else state.nextReadAt = Date.now() + [5000, 15000][state.failures - 1];
+                store.write(state);
+                schedule(state.nextReadAt - Date.now());
                 return false;
             }
         }).catch(() => { log('RECONCILE_FAILED', { reason: 'STORAGE_OR_LOCK_UNAVAILABLE' }); return false; }).finally(() => {
@@ -176,7 +223,7 @@
         stop();
         await navigator.locks.request(store.key() + ':run', async () => {
             const state = store.read(); state.config = { enabled: Boolean(config.enabled), discord: Boolean(config.discord), labels: Boolean(config.labels) };
-            state.failures = 0; store.write(state);
+            state.failures = 0; state.circuit = null; store.write(state);
         });
         if (config.enabled) start();
     };

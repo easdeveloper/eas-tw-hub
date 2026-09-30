@@ -15,7 +15,7 @@ function fixture() {
     const EAS = { IncomingSocket: { start() {}, stop() {}, status: () => ({state:'connected'}) }, World: { getWorldName: () => 'br143', getPlayer: () => ({ id: 7 }) },
         Logger: { info: (...args) => logs.push(args) }, MassSnipeExecution: { getCurrentServerTimeMs: () => now },
         IncomingParser: { coordinate: text => /\((\d+\|\d+)\)/.exec(text)?.[1] || null },
-        IncomingTransport: { check() {}, pace: async () => {}, overview: async () => { reads++; if (waits) await waits; if (requestError) throw Error(requestError); return structuredClone(rows); },
+        IncomingTransport: { check() {}, pace: async () => {}, overview: async () => { reads++; if (waits) await waits; if (requestError) throw typeof requestError === 'string' ? Error(requestError) : requestError; return structuredClone(rows); },
             travel: async () => ({ ram: 600000, catapult: 600000, spy: 300000 }),
             rename: async (entry, value) => { labels.push({ id: entry.commandId, value }); },
             discord: async entry => { messages.push(structuredClone(entry)); if (transportError) throw Error(transportError); return { id: entry.discord.messageId || '999' }; } } };
@@ -67,12 +67,12 @@ test('startup baselines only, new attack labels once, Discord create then edit e
     assert.equal(f.store.read().attacks['2'].firstDetectedAt,first);assert.equal(f.store.read().attacks['2'].classification.candidates.length,2);
     f.api.stop();f.api.start();f.advance();await f.api.reconcile();assert.equal(f.messages.length,2);
 });
-test('reconciliation is single-flight, rate bounded, failures terminate after three attempts', async () => {
+test('reconciliation is single-flight, rate bounded, three failures open a cooldown circuit', async () => {
     const f=fixture();let release;f.wait(new Promise(resolve=>release=resolve));f.api.start();
     const a=f.api.reconcile(),b=f.api.reconcile();assert.equal(a,b);assert.equal(f.reads(),1);release();await a;f.wait(null);
     await f.api.reconcile();assert.equal(f.reads(),1);
     f.requestError('INCOMING_INCOMPLETE_PAGE');for(const ms of [60000,5000,15000]){f.advance(ms);await f.api.reconcile();}
-    assert.equal(f.store.read().failures,3);f.advance(60000);await f.api.reconcile();assert.equal(f.reads(),4);
+    assert.equal(f.store.read().failures,3);f.advance(59000);await f.api.reconcile();assert.equal(f.reads(),4);
 });
 test('Discord response loss persists uncertain intent and never retries creation on reload', async () => {
     const f=fixture();f.rows([f.row('1')]);f.api.start();await f.api.reconcile();f.advance();f.rows([f.row('1'),f.row('2')]);f.transportError('lost');
@@ -118,10 +118,61 @@ test('attack packet preceding overview row keeps initial time through bounded vi
 });
 
 const flushEvents = () => new Promise(resolve => setImmediate(resolve));
+test('67 attacks: partial reads preserve identity, circuit absorbs socket burst, recovery baselines gap and resumes once', async () => {
+    const f=fixture();f.api.start();await f.api.reconcile();f.advance(3000);
+    const sent=f.row('1',{arrivalAt:f.context.Date.now()+3600000});f.rows([sent]);await f.event();await f.api.reconcile();
+    assert.equal(f.messages.length,1);
+    const before=JSON.stringify(f.store.read().attacks);
+    f.requestError(Object.assign(Error('INCOMING_INCOMPLETE_PAGE'),{reasonCode:'INCOMING_PAGINATION'}));
+    for(const ms of [60000,5000,15000]){if(ms===15000)f.requestError(Object.assign(Error('INCOMING_INCOMPLETE_PAGE'),{reasonCode:'ALL_VIEW_UNCONFIRMED'}));f.advance(ms);await f.api.reconcile();}
+    let state=f.store.read();assert.equal(state.failures,3);assert.equal(JSON.stringify(state.attacks),before);
+    assert.equal(state.failureHistory.length,3);assert.equal(state.failureHistory[0].failures,0);
+    assert.equal(state.failureHistory[0].stage,'OVERVIEW');assert.equal(state.failureHistory[0].parserReason,'INCOMING_PAGINATION');
+    const reads=f.reads(),due=state.circuit.retryAfter;
+    for(let i=0;i<67;i++)f.api.signal('attack',{target_village_name:'Target (520|452)'});
+    await flushEvents();await f.api.reconcile();assert.equal(f.reads(),reads);assert.equal(f.timers.size,1);
+    assert.equal(f.store.read().circuit.retryAfter,due);
+    f.requestError(null);f.rows([sent,...Array.from({length:66},(_,i)=>f.row(String(i+2)))]);
+    f.advance(due-f.context.Date.now());let release;f.wait(new Promise(r=>release=r));
+    const a=f.api.reconcile(),b=f.api.reconcile();assert.equal(a,b);assert.equal(f.reads(),reads+1);
+    release();await a;f.wait(null);state=f.store.read();assert.equal(state.failures,0);assert.equal(state.circuit,null);
+    assert.equal(Object.keys(state.attacks).length,67);assert.equal(state.attacks['67'].baseline,true);
+    assert.equal(f.messages.length,1);assert.equal(state.attacks['1'].discord.messageId,'999');
+    assert.equal(f.logs.filter(x=>x[1]==='RECOVERY_START').length,1);assert.equal(f.logs.filter(x=>x[1]==='RECOVERY_SUCCESS').length,1);
+    f.advance(60000);await f.event();f.rows([sent,...Array.from({length:67},(_,i)=>f.row(String(i+2)))]);await f.api.reconcile();
+    assert.equal(f.logs.filter(x=>x[1]==='NEW_INCOMING'&&x[2].commandId==='68').length,1);
+    assert.equal(f.logs.filter(x=>x[1]==='DISCORD_SENT'&&x[2].commandId==='68').length,1);
+    f.api.stop();vm.runInContext('delete EAS.IncomingMonitor',f.context);
+    vm.runInContext(fs.readFileSync('services/incoming-monitor.js','utf8'),f.context);
+    f.EAS.IncomingMonitor.start();f.advance(60000);await f.EAS.IncomingMonitor.reconcile();assert.equal(f.messages.length,2);
+});
+
+test('failed recovery doubles persisted cooldown, retains safe causes, and does not resend uncertain Discord',async()=>{
+    const f=fixture();f.api.start();await f.api.reconcile();f.advance(3000);f.rows([f.row('1')]);await f.event();f.transportError('lost');await f.api.reconcile();
+    assert.equal(f.messages.length,1);assert.equal(f.store.read().attacks['1'].discord.status,'uncertain');
+    f.requestError('INCOMING_HTTP_503');for(const ms of [60000,5000,15000]){f.advance(ms);await f.api.reconcile();}
+    assert.equal(f.store.read().failureHistory[0].httpStatus,503);
+    f.advance(60000);f.requestError('https://secret.invalid/?h=NEVER_LOG');await f.api.reconcile();
+    assert.equal(f.store.read().circuit.cooldownMs,120000);assert.equal(f.store.read().failures,4);
+    assert.ok(f.logs.some(x=>x[1]==='RECOVERY_FAILED'));assert.ok(!JSON.stringify(f.logs).includes('NEVER_LOG'));
+    assert.ok(!JSON.stringify(f.store.read().failureHistory).includes('NEVER_LOG'));
+    f.requestError(null);f.transportError(null);f.advance(120000);await f.api.reconcile();assert.equal(f.store.read().failures,0);assert.equal(f.messages.length,1);
+});
 async function fireTimer(f) {
     const [id,timer]=[...f.timers.entries()][0];
     f.timers.delete(id);f.advance(timer.ms);timer.fn();await flushEvents();
 }
+test('persisted legacy circuit recovers through one timer; failing probes back off to fifteen minutes',async()=>{
+    const f=fixture(),state=f.store.read();state.failures=3;f.store.write(state);f.api.start();await fireTimer(f);
+    assert.equal(f.reads(),0);assert.equal(f.timers.size,1);await fireTimer(f);
+    assert.equal(f.reads(),1);assert.equal(f.store.read().failures,0);
+    f.requestError('INCOMING_HTTP_503');f.advance(60000);await f.api.reconcile();
+    await fireTimer(f);await fireTimer(f);assert.equal(f.store.read().failures,3);
+    for(const expected of [120000,240000,480000,900000,900000]) {
+        const before=f.reads();await fireTimer(f);assert.equal(f.reads(),before+1);
+        assert.equal(f.store.read().circuit.cooldownMs,expected);assert.equal(f.timers.size,1);
+    }
+});
 for(const [type,data] of [['attack',{target_village_name:'Target (520|452)'}],['command_count',{command_type:'attack'}],['command_count',{command_type:'incoming_attack'}]]) {
     test(`socket ${type}/${data.command_type||''} executes scheduled reconciliation`,async()=>{
         const f=fixture();f.api.start();await fireTimer(f);
@@ -147,7 +198,7 @@ test('three-packet burst and reconnect retain earliest timer and notify once',as
 test('disabled and persisted failure guard explain skips without requests',async()=>{
     const f=fixture();f.api.signal('attack');await flushEvents();assert.equal(f.timers.size,0);
     f.api.start();const state=f.store.read();state.failures=3;f.store.write(state);await fireTimer(f);
-    assert.equal(f.reads(),0);assert.ok(f.logs.some(x=>x[2].reason==='FAILURE_LIMIT'));
+    assert.equal(f.reads(),0);assert.ok(f.logs.some(x=>x[2].reason==='CIRCUIT_OPEN'));
     assert.ok(f.logs.some(x=>x[2].reason==='MONITOR_DISABLED'));
 });
 test('busy cross-tab lock gets bounded deferred reconciliation instead of losing event',async()=>{

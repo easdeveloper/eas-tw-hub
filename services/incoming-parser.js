@@ -51,15 +51,47 @@
         return { commandId, commandType: types[0] || null, source, target, attacker, distance, arrivalAt: dates[0].value, arrivalText: dates[0].text,
             name: own(row, '.quickedit-label')[0]?.textContent.trim().slice(0, 200) || '', attackSize: sizes[0] || null, watchtower };
     };
+    const pagerUrl = (node, base) => {
+        const page = new URL(base), raw = node.getAttribute('href');
+        if (!raw) return null;
+        let link; try { link = new URL(raw, base); } catch { return null; }
+        if (link.origin !== page.origin || link.pathname !== page.pathname || !link.searchParams.has('page')) return null;
+        for (const key of ['screen', 'mode', 'subtype', 'type', 'village']) {
+            if (link.searchParams.has(key) && link.searchParams.get(key) !== page.searchParams.get(key)) return null;
+            if (!link.searchParams.has(key) && page.searchParams.has(key)) link.searchParams.set(key, page.searchParams.get(key));
+        }
+        return link;
+    };
+    const completeTableCount = doc => {
+        const tables = doc.querySelectorAll('#incomings_table');
+        if (tables.length !== 1) incomplete('ALL_VIEW_UNCONFIRMED');
+        const table = tables[0];
+        // Counter belongs to the command column, not the global incoming badges.
+        // Its label is irrelevant: Comando (67), Command (67), etc.
+        const header = [...table.querySelectorAll('th')].find(node => node.closest('table') === table);
+        const match = /\((\d+)\)\s*$/.exec(header?.textContent.trim() || '');
+        if (!match) incomplete('ALL_VIEW_UNCONFIRMED');
+        return { table, count: Number(match[1]) };
+    };
     const parse = (doc, base = location.href) => {
         const page = new URL(base);
-        if (page.searchParams.get('screen') !== 'overview_villages' || page.searchParams.get('mode') !== 'incomings' || page.searchParams.get('subtype') !== 'attacks') throw Error('INCOMING_PAGE_MISMATCH');
+        const all = page.searchParams.get('page') === '-1';
+        if (page.searchParams.get('screen') !== 'overview_villages' ||
+            (all ? page.searchParams.has('mode') || page.searchParams.get('type') !== 'unignored' : page.searchParams.get('mode') !== 'incomings') ||
+            page.searchParams.get('subtype') !== 'attacks') throw Error('INCOMING_PAGE_MISMATCH');
         if (doc.querySelector('#login_form, form[action*="login"]')) incomplete('LOGIN_PAGE');
         if (doc.querySelector('.error_box')) incomplete('GAME_ERROR');
         // A navigation widget is not itself evidence of missing command pages.
         // Inspect destinations, including relative ?page=N links; unrelated menus
         // must not invalidate an otherwise complete incoming snapshot.
         const currentPage = page.searchParams.get('page') || '0';
+        const complete = all ? completeTableCount(doc) : null;
+        // A complete candidate must still pass the exact unique-row count below.
+        const completeAll = Boolean(complete);
+        if (all) for (const node of doc.querySelectorAll('.paged-nav [aria-current="page"], .pagination [aria-current="page"], .paged-nav-item-current, .paged-nav select option:checked')) {
+            const selected = node.tagName === 'OPTION' ? node.value : pagerUrl(node, base)?.searchParams.get('page');
+            if (selected != null && selected !== '-1') incomplete('ALL_VIEW_UNCONFIRMED');
+        }
         if (currentPage !== '0' && currentPage !== '-1') incomplete('PARTIAL_PAGE_SELECTED');
         for (const node of doc.querySelectorAll('a[href]')) {
             let link; try { link = new URL(node.getAttribute('href'), base); } catch { continue; }
@@ -73,12 +105,13 @@
             const sortHeader = node.closest('th, thead, [role="columnheader"]')
                 && (link.searchParams.get('order') || link.searchParams.get('dir'));
             if (sortHeader && !pagingControl) continue;
-            if (relevant && link.searchParams.get('page') !== currentPage) incomplete('INCOMING_PAGINATION');
+            if (relevant && link.searchParams.get('page') !== currentPage && !completeAll) incomplete('INCOMING_PAGINATION');
         }
         for (const control of doc.querySelectorAll('.paged-nav select option[value]')) {
-            if (control.value !== currentPage) incomplete('INCOMING_PAGINATION_CONTROL');
+            if (control.value !== currentPage && !completeAll) incomplete('INCOMING_PAGINATION_CONTROL');
         }
         const inputs = [...doc.querySelectorAll('input[name^="command_ids["]')];
+        if (all && (!inputs.length || inputs.some(input => input.closest('table') !== complete.table))) incomplete('ALL_VIEW_UNCONFIRMED');
         if (!inputs.length) {
             // BR143 empty attacks overview retains forms, tables and navigation,
             // but no command rows. Counts are layout-dependent, not identifiers.
@@ -97,10 +130,12 @@
             if (!row) throw Error('INCOMING_ROW_MISSING');
             let entry;
             try { entry = parseRow(row, base); } catch (error) { incomplete(error.reasonCode || 'COMMAND_ROW_INVALID'); }
+            if (all && entry.commandType !== 'attack' && !own(row, 'img[src]').some(node => /\/command\/attack(?:_(?:small|medium|large))?\.(?:webp|png)$/.test(new URL(node.getAttribute('src'), base).pathname))) incomplete('COMMAND_TYPE_CONFLICT');
             const previous = entries.get(entry.commandId);
             if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) throw Error('INCOMING_DUPLICATE_CONFLICT');
             entries.set(entry.commandId, entry);
         }
+        if (all && (entries.size !== complete.count || [...complete.table.querySelectorAll('[data-command-id]')].some(node => !entries.has(id(node.dataset.commandId))))) incomplete('ALL_VIEW_UNCONFIRMED');
         return [...entries.values()];
     };
     EAS.IncomingParser = { parse, parseRow, coordinate, units };

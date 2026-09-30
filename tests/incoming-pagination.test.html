@@ -1,0 +1,54 @@
+<!doctype html><meta charset="utf-8"><title>Incoming pagination regression</title><pre id="result">running</pre>
+<script>window.EAS={Selectors:{},Adapters:{},World:{getServerDateTime:()=>({available:true,date:'30/09/2026',time:'20:00:00'})}};window.game_data={village:{id:1}};</script>
+<script src="../services/mass-snipe-execution.js"></script><script src="../services/incoming-parser.js"></script>
+<script src="../services/incoming-transport.js"></script>
+<script>
+(async()=>{let count=0;const errors=[],check=(v,m)=>{count++;if(!v)errors.push(m)};
+try {
+ const html=await(await fetch('fixtures/incoming-br143-real.html')).text();
+ const base=location.origin+'/game.php?screen=overview_villages&mode=incomings&subtype=attacks&type=unignored';
+ // Real collected command row; synthetic volume/pager, not a captured 67-row response.
+ const make=(n,all=false)=>{const doc=new DOMParser().parseFromString(html,'text/html'),row=doc.querySelector('input[name^="command_ids["]').closest('tr'),parent=row.parentNode,source=row.outerHTML;row.remove();parent.closest('table').id='incomings_table';parent.closest('table').insertAdjacentHTML('afterbegin','<thead><tr><th>Comando (67)</th></tr></thead>');
+ for(let i=0;i<n;i++)parent.insertAdjacentHTML('beforeend',source.replaceAll('1787006936',String(1787006936+i)));
+ doc.body.insertAdjacentHTML('beforeend','<div class="paged-nav"><a href="?page=0">[1]</a> <a href="?page=1">[2]</a> <a '+(all?'aria-current="page" ':'')+'href="?page=-1">&gt;todos&lt;</a></div>');return doc;};
+ const api=EAS.IncomingParser; const full=base.replace('&mode=incomings','')+'&page=-1';
+ const shell=await(await fetch('fixtures/incoming-br143-complete-shell.html')).text();
+ const captured=new DOMParser().parseFromString(shell,'text/html');
+ const realRow=new DOMParser().parseFromString(html,'text/html').querySelector('input').closest('tr');
+ const duplicate=realRow.querySelector('[data-command-id]').cloneNode(true);duplicate.className='commandicon-wt';duplicate.querySelector('img').src='/graphic/unit/tiny/catapult.webp';realRow.cells[0].append(duplicate);
+ for(let i=0;i<67;i++)captured.querySelector('tbody').insertAdjacentHTML('beforeend',realRow.outerHTML.replaceAll('1787006936',String(369701790+i)));
+ check(captured.querySelectorAll('[data-command-id]').length===134,'134 DOM markers');
+ check(captured.querySelectorAll('#incomings_table tr').length===69,'69 rows including structural rows');
+ check(api.parse(captured,full).length===67,'67 unique attacks without selected Todos link');
+ for(const subtype of ['supports','all']){let rejected=false;try{api.parse(captured,full.replace('subtype=attacks','subtype='+subtype))}catch{rejected=true}check(rejected,'reject '+subtype);}
+ const invalid=captured.cloneNode(true);invalid.querySelector('tbody tr').remove();let rejected=false;try{api.parse(invalid,full)}catch{rejected=true}check(rejected,'66 rows cannot satisfy count 67');
+ const missing=captured.cloneNode(true);missing.querySelector('table').removeAttribute('id');rejected=false;try{api.parse(missing,full)}catch{rejected=true}check(rejected,'table identity required');
+ rejected=false;try{api.parse(captured,base+'&page=-1')}catch{rejected=true}check(rejected,'wrong complete mode variant rejected');
+ const tabs=make(67,true);tabs.body.insertAdjacentHTML('afterbegin','<nav><a href="?screen=overview_villages&mode=incomings&subtype=attacks">Ataques: Comando (67)</a><a href="?screen=overview_villages&mode=incomings&subtype=supports">Apoios</a></nav>');
+ check(api.parse(tabs,full).length===67,'attack count remains 67 with separate support tab');
+ let supportError;try{api.parse(tabs,base.replace('subtype=attacks','subtype=supports')+'&page=-1')}catch(e){supportError=e}
+ check(supportError?.message==='INCOMING_PAGE_MISMATCH','support response never merged as attack snapshot');
+ let error;try{api.parse(make(50),base)}catch(e){error=e}
+ check(error?.reasonCode==='INCOMING_PAGINATION','partial 50-row view rejected');
+ let complete;try{complete=api.parse(make(67,true),full)}catch(e){errors.push('complete selected all view rejected: '+e.reasonCode)}
+ check(complete?.length===67,'selected official all view returns 67 attacks');
+ {
+ for(const [doc,url] of [[make(50),full],[make(67,true),base+'&page=0']]){let rejected=false;try{api.parse(doc,url)}catch{rejected=true}check(rejected,'URL alone or marker alone cannot authorize partial snapshot');}
+ const conflict=make(50,true);conflict.querySelector('a[href="?page=0"]').setAttribute('aria-current','page');let rejected=false;try{api.parse(conflict,full)}catch{rejected=true}check(rejected,'conflicting current pages rejected');
+ const originalFetch=window.fetch;let requests=[];
+ try {
+ window.fetch=async(url,options)=>{requests.push({url:String(url),method:options.method||'GET'});const u=new URL(url),all=u.searchParams.get('page')==='-1';return {ok:true,status:200,url:String(url),text:async()=>all?(u.searchParams.has('mode')?'<p></p>':captured.documentElement.outerHTML):make(50).documentElement.outerHTML};};
+ const result=await EAS.IncomingTransport.overview();check(result.length===67&&requests.length===2,'overview fetches first page then official all exactly once');check(requests.every(r=>r.method==='GET'),'overview only reads');
+ check(requests.every(r=>new URL(r.url).searchParams.get('subtype')==='attacks'),'both GETs retain attacks subtype');check(!new URL(requests[1].url).searchParams.has('mode'),'complete URL omits mode');
+ check(new URL(requests[1].url).searchParams.get('village')==='1'&&new URL(requests[1].url).searchParams.get('type')==='unignored','village and type preserved');
+ requests=[];window.fetch=async(url)=>{requests.push(String(url));return {ok:true,status:200,url:String(url),text:async()=>make(50).documentElement.outerHTML};};
+ let e;try{await EAS.IncomingTransport.overview()}catch(error){e=error}check(e?.reasonCode==='ALL_VIEW_UNCONFIRMED'&&requests.length===2,'partial all response rejected with no retry');
+ for(const kind of ['empty','redirect','supports']){
+ requests=[];window.fetch=async(url)=>{requests.push(String(url));const all=new URL(url).searchParams.get('page')==='-1';return {ok:true,status:200,url:all&&kind==='redirect'?base:all&&kind==='supports'?String(url).replace('subtype=attacks','subtype=supports'):String(url),text:async()=>all?(kind==='empty'?'<p></p>':captured.documentElement.outerHTML):make(50).documentElement.outerHTML};};
+ e=null;try{await EAS.IncomingTransport.overview()}catch(error){e=error}check(Boolean(e)&&requests.length===2,'invalid full response has no retry: '+kind);
+ }
+ }finally{window.fetch=originalFetch;}
+ }
+}catch(e){errors.push(e.stack)}
+document.getElementById('result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${count} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>
