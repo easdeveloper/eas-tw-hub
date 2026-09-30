@@ -175,6 +175,14 @@
     };
 
     window.initializeMarketOfferExecutionIfNeeded = initializeMarketOfferExecutionIfNeeded;
+    const initializeIncomingIfNeeded = async () => {
+        try {
+            const scope = `${window.game_data?.world}:${window.game_data?.player?.id}`;
+            if (!JSON.parse(localStorage.getItem(`eas_tw_incoming_v1:${scope}`) || 'null')?.config?.enabled) return;
+            for (const asset of ['core/runtime.js', 'services/mass-snipe-execution.js', 'services/arrival-planner.js', 'services/incoming-parser.js', 'services/incoming-model.js', 'services/incoming-store.js', 'services/incoming-transport.js', 'services/incoming-socket.js', 'services/incoming-monitor.js']) await loadScript(asset);
+            window.EAS.IncomingMonitor.start();
+        } catch { try { window.EAS?.Logger?.warn?.('IncomingMonitor', 'bootstrap', { reason: 'MONITOR_UNAVAILABLE' }); } catch {} }
+    };
     const initializeArrivalIfNeeded = async () => {
         const page = new URL(location.href);
         const missionId = page.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId;
@@ -349,6 +357,7 @@
                     await loadActiveFakeRuntime();
                     window.EAS.MissionScheduler?.initialize?.();
                     await initializeArrivalIfNeeded();
+                    await initializeIncomingIfNeeded();
                     await resumeEASRuntimeIfNeeded();
                     notifyReady();
                     return;
@@ -398,6 +407,7 @@
 
                 window.EAS.MissionScheduler.initialize();
                 await initializeArrivalIfNeeded();
+                await initializeIncomingIfNeeded();
                 const runtimeResumed = await resumeEASRuntimeIfNeeded();
                 if (runtimeResumed || window.__EAS_TW_SILENT_BOOTSTRAP__) {
                     window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: window.__EAS_TW_RUNTIME_RESUMED__?.type || 'silent-loader' });
@@ -460,6 +470,7 @@
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();
                 await initializeArrivalIfNeeded();
+                await initializeIncomingIfNeeded();
             const runtimeResumed = await resumeEASRuntimeIfNeeded();
             if (runtimeResumed || window.__EAS_TW_SILENT_BOOTSTRAP__) {
                 window.EAS.MissionScheduler.log('scheduled-mission-main-menu-suppressed', { stage: window.__EAS_TW_RUNTIME_RESUMED__?.type || 'silent-loader' });

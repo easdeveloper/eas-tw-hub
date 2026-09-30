@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Incoming panel test</title><pre id="result">running</pre>
+<script>
+let settings={enabled:false,labels:false,discord:false},fail=false;
+window.EAS={name:'EAS',UI:{},Utils:{},Modules:{},IncomingMonitor:{status:()=>({config:settings,attacks:{},socketStatus:'unavailable',transportConfigured:false}),configure:async value=>{if(fail)throw Error('storage unavailable');settings=value}}};
+window.EASLoader={loadScript:async()=>{}};
+</script><script src="../core/utils.js"></script><script src="../core/ui.js"></script><script src="../modules/incoming-monitor.js"></script>
+<script>
+(async()=>{const errors=[];let n=0;const check=(v,m)=>{n++;if(!v)errors.push(m)};
+try{
+ let panel=await EAS.Modules.IncomingMonitor.open();check(!panel.body.querySelector('[data-enabled]').checked,'disabled by default');
+ check(panel.body.textContent.includes('indisponível'),'missing native socket is visible');
+ check(panel.body.textContent.includes('não configurado'),'missing Discord companion visible');
+ panel.body.querySelector('[data-enabled]').checked=true;await panel.body.querySelector('[data-save]').onclick();check(settings.enabled,'explicit opt-in');
+ panel=await EAS.Modules.IncomingMonitor.open();check(document.querySelectorAll('#eas-incoming-monitor').length===1,'singleton panel');
+ fail=true;await panel.body.querySelector('[data-save]').onclick();check(Boolean(panel.body.querySelector('[role="alert"]')),'storage failure remains visible');
+}catch(error){errors.push(error.stack)}
+document.getElementById('result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${n} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>

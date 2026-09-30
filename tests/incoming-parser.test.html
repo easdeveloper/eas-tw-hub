@@ -1,0 +1,85 @@
+<!doctype html><meta charset="utf-8"><title>Incoming parser tests</title><pre id="result">running</pre>
+<script>window.EAS={Selectors:{},Adapters:{},World:{getServerDateTime:()=>({available:true,date:'30/09/2026',time:'20:00:00'})}};</script>
+<script src="../services/mass-snipe-execution.js"></script><script src="../services/incoming-parser.js"></script>
+<script>
+(async()=>{const errors=[];let count=0;const check=(v,m)=>{count++;if(!v)errors.push(m);};
+try{
+ const html=await(await fetch('fixtures/incoming-overview.html')).text(),doc=new DOMParser().parseFromString(html,'text/html');
+ const url=location.origin+'/game.php?screen=overview_villages&mode=incomings&subtype=attacks';
+ const api=EAS.IncomingParser,rows=api.parse(doc,url),a=rows[0],row=doc.querySelector('input').closest('tr');
+ check(rows.length===1,'ignores enclosing tr');check(a.commandId==='1992212583','canonical ID');
+ check(a.target.id==='2593'&&a.target.coords==='520|452','target from overview, not current URL village');
+ check(a.source.id==='5411'&&a.source.coords==='507|428','source village');check(a.source.name.startsWith('PAPUCAIA'),'source name');
+ check(a.attacker.id==='919165482'&&a.attacker.name==='felipesan','attacker');check(a.distance===27.3,'distance');
+ check(a.arrivalAt===Date.UTC(2026,8,30,22,59,59,670),'exact nested milliseconds');
+ check(a.attackSize.key==='small'&&a.watchtower.units.length===0,'size is not unit');check(a.watchtower.state==='watching','watching is not final class');
+ const icon=doc.createElement('span');icon.dataset.commandId=a.commandId;icon.className='commandicon-wt';icon.innerHTML='<img src="/graphic/unit/tiny/ram.webp">';row.cells[0].append(icon);
+ check(api.parse(doc,url).length===1,'duplicate markers same command');check(api.parse(doc,url)[0].watchtower.units[0]==='ram','tiny ram unit evidence');
+ icon.remove();row.cells[7].textContent='0:15:04';check(api.parse(doc,url)[0].watchtower.countdownMs===904000,'watchtower countdown');
+ row.cells[7].textContent='N/A';check(api.parse(doc,url)[0].watchtower.state==='not-applicable','N/A');
+ row.querySelector('.quickedit').dataset.id='99';let rejected=false;try{api.parse(doc,url)}catch{rejected=true}check(rejected,'conflicting ID rejected');
+ rejected=false;try{api.parse(new DOMParser().parseFromString('<html></html>','text/html'),url)}catch{rejected=true}check(rejected,'missing overview is not empty baseline');
+ const emptyHtml=await(await fetch('fixtures/incoming-empty.html')).text(), emptyUrl=url+'&type=unignored';
+ const empty=()=>new DOMParser().parseFromString(emptyHtml,'text/html');
+ check(api.parse(empty(),emptyUrl).length===0,'recognized empty overview');
+ for(const selector of ['form','table','a']) {
+   const missing=empty();missing.querySelectorAll(selector).forEach(n=>n.remove());
+   let fails=false;try{api.parse(missing,emptyUrl)}catch{fails=true}check(fails,'missing structure '+selector);
+ }
+ for(const markup of ['<span data-command-id="123"></span>','<div class="error_box"></div>','<a href="?page=1">next</a>','<form id="login_form"></form>']) {
+   const invalid=empty();invalid.body.insertAdjacentHTML('beforeend',markup);
+   let fails=false;try{api.parse(invalid,emptyUrl)}catch{fails=true}check(fails,'incomplete empty response '+markup);
+ }
+ let wrongFilter=false;try{api.parse(empty(),url+'&type=ignored')}catch{wrongFilter=true}check(wrongFilter,'wrong empty filter rejected');
+
+ const realHtml=await(await fetch('fixtures/incoming-br143-real.html')).text();
+ const real=()=>new DOMParser().parseFromString(realHtml,'text/html');
+ const r=api.parse(real(),emptyUrl)[0];
+ check(api.parse(real(),emptyUrl).length===1,'real single attack');
+ check(r.commandId==='1787006936'&&r.commandType==='attack','real canonical ID and type');
+ check(r.target.id==='200'&&r.target.coords==='507|495','real destination');
+ check(r.source.id==='1561'&&r.source.coords==='509|493','real origin');
+ check(r.attacker.id==='6562420'&&r.attacker.name==='cristofeer','real player');
+ check(r.distance===2.8,'real distance');
+ check(r.arrivalText.endsWith('01:58:28:638')&&r.arrivalAt%1000===638,'real exact arrival');
+ check(r.watchtower.state==='not-applicable','real tower N/A');
+ check(r.attackSize.title==='Ataque pequeno (1-1000 tropas)'&&r.name==='Ataque','real icon hint and label');
+ const unrelated=real();unrelated.body.insertAdjacentHTML('beforeend','<div class="paged-nav"><a href="?screen=ranking&page=2">ranking</a></div>');
+ check(api.parse(unrelated,emptyUrl).length===1,'unrelated pagination is not incomplete incomings');
+ const singlePage=real();singlePage.body.insertAdjacentHTML('beforeend','<div class="paged-nav"><a href="?page=0">1</a></div>');
+ check(api.parse(singlePage,emptyUrl).length===1,'single-page pagination widget is valid');
+ for(const [markup,reason] of [['<form id="login_form"></form>','LOGIN_PAGE'],['<div class="error_box">error</div>','GAME_ERROR'],['<a href="?page=1">next</a>','INCOMING_PAGINATION']]) {
+   const invalid=real();invalid.body.insertAdjacentHTML('beforeend',markup);
+   let e;try{api.parse(invalid,emptyUrl)}catch(error){e=error}
+   check(e?.message==='INCOMING_INCOMPLETE_PAGE'&&e.reasonCode===reason,'safe reason '+reason);
+ }
+ const partial=real();partial.querySelector('a[href*="info_player"]').closest('td').remove();
+ let partialError;try{api.parse(partial,emptyUrl)}catch(e){partialError=e}
+ check(partialError?.message==='INCOMING_INCOMPLETE_PAGE'&&partialError.reasonCode==='COMMAND_ROW_INVALID','partial row rejected');
+ let unknownError;try{api.parse(new DOMParser().parseFromString('<p>unexpected</p>','text/html'),emptyUrl)}catch(e){unknownError=e}
+ check(unknownError?.message==='INCOMING_INCOMPLETE_PAGE'&&unknownError.reasonCode==='EMPTY_STRUCTURE_MISSING','unexpected response rejected');
+
+
+ const sortingHtml=await(await fetch('fixtures/incoming-br143-sorting.html')).text();
+ const sorted=()=>new DOMParser().parseFromString(sortingHtml,'text/html');
+ const sorting=sorted();
+ check(sorting.querySelectorAll('a[href*="page="]').length===6,'BR143 six sorting links');
+ check(!sorting.querySelector('.paged-nav,.pagination,[class*="paged"],[class*="pagination"]'),'BR143 no pagination controls');
+ check(api.parse(sorting,emptyUrl)[0].commandId==='1710792476'&&api.parse(sorting,emptyUrl).length===1,'six sort headers do not reject valid incoming');
+ sorting.querySelectorAll('th a').forEach(a=>{a.textContent='unlocalized';a.href=a.href.replace('page=&','page=-1&')});
+ check(api.parse(sorting,emptyUrl).length===1,'sorting independent of localized labels and page reset value');
+ for(const markup of [
+   '<div class="paged-nav"><a href="?page=1&order=arrival&dir=asc">2</a></div>',
+   '<div class="pagination"><a href="?page=1">2</a></div>',
+   '<table><tr><th><a rel="next" href="?page=1&order=arrival">next</a></th></tr></table>',
+   '<table><tr><th class="paged-nav"><a href="?page=1&order=arrival">2</a></th></tr></table>',
+   '<div class="paged-nav"><select><option value="0">1</option><option value="1">2</option></select></div>'
+ ]) {
+   const paginated=sorted();paginated.body.insertAdjacentHTML('beforeend',markup);
+   let err;try{api.parse(paginated,emptyUrl)}catch(e){err=e}
+   check(err?.message==='INCOMING_INCOMPLETE_PAGE'&&err.reasonCode.startsWith('INCOMING_PAGINATION'),'real pagination still rejected '+markup);
+ }
+
+}catch(e){errors.push(e.stack)}
+document.getElementById('result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${count} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>

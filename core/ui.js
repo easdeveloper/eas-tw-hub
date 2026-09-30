@@ -289,7 +289,8 @@
             'market-smart-offers': 'MarketSmartOffers',
             'market-balance': 'MarketBalance',
             'market-target-supply': 'MarketTargetSupply',
-            'scheduled-missions': 'ScheduledMissions'
+            'scheduled-missions': 'ScheduledMissions',
+            'incoming-monitor': 'IncomingMonitor'
         };
         const moduleName = moduleNames[moduleId];
 
@@ -359,6 +360,7 @@
                 {id:'market-target-supply',icon:'🎯',title:'Envio Coordenado',description:'Abasteça uma aldeia-alvo usando várias origens.',status:'Disponível'} ] },
             { icon:'🧠', title:'Inteligência', description:'Dados, relatórios e auditoria.', tools:[
                 {id:'troop-counter',icon:'🪖',title:'Contador de Tropas',description:'Some tropas por grupo e situação usando o snapshot central.',status:'Disponível'},
+                {id:'incoming-monitor',icon:'🔔',title:'Ataques Recebidos',description:'Acompanhe ataques, etiquetas e alertas no Discord.',status:'Beta'},
                 {id:'statistics',icon:'📊',title:'Estatísticas',description:'Visualize dados consolidados da conta.',status:'Em desenvolvimento',disabled:true},
                 {id:'reports',icon:'📋',title:'Relatórios',description:'Gere análises de operações e economia.',status:'Em desenvolvimento',disabled:true},
                 {id:'history',icon:'📜',title:'Histórico',description:'Consulte operações e ações anteriores.',status:'Em desenvolvimento',disabled:true},
@@ -526,7 +528,7 @@
             return;
         }
 
-        if (module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id === 'minting' || module.id.startsWith('market-')) {
+        if (module.id === 'incoming-monitor' || module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id === 'minting' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     const opened = loadedModule.open();

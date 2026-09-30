@@ -1,0 +1,47 @@
+<!doctype html><meta charset="utf-8"><title>Incoming socket flow</title><pre id="result">running</pre>
+<script>
+let now=1790800000000,rows=[],reads=0,labels=[],messages=[],nativeEvents=0;
+Date.now=()=>now;
+const held=new Set();Object.defineProperty(navigator,'locks',{configurable:true,value:{request:async(key,options,fn)=>{if(typeof options==='function'){fn=options;options={}}if(held.has(key))return fn(null);held.add(key);try{return await fn({name:key})}finally{held.delete(key)}}}});
+function socket(){const listeners=new Map();return{nsp:'/game',connected:true,
+ on(event,fn){if(!listeners.has(event))listeners.set(event,new Set());listeners.get(event).add(fn)},
+ off(event,fn){if(!fn)throw Error('unsafe off');listeners.get(event)?.delete(fn)},
+ emit(event,data){for(const fn of [...listeners.get(event)||[]])fn(data)},count(event){return listeners.get(event)?.size||0}};}
+window.Connection={socket:socket(),addSocketListener(){throw Error('Native method must not be used')},connect(){throw Error('New connection forbidden')}};
+Connection.socket.on('attack',()=>nativeEvents++);
+window.EASDiscordBridge={configured:()=>true};
+window.EAS={World:{getWorldName:()=> 'incoming-browser',getPlayer:()=>({id:7})},Logger:{info(){}},
+ MassSnipeExecution:{getCurrentServerTimeMs:()=>now},
+ IncomingTransport:{check(){},pace:async()=>{},overview:async()=>{reads++;return structuredClone(rows)},travel:async()=>({ram:600000,catapult:600000}),
+ rename:async(entry,value)=>labels.push(value),discord:async entry=>{messages.push(structuredClone(entry));return{id:entry.discord.messageId||'1234'}}}};
+</script>
+<script src="../core/runtime.js"></script><script src="../services/incoming-parser.js"></script><script src="../services/incoming-model.js"></script><script src="../services/incoming-store.js"></script><script src="../services/incoming-socket.js"></script><script src="../services/incoming-monitor.js"></script>
+<script>
+(async()=>{const errors=[];let checks=0;const check=(v,m)=>{checks++;if(!v)errors.push(m)},settle=()=>new Promise(r=>setTimeout(r,30));
+const row=id=>({commandId:id,source:{id:'5411',name:'Origin (507|428)',coords:'507|428'},target:{id:'2593',name:'Target',coords:'520|452'},attacker:{id:'5',name:'Player'},distance:27.3,arrivalAt:now+600000,arrivalText:'today',name:'Attack',watchtower:{state:'watching',units:[]}});
+try{
+ const api=EAS.IncomingMonitor,store=EAS.IncomingStore;localStorage.removeItem(store.key());localStorage.removeItem(store.key()+':events');
+ rows=[];await api.configure({enabled:true,labels:true,discord:true});await api.reconcile();
+ check(api.status().socketStatus==='connected','automatic Connection.socket subscription');
+ check(messages.length===0&&store.read().initialized,'empty baseline persisted');
+ api.start();api.start();check(Connection.socket.count('attack')===2,'native plus one EAS listener');
+ now+=3000;rows.push(row('2'));Connection.socket.emit('attack',{target_village_name:'Target (520|452)'});await settle();await api.reconcile();
+ check(labels.length===1&&messages.length===1,'native attack triggers classification, label and message');
+ check(store.read().attacks['2'].classification.speedClass==='RAM_OR_CATAPULT','truthful speed group');
+ const detected=store.read().attacks['2'].firstDetectedAt;
+ for(let i=0;i<20;i++)Connection.socket.emit('command_count',{command_type:'incoming_attack',count:'0',target_village:{id:'2593',x:'520',y:'452'}});
+ await settle();now+=3000;await api.reconcile();check(messages.length===1&&labels.length===1,'count zero and bursts never duplicate or erase attacks');
+ check(store.read().attacks['2'].state!=='ENDED','zero count is not authoritative empty');
+ rows[0].name=labels[0];rows[0].watchtower={state:'detected',units:['ram']};now+=60000;await api.reconcile();
+ check(messages.length===2&&messages[1].discord.messageId==='1234','tower edits same Discord message');
+ check(labels.length===2&&store.read().attacks['2'].firstDetectedAt===detected,'tower updates label, preserves initial timing');
+ const old=Connection.socket;old.connected=false;old.emit('disconnect');old.connected=true;old.emit('connect');await settle();
+ check(old.count('attack')===2,'reconnect has no duplicate listener');
+ Connection.socket=socket();api.start();check(old.count('attack')===1&&Connection.socket.count('attack')===1,'replacement leaves game listener intact');
+ api.stop();check(Connection.socket.count('attack')===0&&old.count('attack')===1,'stop removes EAS listeners only');
+ check(nativeEvents===1,'native attack handler still received attack');
+ check(reads===4,'bounded overview requests');
+}catch(error){errors.push(error.stack)}finally{EAS.IncomingMonitor.stop();localStorage.removeItem(EAS.IncomingStore.key());localStorage.removeItem(EAS.IncomingStore.key()+':events')}
+document.getElementById('result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${checks} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>
+
