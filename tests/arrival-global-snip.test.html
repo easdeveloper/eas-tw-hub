@@ -1,0 +1,41 @@
+<!doctype html><meta charset="utf-8"><title>Arrival global SNIP</title><pre id="result">running</pre><div id="content_value"></div>
+<script>
+history.replaceState({},'', '?screen=overview_villages&mode=incomings&type=unignored&subtype=attacks&village=999');
+let logs=[],sent=0,windows=[];
+window.EAS={Selectors:{},Adapters:{},Utils:{},Logger:{info:(m,event,data)=>logs.push({event,data})},World:{getServerDateTime:()=>({available:true,date:'01/10/2026',time:'00:00:00'})},MissionScheduler:{createMission(){sent++;throw Error('Unexpected mission')}},ScheduledMissionExecution:{openAndPrepare(){sent++}},UI:{createWindow:options=>{const element=document.createElement('div');element.id=options.id;const body=document.createElement('div');element.append(body);document.body.append(element);const win={element,body,close:()=>element.remove()};windows.push(win);return win}}};
+</script>
+<script src="../core/utils.js"></script><script src="../core/runtime.js"></script><script src="../services/mass-snipe-execution.js"></script><script src="../services/arrival-planner.js"></script>
+<script>
+(async()=>{let count=0,errors=[];const check=(v,m)=>{count++;if(!v)errors.push(m)},wait=()=>new Promise(r=>setTimeout(r,120));
+try{
+ document.querySelector('#content_value').innerHTML=await(await fetch('fixtures/arrival-global-incomings.html')).text();
+ const api=EAS.ArrivalPlanner,table=document.querySelector('#incomings_table');
+ check(api.initialize(),'global page recognized');
+ api.initialize();api.initialize();
+ check(table.querySelectorAll('[data-eas-snip]').length===2,'two valid rows only, no duplicates');
+ const rows=[...table.rows];
+ check(!document.querySelector('#ancestor > td > [data-eas-snip]'),'ancestor not selected');
+ check(rows[0].cells.length===8&&rows[0].cells[0].querySelector('[data-eas-snip]'),'button in first cell, no column');
+ check(api.parseIncoming(rows[0]).enemyCommandId==='369701790','command ID');
+ check(api.parseIncoming(rows[0]).enemyArrivalMs===Date.UTC(2026,9,3,8,0,3,617),'text milliseconds preferred over endtime');
+ rows[0].querySelector('button').click();
+ check(windows.at(-1).body.textContent.includes('508|489')&&windows.at(-1).body.textContent.includes('369701790'),'first modal uses own target/incoming');
+ check(logs.some(x=>x.event==='ARRIVAL_PLANNER_OPEN'&&x.data.targetVillageId==='75372'),'first target ID');
+ rows[1].querySelector('button').click();
+ check(windows.at(-1).body.textContent.includes('509|490')&&windows.at(-1).body.textContent.includes('369701791'),'second independent target');
+ check(logs.some(x=>x.event==='ARRIVAL_PLANNER_OPEN'&&x.data.targetVillageId==='75373'),'second target ID');
+ check(logs.filter(x=>x.event==='SNIP_SELECTED').length===2,'existing snipe_support flow');
+ const link=rows[1].cells[1].querySelector('a');link.href='/game.php?screen=overview&village=888';link.textContent='Updated (510|491)';
+ rows[1].querySelector('button').click();check(windows.at(-1).body.textContent.includes('510|491'),'click reparses target');
+ const before=windows.length;link.textContent='invalid';rows[1].querySelector('button').click();check(windows.length===before,'invalid fresh row refuses open');
+ const added=rows[0].cloneNode(true);added.querySelector('[data-eas-snip]').remove();added.querySelector('input').name='command_ids[777]';added.querySelectorAll('[data-command-id]').forEach(n=>n.dataset.commandId='777');table.tBodies[0].append(added);await wait();
+ check(added.querySelectorAll('[data-eas-snip]').length===1,'observer mounts new row once');
+ const rt=EAS.Runtime.get('arrival-page');
+ for(let i=0;i<10;i++){rows[0].querySelector('.timer').textContent=String(i);rows[0].querySelector('[data-endtime]').dataset.endtime=String(i)}
+ await wait();check(rt.resources.timers.size===0&&rt.resources.observers.size===1,'countdowns and own mutations settle');
+ check(sent===0&&!document.querySelector('[data-schedule]'),'opening does not schedule or send');
+ api.disposePage();
+ history.replaceState({},'','?screen=overview_villages&mode=incomings&type=unignored&subtype=supports');check(api.initialize()===false,'support overview excluded');
+}catch(e){errors.push(e.stack)}finally{EAS.ArrivalPlanner.disposePage();EAS.ArrivalPlanner.close()}
+document.querySelector('#result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${count} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>

@@ -277,13 +277,13 @@
                 if (/\/graphic\/command\/attack\.(?:webp|png|gif)$/.test(path)) types.add('attack');
                 else if (path.endsWith('/graphic/command/attack_small.webp')) types.add('attack');
                 else if (path.endsWith('/graphic/command/spy.webp')) secondarySpy = true;
-                else if (path.endsWith('/graphic/command/return_farm.webp')) types.add('return_farm');
+                else if (['/graphic/command/return_attack_small.webp', '/graphic/command/return_spy.webp', '/graphic/command/return_farm.webp'].some(icon => path.endsWith(icon))) types.add('return');
                 else if (path.includes('/graphic/command/')) types.add('unknown');
             }
             // Proven secondary only for an unambiguous ATTACK; never evidence
             // of an attack on its own, nor an exemption for unknown main icons.
             if (secondarySpy && !(types.size === 1 && types.has('attack'))) types.add('unknown');
-            if (types.size !== 1 || ![...COMMAND_TYPES, 'return_farm'].includes([...types][0])) {
+            if (types.size !== 1 || ![...COMMAND_TYPES, 'return'].includes([...types][0])) {
                 unknownCommandMarkers.push({ id: ids[0], types: [...types] });
                 return result(false, [], 'UNCLASSIFIED_COMMAND_MARKERS');
             }
@@ -298,7 +298,7 @@
             if (url?.searchParams.get('type') === 'other') command.inventoryOnly = true;
             // Optional read-only enrichment for other executors. Identity,
             // ownership and availability still come from this single parser.
-            if (readRowEvidence && command.type !== 'return_farm') command.evidence = readRowEvidence(row);
+            if (readRowEvidence && command.type !== 'return') command.evidence = readRowEvidence(row);
             const previous = commands.get(command.id);
             if (previous && JSON.stringify(previous) !== JSON.stringify(command)) return result(false, [], 'CONFLICTING_DUPLICATE');
             commands.set(command.id, command);
@@ -307,7 +307,7 @@
         // complete. Neither executor receives them as baseline or MATCH evidence.
         const candidates = [];
         for (const command of commands.values()) {
-            if (command.type === 'return_farm') ignoredKnownCommands.push({ id: command.id, type: command.type, classification: 'KNOWN_NON_CANDIDATE' });
+            if (command.type === 'return') ignoredKnownCommands.push({ id: command.id, type: command.type, classification: 'KNOWN_NON_CANDIDATE' });
             else candidates.push(command);
         }
         return result(true, candidates);

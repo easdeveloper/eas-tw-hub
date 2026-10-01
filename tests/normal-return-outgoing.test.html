@@ -4,7 +4,9 @@
 (async()=>{
  const host=document.querySelector('#fixture');
  const load=async file=>(await fetch('fixtures/place/'+file)).text();
- const mixed=await load('mixed-return-farm.html'),ready=await load('ready-empty-outgoing.html'),legacy=await load('outgoing-command-row.html');
+ const normal=await load('normal-return.html');
+ const original=await load('mixed-return-farm.html');
+ const mixed=normal+original.slice(original.indexOf('<table',original.indexOf('</table>')+8)),ready=await load('ready-empty-outgoing.html'),legacy=await load('outgoing-command-row.html');
  history.replaceState({},'',location.pathname+'?screen=place&village=675');
  let n=0;const assert=(v,m)=>{if(!v)throw Error(m);n++;};
  const read=()=>EAS.FakesExecution.readOutgoingCommands(window);
@@ -13,7 +15,7 @@
  assert(before.available,'mixed snapshot valid');
  assert(before.commandIds.join()==='30817114','return excluded from baseline');
  assert(before.commands[0].type==='attack','attack and secondary spy preserved');
- assert(before.ignoredKnownCommands[0].id==='1858825865'&&before.ignoredKnownCommands[0].classification==='KNOWN_NON_CANDIDATE','return diagnostic');
+ assert(before.ignoredKnownCommands[0].id==='344026177'&&before.ignoredKnownCommands[0].classification==='KNOWN_NON_CANDIDATE','return diagnostic');
  host.innerHTML=ready+mixed+ret;
  assert(read().ignoredKnownCommands.length===1,'return duplicate deduplicated');
  const verification={baseline:{commandIds:before.commandIds,capturedAt:1000},sourceVillageId:'675',targetCoord:'508|410',commandType:'attack',submitStartedAt:1001};
@@ -21,7 +23,7 @@
  const context={executionTab:'test',currentIndex:0,forwardingCommandType:'attack',queue:[{villageId:'675',target:'508|410',confirmationAttempt:{commandId,attemptId:'a',startedAt:1001,outgoingSnapshot:{commandId,attemptId:'a',executionId:'test',sourceVillageId:'675',target:'508|410',capturedAt:1000,beforeCommandIds:before.commandIds}}}]};
  const fake=()=>EAS.FakesExecution.reconcileOutgoing(context,window);
  const arrival=()=>EAS.ArrivalExecution.matchOutgoing(verification,read());
- const addedReturn=ret.replaceAll('1858825865','1858825866');
+ const addedReturn=ret.replaceAll('344026177','344026178');
  host.innerHTML=ready+mixed+addedReturn;
  assert(read().available&&read().ignoredKnownCommands.length===2,'new return remains known');
  assert(fake().result==='NO_NEW_COMMAND','Fake new return cannot match');
@@ -34,7 +36,7 @@
  label.textContent='(509|410)';
  assert(fake().result==='TARGET_MISMATCH'&&!arrival().match,'normal target filter retained');
  for(const marker of ['return_unknown.webp','support.webp','unknown.webp']){
-  host.innerHTML=ready+mixed.replace('return_farm.webp',marker);
+  host.innerHTML=ready+mixed.replace('return_spy.webp',marker);
   assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','unknown marker '+marker);
  }
  host.innerHTML=ready+mixed;
@@ -43,15 +45,25 @@
  host.innerHTML=ready+mixed;
  host.querySelector('[data-command-id]').dataset.commandId='123';
  assert(!read().available,'return ID conflict blocks');
- host.innerHTML=ready+mixed+ret.replaceAll('1858825865','30817114');
+ host.innerHTML=ready+mixed+ret.replaceAll('344026177','30817114');
  assert(!read().available&&read().reason==='CONFLICTING_DUPLICATE','same ID return/attack blocks');
  host.innerHTML=ready+ret;
  assert(read().available&&read().commandIds.length===0&&read().ignoredKnownCommands.length===1,'returns only valid empty baseline');
  host.innerHTML=ready+ret;
- host.querySelector('[data-command-id]').dataset.commandType='return';
- assert(read().available&&read().ignoredKnownCommands[0].type==='return','matching canonical declared return type');
- host.querySelector('[data-command-id]').dataset.commandType='return_farm';
- assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','unproven DOM pseudo-type remains rejected');
+ assert(read().ignoredKnownCommands[0].type==='return','normal return classified without unknown');
+ assert(read().unknownCommandMarkers.length===0&&read().commands.length===0,'both return icons corroborate one non-candidate');
+ const mission={id:'normal-return-baseline',world:'fixture',playerId:'1',attemptId:'normal-return-test',sourceModule:'arrival-planner',arrivalAuthorized:true,status:'waiting',villageId:'675',targetCoord:'508|410',commandType:'attack'};
+ localStorage.removeItem('eas_tw_arrival_consumed:fixture:1:'+mission.id+':'+mission.attemptId);
+ EAS.MissionScheduler={load:()=>({missions:[mission]}),updateMission:(id,patch)=>Object.assign(mission,patch)};
+ assert(EAS.ArrivalExecution.captureBaseline(mission,window),'Arrival captures known-return-only baseline');
+ assert(mission.outgoingBaseline.commandIds.length===0&&mission.outgoingBaseline.attemptId===mission.attemptId,'empty baseline persisted with attempt identity');
+ host.innerHTML=ready;
+ assert(read().available&&read().commands.length===0,'authoritative empty unchanged');
+ host.innerHTML=ready+normal+normal.replaceAll('545|427','546|427');
+ assert(!read().available&&read().reason==='CONFLICTING_DUPLICATE','return duplicate conflicts checked before filtering');
+ host.innerHTML=ready+normal.replace('return_spy.webp','return_unproven.webp');
+ assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','unproven return prefix remains unknown');
+
  document.title='PASS';document.querySelector('#result').textContent='PASS: '+n+' assertions';
 })().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack;});
 </script>

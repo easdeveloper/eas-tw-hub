@@ -115,10 +115,33 @@
             name: (table?.querySelector('h2, .village-name') || doc.querySelector('#content_value h2'))?.textContent.trim() || coordinates } };
     };
     const resolveTarget = (doc = document, href = location.href) => readPageTarget(doc, href).target || null;
+    const globalPage = () => {
+        const q = new URL(location.href).searchParams;
+        return q.get('screen') === 'overview_villages' && q.get('mode') === 'incomings' && q.get('type') === 'unignored' && q.get('subtype') === 'attacks';
+    };
+    const globalId = row => {
+        if (row.closest('table')?.id !== 'incomings_table') return null;
+        const own = selector => [...row.querySelectorAll(selector)].filter(n => n.closest('tr') === row);
+        const inputs = own('input[name^="command_ids["]');
+        const markers = own('[data-command-id]').map(n => id(n.dataset.commandId));
+        if (inputs.length > 1) return null;
+        const value = inputs.length ? id(/^command_ids\[(\d+)\]$/.exec(inputs[0].name)?.[1]) : markers[0];
+        return value && markers.every(n => n === value) ? value : null;
+    };
+    const globalTarget = row => {
+        const links = [...row.querySelectorAll('a[href]')].filter(n => n.closest('tr') === row)
+            .map(node => ({node, url:new URL(node.getAttribute('href'), location.href)}))
+            .filter(({url}) => url.origin === location.origin && url.searchParams.get('screen') === 'overview');
+        if (links.length !== 1) return null;
+        const {node,url} = links[0], targetId = id(url.searchParams.get('village'));
+        const coords = [...node.textContent.matchAll(/\((\d{1,3})\|(\d{1,3})\)/g)];
+        return targetId && coords.length === 1 ? {id:targetId, coords:`${+coords[0][1]}|${+coords[0][2]}`, name:node.textContent.trim()} : null;
+    };
     const parseIncoming = row => {
+        const global = row.closest('table')?.id === 'incomings_table';
         const marker = row.querySelector('.command_hover_details[data-command-type="attack"]');
-        if (!marker) return null;
-        const commandId = id(marker.dataset.commandId || row.querySelector('.quickedit-out[data-id]')?.dataset.id);
+        if (!global && !marker) return null;
+        const commandId = global ? globalId(row) : id(marker.dataset.commandId || row.querySelector('.quickedit-out[data-id]')?.dataset.id);
         const quickId = row.querySelector('.quickedit-out[data-id]')?.dataset.id;
         if (!commandId || (quickId && quickId !== commandId)) return null;
         // Whitespace between the seconds separator and the nested millisecond span.
@@ -216,6 +239,33 @@
         return Boolean(element?.closest?.('#eas-arrival-actions, [data-eas-snip]'));
     };
     const disposePage = () => EAS.Runtime?.dispose?.(PAGE_RUNTIME);
+    const mountGlobal = () => {
+        const table = document.querySelector('#incomings_table');
+        if (!table) return false;
+        const markers = table.querySelectorAll('input[name^="command_ids["], [data-command-id]');
+        const rows = new Set([...markers].map(n => n.closest('tr')).filter(row => row?.closest('table') === table));
+        for (const row of rows) {
+            try {
+                const incoming = parseIncoming(row), target = globalTarget(row);
+                const existing = [...row.querySelectorAll('[data-eas-snip]')].filter(n => n.closest('tr') === row);
+                if (!incoming || !target || !row.cells[0]) { existing.forEach(n => n.remove()); continue; }
+                let button = existing.shift(); existing.forEach(n => n.remove());
+                if (!button) {
+                    button = document.createElement('button'); button.type = 'button'; button.className = 'btn'; button.textContent = 'SNIP';
+                    row.cells[0].append(button);
+                }
+                button.dataset.easSnip = incoming.enemyCommandId;
+                button.onclick = () => {
+                    try {
+                        if (!globalPage() || !row.isConnected) return;
+                        const fresh = parseIncoming(row), current = globalTarget(row);
+                        if (fresh && current) open('snipe_support', current, fresh);
+                    } catch { log('INCOMING_UNREADABLE', {reason:'GLOBAL_ROW_INVALID'}); }
+                };
+            } catch { row.querySelectorAll('[data-eas-snip]').forEach(n => n.remove()); log('INCOMING_UNREADABLE', {reason:'GLOBAL_ROW_INVALID'}); }
+        }
+        return true;
+    };
     const mountPage = () => {
         const screen = new URL(location.href).searchParams.get('screen');
         const rows = [...document.querySelectorAll('tr.command-row')];
@@ -263,17 +313,18 @@
         return true;
     };
     const initialize = () => {
-        if (new URL(location.href).searchParams.get('screen') !== 'info_village') { disposePage(); return false; }
+        const global = globalPage();
+        if (!global && new URL(location.href).searchParams.get('screen') !== 'info_village') { disposePage(); return false; }
         const runtime = EAS.Runtime?.create?.({ id: PAGE_RUNTIME, type: 'page-integration' });
         if (document.readyState === 'loading' && !document.querySelector('#content_value, #village_info')) {
             if (runtime && !runtime.arrivalReadyListener) { runtime.arrivalReadyListener = true; runtime.listen(document, 'DOMContentLoaded', initialize, { once: true }); }
             else if (!runtime) document.addEventListener('DOMContentLoaded', initialize, { once: true });
             return false;
         }
-        const result = mountPage();
+        const result = global ? mountGlobal() : mountPage();
         // The page content owns the command table, including replacement of the
         // table itself. Never observe document/body or native countdown updates.
-        const container = document.querySelector('#content_value, #commands_incomings, #village_info');
+        const container = global ? document.querySelector('#incomings_table') : document.querySelector('#content_value, #commands_incomings, #village_info');
         if (runtime && container && runtime.arrivalContainer !== container) {
             runtime.arrivalObserver?.disconnect();
             if (runtime.arrivalObserver) runtime.resources.observers.delete(runtime.arrivalObserver);
@@ -284,8 +335,13 @@
             };
             const observer = new MutationObserver(records => {
                 const relevant = records.some(record => {
+                    if (global && (record.target.closest?.('.timer') || record.target.parentElement?.closest('.timer'))) return false;
                     if (ownedNode(record.target) || record.target.parentElement?.closest('[data-endtime]') || record.target.closest?.('[data-endtime]')) return false;
                     if (record.type === 'attributes') return true;
+                    if (global) {
+                        const nodes = [...(record.addedNodes || []), ...(record.removedNodes || [])];
+                        return nodes.some(node => node.nodeType === 1 && !ownedNode(node) && (node.matches('tr, tbody, input[name^="command_ids["], [data-command-id]') || node.querySelector('tr, input[name^="command_ids["], [data-command-id]')));
+                    }
                     const nodes = [...(record.addedNodes || []), ...(record.removedNodes || [])];
                     if (nodes.length && nodes.every(ownedNode)) return false;
                     const element = record.target.nodeType === 1 ? record.target : record.target.parentElement;
@@ -294,7 +350,7 @@
                 });
                 if (relevant) schedule();
             });
-            observer.observe(container, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['data-command-type', 'data-command-id', 'data-id'] });
+            observer.observe(container, { childList: true, subtree: true, characterData: !global, attributes: true, attributeFilter: global ? ['name', 'data-command-id'] : ['data-command-type', 'data-command-id', 'data-id'] });
             runtime.observe(observer); runtime.arrivalObserver = observer; runtime.arrivalContainer = container;
             if (!runtime.arrivalPageListeners) { runtime.arrivalPageListeners = true; runtime.listen(window, 'pagehide', disposePage); runtime.listen(window, 'hashchange', schedule); runtime.listen(window, 'popstate', schedule); }
         }

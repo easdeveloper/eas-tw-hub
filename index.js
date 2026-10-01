@@ -187,7 +187,8 @@
         const page = new URL(location.href);
         const missionId = page.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId;
         const mission = window.EAS?.MissionScheduler?.load?.().missions.find(item => item.id === missionId);
-        if (page.searchParams.get('screen') !== 'info_village' && mission?.sourceModule !== 'arrival-planner') return;
+        const globalIncomings = page.searchParams.get('screen') === 'overview_villages' && page.searchParams.get('mode') === 'incomings' && page.searchParams.get('type') === 'unignored' && page.searchParams.get('subtype') === 'attacks';
+        if (page.searchParams.get('screen') !== 'info_village' && !globalIncomings && mission?.sourceModule !== 'arrival-planner') return;
         if (!window.EAS.Runtime?.create) await loadScript('core/runtime.js');
         if (!window.EAS.Data?.Troops) await loadScript('core/game-data.js');
         await loadScript('services/mass-snipe-execution.js');
