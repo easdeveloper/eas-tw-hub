@@ -1,0 +1,46 @@
+<!doctype html><meta charset="utf-8"><title>Running</title><div id="fixture"></div><pre id="result"></pre>
+<script>window.EAS={};</script><script src="../services/fakes-execution.js"></script><script src="../services/arrival-execution.js"></script>
+<script>
+(async()=>{
+ const host=document.querySelector('#fixture'),load=async name=>(await fetch('fixtures/place/'+name)).text();
+ const native=await load('native-support-other.html'),ready=await load('ready-empty-outgoing.html'),attack=await load('outgoing-command-row.html');
+ history.replaceState({},'',location.pathname+'?screen=place&village=84');
+ let n=0;const assert=(v,m)=>{if(!v)throw Error(m);n++;},read=()=>EAS.FakesExecution.readOutgoingCommands(window);
+ host.innerHTML=ready+native;let observed=read();
+ assert(observed.available&&observed.pageReady,'native support inventory available without outgoing container');
+ assert(!host.querySelector('[data-command-type]'),'fixture has no semantic attribute');
+ assert(observed.unknownCommandMarkers.length===0,'support is not unknown');
+ assert(observed.ignoredKnownCommands[0].id==='719666188','native ID retained');
+ assert(observed.ignoredKnownCommands[0].type==='support','canonical support');
+ assert(observed.ignoredKnownCommands[0].classification==='KNOWN_NON_CANDIDATE','foreign support known non-candidate');
+ assert(observed.commands.length===0&&observed.commandIds.length===0,'foreign support not an attack or outgoing candidate');
+ host.querySelector('[data-title]').dataset.title='unrelated';host.querySelector('.quickedit-label').textContent='unrelated';assert(read().available,'not localized text inference');
+ const mission={id:'native-support-baseline',world:'fixture',playerId:'1',attemptId:'support-native',sourceModule:'arrival-planner',arrivalAuthorized:true,status:'waiting',villageId:'84',targetCoord:'508|410',commandType:'attack'};
+ localStorage.removeItem('eas_tw_arrival_consumed:fixture:1:'+mission.id+':'+mission.attemptId);
+ EAS.MissionScheduler={load:()=>({missions:[mission]}),updateMission:(id,patch)=>Object.assign(mission,patch)};
+ assert(EAS.ArrivalExecution.captureBaseline(mission,window),'Arrival baseline capture succeeds');
+ assert(mission.outgoingBaseline.commandIds.length===0&&mission.outgoingBaseline.attemptId===mission.attemptId,'baseline persists with identity');
+ host.innerHTML=ready+native+native;assert(read().ignoredKnownCommands.length===1,'duplicate deduplicated after identity check');
+ host.querySelector('[data-command-id]').dataset.commandId='999';assert(read().reason==='INVALID_ROW','marker ID conflict blocked');
+ host.innerHTML=ready+native+native.replace('support.webp','attack.webp');assert(read().reason==='CONFLICTING_DUPLICATE','duplicate type conflict checked before filtering');
+ for(const icon of ['unknown.webp','support_unknown.webp','support.png']){
+  host.innerHTML=ready+native.replace('support.webp',icon);assert(read().reason==='UNCLASSIFIED_COMMAND_MARKERS','unproven icon rejected '+icon);
+ }
+ host.innerHTML=ready+native;host.querySelector('[data-command-id]').dataset.commandType='attack';assert(read().reason==='UNCLASSIFIED_COMMAND_MARKERS','declared attack conflicts with support');
+ host.innerHTML=ready+native;host.querySelector('td').insertAdjacentHTML('beforeend','<img src="/graphic/command/unknown.webp">');assert(read().reason==='UNCLASSIFIED_COMMAND_MARKERS','support plus unknown fails closed');
+ for(const icon of ['return_attack_small.webp','return_spy.webp','return_farm.webp']){
+  host.innerHTML=ready+native.replace('support.webp',icon);observed=read();assert(observed.available&&observed.ignoredKnownCommands[0].type==='return','return preserved '+icon);
+ }
+ const verification={baseline:{commandIds:[],capturedAt:1000},sourceVillageId:'84',targetCoord:'508|410',commandType:'attack',submitStartedAt:1001};
+ host.innerHTML=ready+native;assert(EAS.ArrivalExecution.matchOutgoing(verification,read()).reason==='NO_NEW_COMMAND','foreign support cannot reconcile attack');
+ const ownAttack=attack.replaceAll('675','84');host.innerHTML=ready+native+ownAttack;
+ host.querySelectorAll('.command-row')[1].cells[0].insertAdjacentHTML('beforeend','<span class="quickedit-label">(508|410)</span>');
+ assert(read().commands[0].type==='attack','normal attack preserved');
+ assert(EAS.ArrivalExecution.matchOutgoing(verification,read()).match?.id==='1091585556','new attack reconciles despite foreign support');
+ host.innerHTML=ready+native.replace('type=other','type=own');host.querySelector('.quickedit-label').textContent='(508|410)';observed=read();
+ assert(observed.commands[0].type==='support'&&observed.commands[0].sourceVillageId==='84','own support remains outgoing candidate');
+ assert(!EAS.ArrivalExecution.matchOutgoing(verification,observed).match,'own support never matches attack');
+ assert(EAS.ArrivalExecution.matchOutgoing({...verification,commandType:'support'},observed).match?.id==='719666188','existing support reconciliation preserved');
+ document.title='PASS';document.querySelector('#result').textContent='PASS: '+n+' assertions';
+})().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack;});
+</script>

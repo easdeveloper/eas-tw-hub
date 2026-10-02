@@ -33,7 +33,7 @@
  assert(arrival().match?.id==='1091585556','Arrival matches only new attack');
  label.textContent='(509|410)';
  assert(fake().result==='TARGET_MISMATCH'&&!arrival().match,'normal target filter retained');
- for(const marker of ['return_unknown.webp','support.webp','unknown.webp']){
+ for(const marker of ['return_unknown.webp','support_unknown.webp','unknown.webp']){
   host.innerHTML=ready+mixed.replace('return_farm.webp',marker);
   assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','unknown marker '+marker);
  }

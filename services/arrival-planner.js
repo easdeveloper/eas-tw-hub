@@ -1,8 +1,18 @@
 (() => {
     'use strict';
     if (EAS.ArrivalPlanner) return;
-    const MODES = ['arrival_attack', 'arrival_support', 'snipe_support'];
+    const MODES = ['arrival_attack', 'arrival_support', 'snipe_support', 'anti_snipe'];
     const EXCLUDED = new Set(['ram', 'catapult', 'snob']);
+    // The scheduler expands snapshots with zeroes for its known unit fields.
+    // Creation accepts axe/light keys only; persisted zero placeholders are inert.
+    const antiTroopsValid = (troops, normalized = true) => Boolean(troops && Object.entries(troops).every(([unit, count]) =>
+        Number.isSafeInteger(count) && count >= 0 && (['axe', 'light'].includes(unit) || normalized && count === 0 && ['spear','sword','archer','spy','marcher','heavy','ram','catapult','knight','snob'].includes(unit))) &&
+        (troops.axe > 0 || troops.light > 0));
+    const antiMissionValid = mission => mission?.mode !== 'anti_snipe' || Boolean(
+        ['commandType', 'operationType', 'type'].every(key => mission[key] === 'attack') && mission.troopMode === 'custom' &&
+        ['troops', 'preparedTroops', 'expectedTroopsSnapshot'].every(key => antiTroopsValid(mission[key])) &&
+        ['axe', 'light'].every(unit => ['preparedTroops', 'expectedTroopsSnapshot'].every(key => (mission[key][unit] || 0) === (mission.troops[unit] || 0))));
+    const unitAllowed = (mode, unit) => mode === 'anti_snipe' ? ['axe', 'light'].includes(unit) : !(mode === 'snipe_support' && EXCLUDED.has(unit));
     const cache = new Map();
     let active = null;
     const log = (event, data = {}) => { try { EAS.Logger?.info?.('ARRIVAL', event, data); } catch {} };
@@ -53,7 +63,7 @@
         log('MAP_INFO_RESULT', { sourceVillageId: source, targetVillageId: target.id, times }); return times;
     };
     const candidateUnits = ({ mode, available, times, units, arrival, now }) => Object.fromEntries(units.filter(unit =>
-        !(mode === 'snipe_support' && EXCLUDED.has(unit)) && Number(available[unit]) > 0 &&
+        unitAllowed(mode, unit) && Number(available[unit]) > 0 &&
         Number.isFinite(times[unit]) && arrival - times[unit] > now
     ).map(unit => [unit, { available: Number(available[unit]), travelTimeMs: times[unit], sendAtMs: arrival - times[unit] }]));
     const search = async ({ mode, target, arrival, signal, onCandidate = () => {} }) => {
@@ -69,7 +79,7 @@
         for (const village of villages) {
             aborted(signal);
             const available = troops[village.id].ownHome || {};
-            if (!units.some(unit => available[unit] > 0 && !(mode === 'snipe_support' && EXCLUDED.has(unit)))) continue;
+            if (!units.some(unit => available[unit] > 0 && unitAllowed(mode, unit))) continue;
             try {
                 const times = await mapInfo(String(village.id), target, signal);
                 const candidates = candidateUnits({ mode, available, times, units, arrival, now: clock() });
@@ -85,6 +95,7 @@
     };
     const composition = ({ mode, troops, available, times, units, arrival, now = clock() }) => {
         if (!MODES.includes(mode)) throw new Error('Modo inválido.');
+        if (mode === 'anti_snipe' && !antiTroopsValid(troops, false)) throw new Error('ANTI_SNIPE_INVALID_TROOPS');
         const selected = Object.entries(troops).filter(([, count]) => Number(count) !== 0);
         if (!selected.length) throw new Error('Selecione tropas.');
         for (const [unit, count] of selected) {
@@ -94,7 +105,7 @@
         const travelTimeMs = Math.max(...selected.map(([unit]) => times[unit]));
         const sendAtMs = arrival - travelTimeMs;
         if (!Number.isSafeInteger(arrival) || sendAtMs <= now) throw new Error('A composição já não consegue chegar no horário.');
-        return { travelTimeMs, sendAtMs, commandType: mode === 'arrival_attack' ? 'attack' : 'support' };
+        return { travelTimeMs, sendAtMs, commandType: ['arrival_attack', 'anti_snipe'].includes(mode) ? 'attack' : 'support' };
     };
     const readPageTarget = (doc = document, href = location.href) => {
         const url = new URL(href), targetId = id(url.searchParams.get('id'));
@@ -153,8 +164,37 @@
         log('INCOMING_PARSED', { enemyCommandId: commandId, enemyArrivalMs });
         return { enemyCommandId: commandId, enemyArrivalMs };
     };
+    // Own-command context is authoritative even when the native details URL uses type=other.
+    const parseOwnAttack = row => {
+        if (!row.matches('tr.command-row') || !row.closest('#commands_outgoings')) return null;
+        const markers = [...row.querySelectorAll('.command_hover_details')];
+        const quick = [...row.querySelectorAll('.quickedit-out[data-id]')];
+        if (!markers.length || quick.length !== 1 || markers.some(n => n.dataset.commandType !== 'attack')) return null;
+        const commandId = id(quick[0].dataset.id);
+        if (!commandId || markers.some(n => id(n.dataset.commandId) !== commandId)) return null;
+        const links = [...row.querySelectorAll('a[href]')].map(n => new URL(n.getAttribute('href'), location.href))
+            .filter(url => url.searchParams.get('screen') === 'info_command');
+        if (!links.length || links.some(url => url.origin !== location.origin || id(url.searchParams.get('id')) !== commandId)) return null;
+        const parsed = parseIncoming(row);
+        if (!parsed || !Number.isSafeInteger(parsed.enemyArrivalMs)) return null;
+        return { referenceCommandId: commandId, referenceArrivalMs: parsed.enemyArrivalMs,
+            containsNoble: [...row.querySelectorAll('img[src]')].some(n => /\/snob\.webp$/.test(new URL(n.src).pathname)) };
+    };
+    const ownReference = row => {
+        const reference = parseOwnAttack(row);
+        if (!reference) return null;
+        const attacks = [...row.closest('#commands_outgoings').querySelectorAll('tr.command-row')].map(n => {
+            try { return parseOwnAttack(n); } catch { return null; }
+        }).filter(Boolean);
+        if (attacks.filter(n => n.referenceCommandId === reference.referenceCommandId).length !== 1) return null;
+        const next = attacks.filter(n => n.referenceArrivalMs > reference.referenceArrivalMs)
+            .sort((a,b) => a.referenceArrivalMs - b.referenceArrivalMs)[0];
+        return { ...reference, nextOwnArrivalMs: next?.referenceArrivalMs ?? null,
+            nextOwnCommandId: next?.referenceCommandId ?? null };
+    };
     const createMission = ({ mode, target, candidate, troops, arrival, incoming = null, offset = 0 }) => {
         if (mode === 'snipe_support' && (!incoming || arrival !== incoming.enemyArrivalMs + offset || !Number.isSafeInteger(offset))) throw new Error('Ataque/offset divergente.');
+        if (mode === 'anti_snipe' && (!id(incoming?.referenceCommandId) || !Number.isSafeInteger(incoming.referenceArrivalMs) || !Number.isSafeInteger(offset) || arrival !== incoming.referenceArrivalMs + offset)) throw new Error('ANTI_SNIPE_REFERENCE_MISMATCH');
         const available = EAS.Data.Troops.getById(candidate.village.id)?.ownHome || {};
         const calculated = composition({ mode, troops, available, times: candidate.times, units: EAS.Data.Troops.getUnits(), arrival });
         log('COMPOSITION_SELECTED', { sourceVillageId: String(candidate.village.id), troops });
@@ -167,7 +207,7 @@
             villageCoord: candidate.village.coordinate || candidate.village.coord, targetVillageId: target.id, targetCoord: target.coords,
             troops: { ...troops }, preparedTroops: { ...troops }, expectedTroopsSnapshot: { ...troops },
             ...calculated, desiredArrivalMs: arrival, sendTime: legacyTime(calculated.sendAtMs), sendTimestamp: legacyTime(calculated.sendAtMs),
-            arrivalTime: legacyTime(arrival), arrivalTimestamp: legacyTime(arrival), ...incoming, snipeOffsetMs: mode === 'snipe_support' ? offset : null,
+            arrivalTime: legacyTime(arrival), arrivalTimestamp: legacyTime(arrival), ...incoming, snipeOffsetMs: mode === 'snipe_support' ? offset : null, antiSnipeOffsetMs: mode === 'anti_snipe' ? offset : null,
             attemptId: crypto.randomUUID(), arrivalAuthorized: true, status: 'waiting' });
         if (!mission.id) throw new Error('Já existe uma missão equivalente.');
         const restored = EAS.MissionScheduler.load().missions.find(item => item.id === mission.id);
@@ -178,21 +218,23 @@
     const open = (mode, target, incoming = null) => {
         active?.close();
         log('ARRIVAL_PLANNER_OPEN', { mode, targetVillageId: target.id });
-        if (incoming) log('SNIP_SELECTED', incoming);
-        const win = EAS.UI.createWindow({ id: 'eas-arrival-planner', title: mode === 'snipe_support' ? 'EAS — SNIP (apoio)' : `EAS — ${mode === 'arrival_attack' ? 'Ataque' : 'Apoio'} por chegada`, icon: '⏱️', width: 760 });
+        if (incoming) log(mode === 'anti_snipe' ? 'ANTI_SNIPE_SELECTED' : 'SNIP_SELECTED', incoming);
+        const win = EAS.UI.createWindow({ id: 'eas-arrival-planner', title: mode === 'anti_snipe' ? 'EAS \u2014 ANTI-SNIPE' : mode === 'snipe_support' ? 'EAS — SNIP (apoio)' : `EAS — ${mode === 'arrival_attack' ? 'Ataque' : 'Apoio'} por chegada`, icon: '⏱️', width: 760 });
         let controller = null, closed = false, selected = null, desired = null, scheduled = false;
         const originalClose = win.close.bind(win);
         const close = () => { if (closed) return; closed = true; controller?.abort(); originalClose(); if (active?.close === close) active = null; };
         win.close = close; active = { close };
         const esc = EAS.Utils.escapeHtml;
+        const unitLabel = unit => mode === 'anti_snipe' ? ({ axe: 'B\u00e1rbaros', light: 'Cavalaria Leve' }[unit] || unit) : unit;
         win.body.innerHTML = `<p>Alvo: <strong>${esc(target.name)} (${esc(target.coords)})</strong></p>
           <p>Horários do servidor. Mantenha a aba de confirmação aberta. Precisão depende do navegador e da rede.</p>
-          ${incoming ? `<p>Ataque ${esc(incoming.enemyCommandId)}: ${format(incoming.enemyArrivalMs)}</p><label>Offset (ms) <input data-offset type="number" step="1" value="200"></label>` : '<label>Chegada (DD/MM/YYYY HH:MM:SS:SSS) <input class="eas-input" data-arrival placeholder="25/09/2026 12:00:00:000"></label>'}
+          ${incoming ? `<p>Ataque ${esc(incoming.referenceCommandId || incoming.enemyCommandId)}: ${format(incoming.referenceArrivalMs ?? incoming.enemyArrivalMs)}</p><label>Offset (ms) <input data-offset type="number" step="1" value="200"></label>` : '<label>Chegada (DD/MM/YYYY HH:MM:SS:SSS) <input class="eas-input" data-arrival placeholder="25/09/2026 12:00:00:000"></label>'}
+          ${mode === 'anti_snipe' ? `<p>Cont\u00e9m nobre: ${incoming.containsNoble ? 'Sim' : 'N\u00e3o'}</p>${incoming.nextOwnArrivalMs != null ? `<p>Pr\u00f3ximo ataque: ${format(incoming.nextOwnArrivalMs)} \u00b7 Intervalo: ${incoming.nextOwnArrivalMs - incoming.referenceArrivalMs} ms</p>` : ''}<p data-anti-warning></p>` : ''}
           <p data-desired></p><button class="btn" data-search>PROCURAR ALDEIAS</button> <button class="btn" data-close>Cancelar</button>
           <p data-status></p><div data-candidates></div><div data-composition></div>`;
         const q = s => win.body.querySelector(s), status = message => { q('[data-status]').textContent = message; };
-        const arrivalValue = () => incoming ? incoming.enemyArrivalMs + Number(q('[data-offset]').value) : +EAS.MassSnipeExecution.getLandingTime(q('[data-arrival]').value.trim().replace(/\.(\d{3})$/, ':$1'));
-        const changed = () => { controller?.abort(); selected = null; q('[data-candidates]').replaceChildren(); q('[data-composition]').replaceChildren(); try { desired = arrivalValue(); q('[data-desired]').textContent = `Chegada desejada: ${format(desired)}`; } catch { desired = null; } };
+        const arrivalValue = () => incoming ? (incoming.referenceArrivalMs ?? incoming.enemyArrivalMs) + Number(q('[data-offset]').value) : +EAS.MassSnipeExecution.getLandingTime(q('[data-arrival]').value.trim().replace(/\.(\d{3})$/, ':$1'));
+        const changed = () => { controller?.abort(); selected = null; q('[data-candidates]').replaceChildren(); q('[data-composition]').replaceChildren(); try { desired = arrivalValue(); q('[data-desired]').textContent = `Chegada desejada: ${format(desired)}`; if (mode === 'anti_snipe') q('[data-anti-warning]').textContent = incoming.nextOwnArrivalMs != null && desired >= incoming.nextOwnArrivalMs ? 'Aviso: a chegada configurada alcan\u00e7a ou passa o pr\u00f3ximo ataque pr\u00f3prio.' : ''; } catch { desired = null; } };
         (q('[data-offset]') || q('[data-arrival]')).addEventListener('input', changed);
         q('[data-close]').onclick = close;
         // UI's title close button uses its own closure; listen as well to abort
@@ -202,7 +244,7 @@
             selected = candidate;
             const panel = q('[data-composition]');
             panel.innerHTML = `<h3>${esc(candidate.village.name || String(candidate.village.id))}</h3>` + Object.entries(candidate.units).map(([unit, item]) =>
-                `<label>${esc(unit)} — ${item.available} disponíveis · ${EAS.MassSnipeExecution.formatDurationMs(item.travelTimeMs)} · envio ${format(item.sendAtMs)} <input data-unit="${esc(unit)}" type="number" min="0" max="${item.available}" step="1" value="0"></label><br>`).join('') + '<p data-review></p><button class="btn" data-schedule>Agendar e preparar</button>';
+                `<label>${esc(unitLabel(unit))} — ${item.available} disponíveis · ${EAS.MassSnipeExecution.formatDurationMs(item.travelTimeMs)} · envio ${format(item.sendAtMs)} <input data-unit="${esc(unit)}" type="number" min="0" max="${item.available}" step="1" value="0"></label><br>`).join('') + '<p data-review></p><button class="btn" data-schedule>Agendar e preparar</button>';
             const selectedTroops = () => Object.fromEntries([...panel.querySelectorAll('[data-unit]')].map(input => [input.dataset.unit, Number(input.value)]));
             const review = () => { try {
                 const result = composition({ mode, troops: selectedTroops(), available: EAS.Data.Troops.getById(candidate.village.id)?.ownHome || {}, times: candidate.times, units: EAS.Data.Troops.getUnits(), arrival: arrivalValue() });
@@ -224,7 +266,7 @@
                 const results = await search({ mode, target, arrival: arrivalValue(), signal: thisController.signal, onCandidate: candidate => {
                     if (closed || thisController.signal.aborted) return;
                     const button = document.createElement('button'); button.type = 'button'; button.className = 'btn';
-                    button.textContent = `${candidate.village.name || candidate.village.id} (${candidate.village.coordinate || candidate.village.coord || ''}) — ${Object.keys(candidate.units).join(', ')}`;
+                    button.textContent = `${candidate.village.name || candidate.village.id} (${candidate.village.coordinate || candidate.village.coord || ''}) — ${Object.keys(candidate.units).map(unitLabel).join(', ')}`;
                     button.onclick = () => showComposition(candidate); q('[data-candidates]').append(button, document.createElement('br'));
                 } }); if (!closed) status(`Aldeias capazes: ${results.length}. Escolha uma origem e depois as tropas.`);
             } catch (error) { if (!closed) status(error.message); }
@@ -236,7 +278,7 @@
     const PAGE_RUNTIME = 'arrival-page';
     const ownedNode = node => {
         const element = node.nodeType === 1 ? node : node.parentElement;
-        return Boolean(element?.closest?.('#eas-arrival-actions, [data-eas-snip]'));
+        return Boolean(element?.closest?.('#eas-arrival-actions, [data-eas-snip], [data-eas-anti-snipe]'));
     };
     const disposePage = () => EAS.Runtime?.dispose?.(PAGE_RUNTIME);
     const mountGlobal = () => {
@@ -277,7 +319,7 @@
         const anchor = document.querySelector('#village_info') || document.querySelector('#content_value');
         if (!target || !anchor) {
             document.getElementById('eas-arrival-actions')?.remove();
-            document.querySelectorAll('[data-eas-snip]').forEach(button => button.remove());
+            document.querySelectorAll('[data-eas-snip], [data-eas-anti-snipe]').forEach(button => button.remove());
             log('ARRIVAL_PAGE_MOUNT_REFUSED', { ...details, reason: info.reason || 'PAGE_CONTAINER_MISSING' });
             return false;
         }
@@ -292,6 +334,26 @@
             if (anchor.id === 'village_info') anchor.after(panel); else anchor.prepend(panel);
         }
         for (const row of rows) {
+            if (row.closest('#commands_outgoings')) {
+                row.querySelectorAll('[data-eas-snip]').forEach(n => n.remove());
+                const existing = [...row.querySelectorAll('[data-eas-anti-snipe]')];
+                let reference = null;
+                try { reference = ownReference(row); } catch {}
+                if (!reference) { existing.forEach(n => n.remove()); continue; }
+                let button = existing.shift(); existing.forEach(n => n.remove());
+                if (!button) {
+                    button = document.createElement('button'); button.type = 'button'; button.className = 'btn'; button.textContent = 'ANTI-SNIPE';
+                    (row.cells[row.cells.length - 1] || row).append(button);
+                }
+                if (button.dataset.easAntiSnipe !== reference.referenceCommandId) button.dataset.easAntiSnipe = reference.referenceCommandId;
+                button.onclick = () => { try {
+                    if (!row.isConnected) return;
+                    const current = resolveTarget(), fresh = ownReference(row);
+                    if (current && fresh) open('anti_snipe', current, fresh);
+                } catch { log('ANTI_SNIPE_UNREADABLE'); } };
+                continue;
+            }
+            row.querySelectorAll('[data-eas-anti-snipe]').forEach(n => n.remove());
             const marker = row.querySelector('.command_hover_details[data-command-type="attack"]');
             const existing = [...row.querySelectorAll('[data-eas-snip]')];
             if (!marker) { existing.forEach(button => button.remove()); continue; }
@@ -356,5 +418,5 @@
         }
         return result;
     };
-    EAS.ArrivalPlanner = { MODES, log, clock, format, legacyTime, duration, parseMapInfo, mapInfo, candidateUnits, search, composition, resolveTarget, parseIncoming, createMission, open, initialize, disposePage, close: () => active?.close() };
+    EAS.ArrivalPlanner = { MODES, antiTroopsValid, antiMissionValid, parseOwnAttack, ownReference, log, clock, format, legacyTime, duration, parseMapInfo, mapInfo, candidateUnits, search, composition, resolveTarget, parseIncoming, createMission, open, initialize, disposePage, close: () => active?.close() };
 })();

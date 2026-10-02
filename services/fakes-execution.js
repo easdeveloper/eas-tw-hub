@@ -276,6 +276,7 @@
                 try { path = new URL(image.getAttribute('src'), targetWindow.location.href).pathname; } catch { continue; }
                 if (/\/graphic\/command\/attack\.(?:webp|png|gif)$/.test(path)) types.add('attack');
                 else if (path.endsWith('/graphic/command/attack_small.webp')) types.add('attack');
+                else if (path.endsWith('/graphic/command/support.webp')) types.add('support');
                 else if (path.endsWith('/graphic/command/spy.webp')) secondarySpy = true;
                 else if (['/graphic/command/return_attack_small.webp', '/graphic/command/return_spy.webp', '/graphic/command/return_farm.webp'].some(icon => path.endsWith(icon))) types.add('return');
                 else if (path.includes('/graphic/command/')) types.add('unknown');
@@ -304,10 +305,11 @@
             commands.set(command.id, command);
         }
         // Keep returns in the identity map until duplicate/conflict validation is
-        // complete. Neither executor receives them as baseline or MATCH evidence.
+        // complete. Foreign supports are likewise known non-candidates; own
+        // supports remain available for support baseline/reconciliation.
         const candidates = [];
         for (const command of commands.values()) {
-            if (command.type === 'return') ignoredKnownCommands.push({ id: command.id, type: command.type, classification: 'KNOWN_NON_CANDIDATE' });
+            if (command.type === 'return' || (command.type === 'support' && command.inventoryOnly)) ignoredKnownCommands.push({ id: command.id, type: command.type, classification: 'KNOWN_NON_CANDIDATE' });
             else candidates.push(command);
         }
         return result(true, candidates);

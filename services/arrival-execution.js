@@ -12,7 +12,7 @@
         try { return localStorage.getItem(consumedKey(mission)) !== null; } catch { return true; }
     };
     const log = (event, mission, detail = {}) => planner.log(event, { missionId: mission.id, attemptId: mission.attemptId, sourceVillageId: mission.villageId, targetCoords: mission.targetCoord, ...detail });
-    const allowed = mission => Boolean(isArrival(mission) && mission.arrivalAuthorized === true && mission.attemptId &&
+    const allowed = mission => Boolean(isArrival(mission) && (mission.mode !== 'anti_snipe' || planner?.antiMissionValid(mission) === true) && mission.arrivalAuthorized === true && mission.attemptId &&
         !mission.finalClickConsumed && !mission.submitAttemptId && !consumed(mission) && ['waiting', 'upcoming', 'opening', 'preparing', 'prepared', 'opening-confirmation', 'confirmation-ready', 'ready'].includes(mission.status));
     const fail = (mission, reason) => {
         EAS.MissionScheduler.updateMission(mission.id, { status: 'verification-required', lastError: reason, arrivalAuthorized: false });
@@ -52,6 +52,7 @@
         if (!current || current.attemptId !== mission.attemptId || !binding || binding.missionId !== mission.id ||
             binding.tabExecutionId !== current.tabExecutionId || (urlMissionId && urlMissionId !== mission.id) ||
             !executor.contextMatchesPage(current, binding, targetWindow).valid) return { valid: false, reason: 'MISSION_CONTEXT_MISMATCH' };
+        if (current.mode === 'anti_snipe' && planner?.antiMissionValid(current) !== true) return { valid: false, reason: 'ANTI_SNIPE_INVALID_MISSION' };
         if (!consumed && !allowed(current)) return { valid: false, reason: 'AUTHORIZATION_CONSUMED_OR_REVOKED' };
         if (window.EASRateLimit?.check()) return { valid: false, reason: 'RATE_LIMITED' };
         const form = doc.querySelector('#command-data-form, #command-confirm-form');

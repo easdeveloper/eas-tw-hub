@@ -1,0 +1,81 @@
+<!doctype html><meta charset="utf-8"><title>Anti-Snipe</title><pre id="result">running</pre><div id="content_value"></div>
+<script>
+history.replaceState({},'', '?screen=info_village&id=9113#498;512');
+let windows=[],missions=[],requests=0,prepared=0;
+const units=['axe','light','spear','sword','archer','spy','marcher','ram','catapult','knight','snob'],available=Object.fromEntries(units.map(u=>[u,100]));
+window.EAS={Selectors:{},Adapters:{},Utils:{},Logger:{info(){}},World:{getServerDateTime:()=>({available:true,date:'01/10/2026',time:'00:00:00'})},
+ Data:{Troops:{getUnits:()=>units,getById:()=>({ownHome:available}),getAll:()=>({'1':{ownHome:available}})},Villages:{getAll:()=>[{id:'1',name:'Source'}]}},
+ MissionScheduler:{load:()=>({missions}),createMission:m=>{m={...m,id:'mission-'+missions.length};missions.push(m);return m},updateMission:(id,patch)=>Object.assign(missions.find(m=>m.id===id),patch)},ScheduledMissionExecution:{openAndPrepare(){prepared++}},
+ UI:{createWindow:options=>{const element=document.createElement('div'),body=document.createElement('div');element.append(body);document.body.append(element);const win={element,body,close:()=>element.remove()};windows.push(win);return win}}};
+</script>
+<script src="../core/utils.js"></script><script src="../core/runtime.js"></script><script src="../services/mass-snipe-execution.js"></script><script src="../services/arrival-planner.js"></script><script src="../services/arrival-execution.js"></script>
+<script>
+(async()=>{let count=0,errors=[];const check=(v,m)=>{count++;if(!v)errors.push(m)},reject=(fn,m)=>{let failed=false;try{fn()}catch{failed=true}check(failed,m)};
+try {
+ document.querySelector('#content_value').innerHTML=await(await fetch('fixtures/arrival-anti-snipe.html')).text();
+ const a=EAS.ArrivalPlanner,x=EAS.ArrivalExecution,rows=[...document.querySelector('#commands_outgoings').rows];
+ a.initialize();a.initialize();
+ check(document.querySelectorAll('[data-eas-anti-snipe]').length===4,'four attacks, no nonattack actions or duplicates');
+ check(!document.querySelector('#commands_outgoings [data-eas-snip]'),'own SNIP replaced');
+ check(document.querySelectorAll('#commands_incomings [data-eas-snip]').length===1,'incoming SNIP preserved');
+ const ref=a.ownReference(rows[0]);
+ check(ref.referenceCommandId==='1645007877','real ID');
+ check(ref.referenceArrivalMs===Date.UTC(2026,9,1,6,27,16,467),'exact .467');
+ check(ref.containsNoble&&!a.ownReference(rows[1]).containsNoble,'noble informational');
+ check(ref.nextOwnArrivalMs===Date.UTC(2026,9,1,6,27,16,604),'next .604');
+ check(ref.nextOwnArrivalMs-ref.referenceArrivalMs===137,'interval 137');
+ rows[0].querySelector('button').click();let body=windows.at(-1).body;
+ check(body.querySelector('[data-offset]').value==='200','default offset');
+ check(body.querySelector('[data-desired]').textContent.includes('667'),'desired .667');
+ check(body.querySelector('[data-anti-warning]').textContent.length>0,'informational collision warning');
+ check(missions.length===0&&prepared===0,'open sends nothing');
+ rows[0].querySelector('.grey').textContent='468';rows[0].querySelector('button').click();
+ check(windows.at(-1).body.querySelector('[data-desired]').textContent.includes('668'),'click reparses');
+ await new Promise(r=>setTimeout(r,120));check(rows[0].querySelectorAll('button').length===1,'mutation singleton');
+ rows[0].querySelector('.grey').textContent='467';
+ const marker=rows[0].querySelector('[data-command-type]');marker.dataset.commandType='support';check(a.ownReference(rows[0])===null,'mixed types rejected');marker.dataset.commandType='attack';
+ marker.dataset.commandId='999';check(a.ownReference(rows[0])===null,'conflicting ID rejected');marker.dataset.commandId=ref.referenceCommandId;
+ const arrival=a.clock()+3600000,times=Object.fromEntries(units.map(u=>[u,60000]));
+ const compose=troops=>a.composition({mode:'anti_snipe',troops,available,times,units,arrival});
+ for(const troops of [{axe:1},{light:1},{axe:1,light:2}])check(compose(troops).commandType==='attack','valid axe/light');
+ reject(()=>compose({axe:0,light:0}),'all zero rejected');
+ for(const unit of units.filter(u=>!['axe','light'].includes(u)).concat('unknown'))reject(()=>compose({axe:1,[unit]:1}),'reject '+unit);
+ const originalFetch=window.fetch;window.fetch=async()=>{requests++;return{ok:true,json:async()=>({id:'9113',xy:498512,units:Object.fromEntries(units.map(u=>[u,{id:u,time:'00:01:00'}]))})}};
+ const candidates=await a.search({mode:'anti_snipe',target:{id:'9113',coords:'498|512'},arrival});window.fetch=originalFetch;
+ check(requests===1&&Object.keys(candidates[0].units).join(',')==='axe,light','shared source search filters units');
+ body=windows.at(-1).body;body.querySelector('[data-search]').click();await new Promise(r=>setTimeout(r,200));
+ body.querySelector('[data-candidates] button').click();
+ check(body.querySelector('[data-candidates] button').textContent.includes('Bárbaros, Cavalaria Leve'),'Portuguese source labels');
+ check(body.querySelector('[data-composition]').textContent.includes('Bárbaros')&&body.querySelector('[data-composition]').textContent.includes('Cavalaria Leve'),'Portuguese composition labels');
+ check([...body.querySelectorAll('[data-unit]')].map(n=>n.dataset.unit).join(',')==='axe,light','modal exposes only allowed troops');
+ check(missions.length===0&&prepared===0,'UI search does not create or submit');
+ const offset=body.querySelector('[data-offset]');offset.value='100';offset.dispatchEvent(new Event('input'));
+ check(offset.value==='100'&&!body.querySelector('[data-anti-warning]').textContent,'editable offset clears warning without adjustment');
+ const m=a.createMission({mode:'anti_snipe',target:{id:'9113',coords:'498|512'},candidate:candidates[0],troops:{axe:1,light:1},arrival:ref.referenceArrivalMs+200,incoming:ref,offset:200});
+ check(['commandType','type','operationType'].every(k=>m[k]==='attack'),'all mission types attack');
+ check(x.allowed(m),'valid persisted mission');
+ check(!x.captureBaseline(m,window),'unavailable baseline rejected');
+ for(const field of ['troops','preparedTroops','expectedTroopsSnapshot']){
+  const saved=m[field];m[field]={axe:1,ram:1};check(!x.allowed(m),'persisted '+field+' rejected');
+  let blocked=false;try{await x.beforePrepare(m,window)}catch{blocked=true}check(blocked,'preparation blocked '+field);m[field]=saved;
+ }
+ for(const field of ['commandType','type','operationType']){m[field]='support';check(!x.allowed(m),'persisted type rejected '+field);m[field]='attack'}
+ m.expectedTroopsSnapshot={...m.expectedTroopsSnapshot,ram:0,archer:0,heavy:0};check(x.allowed(m),'scheduler zero placeholders accepted');
+ m.expectedTroopsSnapshot.unknown=0;check(!x.allowed(m),'unknown persisted key fails closed');delete m.expectedTroopsSnapshot.unknown;
+ const state={missions,tabExecutions:{tab:{missionId:m.id,tabExecutionId:'tab'}}};m.tabExecutionId='tab';
+ EAS.MissionScheduler.load=()=>state;
+ EAS.ScheduledMissionExecution.readTabContext=()=>({tabExecutionId:'tab'});
+ EAS.ScheduledMissionExecution.contextMatchesPage=()=>({valid:true});
+ EAS.ScheduledMissionExecution.isAttackConfirmationPage=()=>true;
+ const form=document.createElement('form');form.id='command-data-form';form.innerHTML='<input name="attack" value="true"><input name="x" value="498"><input name="y" value="512"><input name="source_village" value="1"><input name="axe" value="1"><input name="light" value="1"><button id="troop_confirm_submit">Submit</button>';document.body.append(form);
+ m.submitAuthorization={missionId:m.id,attemptId:m.attemptId,allowedStage:'attack-confirmation',used:false};
+ check(x.context(m).valid,'valid Anti-Snipe confirmation reuses native validation');
+ m.expectedTroopsSnapshot.ram=1;
+ check(x.context(m).reason==='ANTI_SNIPE_INVALID_MISSION','modified persisted mission rejected at final confirmation');m.expectedTroopsSnapshot.ram=0;
+ check(!x.beforeSubmit(m,window)&&m.lastError==='RECONCILIATION_BASELINE_OR_TRAVEL_MISSING','final submission requires baseline');
+ form.remove();
+ m.status='verification-required';check(!x.allowed(m),'uncertain cannot resend');m.status='submitting';check(!x.allowed(m),'submitted cannot resend');
+ check(prepared===0,'no automatic preparation from opening/search');
+}catch(e){errors.push(e.stack)}finally{EAS.ArrivalPlanner.disposePage();EAS.ArrivalPlanner.close()}
+document.querySelector('#result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${count} assertions`;document.title=errors.length?'FAIL':'PASS';})();
+</script>
