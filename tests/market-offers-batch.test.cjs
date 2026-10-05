@@ -32,7 +32,7 @@ function fixture(options = {}) {
         MutationObserver: class { observe() {} disconnect() {} }
     };
     const EAS = { MarketOffersExecution: api, Logger: { info(...args) { if (options.loggerFailure) throw Error('logger'); logs.push(args); } } };
-    function load() { delete EAS.MarketOffersBatch; delete w.__EASMarketBatch; vm.runInNewContext(lifecycle + summaryRules + '\nObject.assign(EAS.MarketOffersExecution,{canResumeBatch,finalizeBatchStop,archiveBatch,getArchivedBatch,batchDurationMs,canMarkErrorAndSkip,completionSummary});\n' + source, { EAS, window: w, URL, Date: { now: () => now }, Math, console, localStorage: {getItem:key=>archives.get(key)||null,setItem:(key,value)=>archives.set(key,value)} }); }
+    function load() { delete EAS.MarketOffersBatch; delete w.__EASMarketBatch; vm.runInNewContext(lifecycle + summaryRules + '\nObject.assign(EAS.MarketOffersExecution,{canResumeBatch,finalizeBatchStop,archiveBatch,getArchivedBatch,batchDurationMs,canMarkErrorAndSkip,completionSummary});\n' + source, { EAS, window: w, URL, Date: { now: () => now }, Math, console, localStorage: {getItem:key=>archives.get(key)||null,setItem:(key,value)=>{if(options.archiveFailure)throw Error('quota');archives.set(key,value);}} }); }
     const f = { api, w, options, state: () => copy(stored), clicks: () => clicks, prepares: () => prepares, attempts, logs,
         batch: () => EAS.MarketOffersBatch, timers, panel:()=>panel, reload() { timers.clear(); panel=false; load(); },
         async tick(ms = 0) { now += ms; const ready = [...timers].filter(([, v]) => v.at <= now); for (const [id, entry] of ready) { if (timers.delete(id)) entry.fn(); } await EAS.MarketOffersBatch.resume(); },
@@ -47,6 +47,65 @@ for (const count of [1, 2, 70]) test(`${count} authorized offers submit once eac
     assert.equal(new Set(f.attempts).size, count);
     for (let i = 0; i < 10; i++) await f.batch().resume();
     assert.equal(f.clicks(), count);
+});
+test('normal completion persists terminal state before one archive and commits the result', async () => {
+    const f = fixture(), order = []; let archivedState = null, committed = 0;
+    const archiveBatch = f.api.archiveBatch;
+    f.api.archiveBatch = context => { order.push('archive'); archivedState = f.state(); return archiveBatch(context); };
+    f.api.commitBatchResult = (context, item, result) => {
+        order.push('commit'); committed++;
+        assert.equal(context.state, 'completed'); assert.equal(item.status, 'created');
+        assert.equal(result.evidence, 'new-compatible-offer-id');
+    };
+    await f.start(1); await f.tick();
+    const completed = f.state();
+    assert.equal(completed.state, 'completed'); assert.equal(completed.currentIndex, 1);
+    assert.equal(archivedState.state, 'completed');
+    assert.equal(archivedState.revision, completed.revision);
+    assert.deepEqual(order, ['archive', 'commit']); assert.equal(committed, 1);
+    assert.equal(f.api.getArchivedBatch(completed.executionId).archiveKind, 'market-offers-history');
+    assert.equal(f.api.getArchivedBatch(completed.executionId).version, 2);
+});
+test('archive failure after terminal persistence cannot reopen or resend a completed batch', async () => {
+    const f = fixture(); let archiveCalls = 0;
+    f.api.archiveBatch = () => { archiveCalls++; throw Error('archive unavailable'); };
+    await f.start(1); await f.tick();
+    const completed = f.state();
+    assert.equal(archiveCalls, 1); assert.equal(completed.state, 'completed');
+    assert.equal(completed.queue[0].status, 'created');
+    assert.equal(completed.queue[0].attempt.state, 'completed');
+    assert.equal(f.api.canResumeBatch(completed), false);
+    assert.equal(f.clicks(), 1); assert.equal(f.attempts.length, 1);
+    await f.batch().resume();
+    assert.equal(f.clicks(), 1); assert.equal(f.attempts.length, 1);
+    assert.deepEqual(f.state(), completed);
+});
+test('archive storage failure after terminal persistence leaves completion durable', async () => {
+    const f = fixture({ archiveFailure: true });
+    await f.start(1); await f.tick();
+    const completed = f.state();
+    assert.equal(completed.state, 'completed'); assert.equal(completed.currentIndex, 1);
+    assert.equal(completed.queue[0].status, 'created');
+    assert.equal(completed.queue[0].attempt.state, 'completed');
+    assert.equal(f.clicks(), 1); assert.equal(f.api.canResumeBatch(completed), false);
+    await f.batch().resume();
+    assert.equal(f.clicks(), 1); assert.deepEqual(f.state(), completed);
+});
+test('failed critical terminal persist retains STORAGE_WRITE_FAILED behavior and skips archival', async () => {
+    const f = fixture(); let archiveCalls = 0;
+    const save = f.api.save;
+    f.api.save = context => context.state === 'completed' ? false : save(context);
+    f.api.archiveBatch = () => { archiveCalls++; return true; };
+    await f.start(1); await f.tick();
+    const failed = f.state();
+    assert.equal(archiveCalls, 0);
+    assert.equal(f.logs.some(entry => entry[1] === 'MARKET_UNCERTAIN' && entry[2].result === 'STORAGE_WRITE_FAILED'), true);
+    assert.equal(failed.state, 'uncertain'); assert.equal(failed.currentIndex, 0);
+    assert.equal(failed.queue[0].status, 'verification-required');
+    assert.notEqual(failed.queue[0].attempt.state, 'completed');
+    assert.equal(f.clicks(), 1);
+    await f.batch().resume();
+    assert.equal(f.clicks(), 1); assert.equal(f.state().state, 'uncertain');
 });
 test('submitted attempt survives navigation and concurrent resumes without resending', async () => {
     const f = fixture(); await f.start(); const attempt = f.state().queue[0].attempt;
@@ -112,7 +171,9 @@ test('STOP is terminal and idempotent; navigation and F5 retain uncertain eviden
         await f.tick(100000);assert.equal(f.panel(),false);assert.equal(f.clicks(),1);assert.equal(f.timers.size,0);
         assert.equal(f.api.batchDurationMs(f.state()),duration);assert.equal(f.batch().continueUnsent(),false);
     }
-    assert.deepEqual(JSON.parse(JSON.stringify(f.api.getArchivedBatch(stopped.executionId))).queue[0].attempt,attempt);
+    assert.equal(f.api.getArchivedBatch(stopped.executionId).items[0].attemptId,attempt.attemptId);
+    assert.equal(f.api.getArchivedBatch(stopped.executionId).uncertainty,true);
+    assert.deepEqual(f.state().queue[0].attempt,attempt);
 });
 test('STOP during the gap prevents next offer and clears pending timers',async()=>{
     const f=fixture();await f.start(2);await f.tick();assert.equal(f.state().currentIndex,1);
@@ -192,4 +253,11 @@ test('post-submit error permits manual resolution but rate limit never does',asy
     const f=fixture({uncertain:true});await f.start();await f.tick(10001);const c=f.state();c.state='error';c.queue[0].status='error';f.api.save(c);
     assert.equal(f.api.canMarkErrorAndSkip(f.state()),true);f.options.rateLimited=true;
     assert.equal(await f.batch().markErrorAndSkip(manualIdentity(f)),false);assert.equal(f.state().state,'rate_limited');assert.equal(f.state().currentIndex,0);
+});
+
+test('archive quota failure cannot revive a stopped uncertain attempt or submit again',async()=>{
+ const f=fixture({uncertain:true,archiveFailure:true});await f.start(2);await f.tick(10001);
+ f.batch().stop();const stopped=f.state();assert.equal(stopped.state,'cancelled');
+ assert.ok(stopped.queue[0].attempt.beforeSnapshot);f.reload();await f.tick(100000);
+ assert.equal(f.clicks(),1);assert.deepEqual(f.state(),stopped);assert.equal(f.panel(),false);
 });

@@ -20,7 +20,9 @@
  equal(w.fixtureState.submissions,1,'initial offer submitted once');
  let state=api.read();state.queue[0].attempt.deadlineAt=Date.now()-1;api.save(state); // expire clock, not reconciliation evidence
  await w.EAS.MarketOffersBatch.resume();state=api.read();equal(state.state,'uncertain','missing result pauses uncertain');
- const attempt=JSON.stringify(state.queue[0].attempt), id=state.executionId, owner=state.executionTab;
+ const attemptData=state.queue[0].attempt, attempt=JSON.stringify(attemptData), id=state.executionId, owner=state.executionTab;
+ const archivedEvidence=archive=>[archive.items[0].attemptId,archive.items[0].attemptState,archive.items[0].beforeCount,archive.uncertainty];
+ const expectedArchivedEvidence=[attemptData.attemptId,attemptData.state,attemptData.beforeSnapshot.offerIds.length,true];
  const panel=w.document.getElementById(api.PANEL_ID);equal(Boolean(panel),true,'uncertain panel visible');
  panel.querySelector('[data-action="stop"]').click();state=api.read();
  equal(state.state,'cancelled','STOP terminal');equal(state.paused,false,'not a resumable pause');
@@ -37,12 +39,12 @@
   equal(w.EAS.MarketOffersBatch,undefined,screen+' bootstrap does not load the cancelled controller');
   equal(w.EAS.MarketOffersExecution.initialize(),false,screen+' direct initializer also refuses terminal execution');
   equal(JSON.stringify(w.EASMarketOffersDebug.getExecution()),terminal,screen+' terminal state immutable');
-  equal(JSON.stringify(w.EASMarketOffersDebug.getArchive(id).queue[0].attempt),attempt,screen+' archived diagnostic survives navigation');
+  equal(archivedEvidence(w.EASMarketOffersDebug.getArchive(id)),expectedArchivedEvidence,screen+' archived diagnostic survives navigation');
   equal(w.EAS.MarketOffersExecution.batchDurationMs(w.EASMarketOffersDebug.getExecution(),Date.now()+999999),elapsed,screen+' duration frozen');
  }
  // Clearing active storage must retain the uncertain evidence in the diagnostic archive.
  equal(w.EAS.MarketOffersExecution.remove('test-clear-cancelled'),true,'terminal active record can be cleared safely');
- equal(JSON.stringify(w.EASMarketOffersDebug.getArchive(id).queue[0].attempt),attempt,'evidence survives active record removal');
+ equal(archivedEvidence(w.EASMarketOffersDebug.getArchive(id)),expectedArchivedEvidence,'evidence survives active record removal');
  frame.remove();document.querySelector('#result').textContent=failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions';document.title=failures.length?'FAIL':'PASS';
 })().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
 </script>

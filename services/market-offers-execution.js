@@ -36,17 +36,148 @@
         const end = Number(context.finishedAt || context.endedAt || now);
         return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0;
     };
+    // HISTORY is never a source for resume, authorization or reconciliation.
     const ARCHIVE_PREFIX = 'eas_tw_market_offers_archive:';
+    const ARCHIVE_POLICY = Object.freeze({ maxCount: 10, maxAgeMs: 7 * 86400000, maxBytes: 256 * 1024 });
+    const STORAGE_CONTRACT = Object.freeze({ execution: 'CRITICAL', archive: 'HISTORY', history: 'HISTORY',
+        config: 'CONFIG', analysis: 'CACHE', debugLog: 'DIAGNOSTIC' });
+    const archiveLog = (event, data) => {
+        try { EAS.Logger?.warn?.('MARKET', event, data); } catch {}
+    };
+    const archiveText = value => typeof value === 'string' ? value.slice(0, 240) : null;
+    const archiveTime = value => Number.isFinite(value) && value > 0 ? value : null;
+    const archiveUncertain = context => ['uncertain', 'verification-required', 'submitting', 'reconciling'].includes(context?.state) ||
+        context?.stoppedFromState === 'uncertain' || (context?.queue || []).some(item =>
+            ['uncertain', 'verification-required', 'submitting', 'reconciling'].includes(item.status) ||
+            item.attempt?.failureEvidence || (item.attempt?.submitAt && item.attempt.state !== 'completed'));
+    const compactArchive = context => ({
+        archiveKind: 'market-offers-history', version: 2, executionId: context.executionId,
+        createdAt: archiveTime(context.createdAt), finishedAt: archiveTime(context.finishedAt || context.endedAt),
+        state: archiveText(context.state), stopReason: archiveText(context.stopReason),
+        authorizedAt: archiveTime(context.batchAuthorization?.authorizedAt),
+        uncertainty: archiveUncertain(context), counts: completionSummary(context),
+        items: (context.queue || []).map(item => ({
+            id: typeof item.id === 'string' ? item.id : null, villageId: String(item.villageId || ''), status: archiveText(item.status),
+            offerResource: archiveText(item.offerResource), requestResource: archiveText(item.requestResource),
+            offerAmount: Number(item.amountPerOffer ?? item.offerAmount) || 0,
+            requestAmount: Number(item.requestAmountPerOffer ?? item.requestAmount) || 0,
+            repeatCount: Number(item.repeatCount) || 0, offerId: archiveText(item.offerId),
+            error: archiveText(item.error), manualOutcome: archiveText(item.manualResolution?.outcome),
+            attemptId: typeof item.attempt?.attemptId === 'string' ? item.attempt.attemptId : null, attemptState: archiveText(item.attempt?.state),
+            submittedAt: archiveTime(item.attempt?.submitAt),
+            evidence: archiveText(item.confirmation?.evidence),
+            beforeCount: Array.isArray(item.attempt?.beforeSnapshot?.offerIds) ? item.attempt.beforeSnapshot.offerIds.length : null,
+            failureReason: archiveText(item.attempt?.failureEvidence?.reason),
+            gameError: archiveText(item.attempt?.failureEvidence?.gameError),
+            afterOfferIds: Array.isArray(item.attempt?.failureEvidence?.afterSnapshot?.offerIds)
+                ? item.attempt.failureEvidence.afterSnapshot.offerIds.filter(id => typeof id === 'string' && /^\d+$/.test(id)).slice(0, 20) : [],
+            afterCount: Array.isArray(item.attempt?.failureEvidence?.afterSnapshot?.offerIds) ? item.attempt.failureEvidence.afterSnapshot.offerIds.length : null
+        }))
+    });
+    const recognizedV2Archive = (key, value) => {
+        const counts = value?.counts, items = value?.items;
+        return value?.archiveKind === 'market-offers-history' && value.version === 2 &&
+            typeof value.executionId === 'string' && key === ARCHIVE_PREFIX + value.executionId &&
+            BATCH_TERMINAL.has(value.state) && archiveTime(value.finishedAt) !== null &&
+            typeof value.uncertainty === 'boolean' && !value.batchAuthorization && counts &&
+            ['created', 'errors', 'skipped'].every(name => Number.isFinite(counts[name]) && counts[name] >= 0) &&
+            Array.isArray(items) && items.every(item => item && typeof item === 'object' && typeof item.status === 'string');
+    };
+    // Conservative validation: malformed/unknown records are never retention candidates.
+    const inspectArchive = (key, value) => {
+        const identity = typeof key === 'string' && key.startsWith(ARCHIVE_PREFIX) &&
+            typeof value?.executionId === 'string' && key === ARCHIVE_PREFIX + value.executionId;
+        const v2 = value?.archiveKind === 'market-offers-history' && value.version === 2;
+        const legacy = !value?.archiveKind && value?.version === EXECUTION_VERSION && !!value?.batchAuthorization;
+        const items = v2 ? value.items : value?.queue;
+        const terminal = identity && (v2 || legacy) && BATCH_TERMINAL.has(value.state) &&
+            archiveTime(value.finishedAt || value.endedAt) !== null && Array.isArray(items);
+        const safeItems = terminal && items.every(item => item &&
+            ['created', 'skipped', 'cancelled', 'canceled', 'pending', 'prepared'].includes(item.status) &&
+            (v2 ? !item.submittedAt || item.status === 'created' && item.attemptState === 'completed' && !!item.offerId
+                : !item.attempt?.submitAt || item.status === 'created' && item.attempt.state === 'completed' && !!item.offerId));
+        const eligible = Boolean(safeItems && (v2 ? value.uncertainty === false && !value.batchAuthorization : !archiveUncertain(value)));
+        return { format: v2 ? 'V2' : legacy ? 'V1' : 'UNKNOWN', eligible,
+            executionId: value?.executionId, finishedAt: value?.finishedAt || value?.endedAt };
+    };
+    // Explicit maintenance only for legacy records. V1 and V2 use independent policy totals.
+    const retainArchives = ({ includeLegacy = false, now = Date.now() } = {}) => {
+        const result = { removed: [], preserved: [], bytes: 0, v2Bytes: 0, v2Count: 0, legacyBytes: 0, legacyCount: 0 };
+        try {
+            const activeRaw = localStorage.getItem('eas_tw_market_offers_execution');
+            const active = activeRaw ? JSON.parse(activeRaw) : null;
+            if (activeRaw && !active?.executionId) throw Error('ACTIVE_IDENTITY_UNAVAILABLE');
+            const v2Candidates = [], legacyCandidates = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key?.startsWith(ARCHIVE_PREFIX)) continue;
+                const text = localStorage.getItem(key), bytes = 2 * (key.length + text.length);
+                result.bytes += bytes;
+                let value = null, info;
+                try { value = JSON.parse(text); info = inspectArchive(key, value); } catch {}
+                if (recognizedV2Archive(key, value)) { result.v2Count++; result.v2Bytes += bytes; }
+                if (info?.format === 'V1') { result.legacyCount++; result.legacyBytes += bytes; }
+                if (!info?.eligible || info.executionId === active?.executionId) result.preserved.push(key);
+                else if (recognizedV2Archive(key, value)) v2Candidates.push({ key, text, ...info, bytes });
+                else if (info.format === 'V1' && includeLegacy) legacyCandidates.push({ key, text, ...info, bytes });
+                else result.preserved.push(key);
+            }
+            const removeCandidates = (candidates, kind) => {
+                candidates.sort((a, b) => a.finishedAt - b.finishedAt || a.key.localeCompare(b.key));
+                for (const candidate of candidates) {
+                    const count = kind === 'V2' ? result.v2Count : result.legacyCount;
+                    const bytes = kind === 'V2' ? result.v2Bytes : result.legacyBytes;
+                    if (now - candidate.finishedAt <= ARCHIVE_POLICY.maxAgeMs && count <= ARCHIVE_POLICY.maxCount && bytes <= ARCHIVE_POLICY.maxBytes) continue;
+                // Recheck both ownership and value immediately before removal; no async gap.
+                    if (localStorage.getItem('eas_tw_market_offers_execution') !== activeRaw || localStorage.getItem(candidate.key) !== candidate.text) return false;
+                    localStorage.removeItem(candidate.key); result.removed.push(candidate.key);
+                    result.bytes -= candidate.bytes;
+                    if (kind === 'V2') { result.v2Bytes -= candidate.bytes; result.v2Count--; }
+                    else { result.legacyBytes -= candidate.bytes; result.legacyCount--; }
+                }
+                return true;
+            };
+            if (!removeCandidates(v2Candidates, 'V2')) return result;
+            if (includeLegacy) removeCandidates(legacyCandidates, 'V1');
+        } catch { archiveLog('ARCHIVE_RETENTION_FAILED', { reason: 'STORAGE_OR_IDENTITY_UNAVAILABLE' }); }
+        return result;
+    };
     const archiveBatch = context => {
         if (!batchTerminal(context)) return false;
         try {
             const key = ARCHIVE_PREFIX + context.executionId;
             if (localStorage.getItem(key)) return true;
-            const text = JSON.stringify(context); localStorage.setItem(key, text);
-            return localStorage.getItem(key) === text;
-        } catch { return false; }
+            const text = JSON.stringify(compactArchive(context));
+            // Admission applies only to recognized compact V2 history; protected V2 still counts.
+            let count = 0, bytes = 2 * (key.length + text.length);
+            for (let i = 0; i < localStorage.length; i++) {
+                const storedKey = localStorage.key(i);
+                if (!storedKey?.startsWith(ARCHIVE_PREFIX)) continue;
+                const storedText = localStorage.getItem(storedKey);
+                let storedValue = null; try { storedValue = JSON.parse(storedText); } catch {}
+                if (recognizedV2Archive(storedKey, storedValue)) { count++; bytes += 2 * (storedKey.length + storedText.length); }
+            }
+            if (count >= ARCHIVE_POLICY.maxCount || bytes > ARCHIVE_POLICY.maxBytes) throw Error('ARCHIVE_BUDGET');
+            localStorage.setItem(key, text);
+            if (localStorage.getItem(key) !== text) throw Error('ARCHIVE_READBACK');
+            return true;
+        } catch { archiveLog('ARCHIVE_WRITE_FAILED', { executionId: context.executionId, criticalStatePreserved: true }); return false; }
     };
-    const getArchivedBatch = executionId => { try { return JSON.parse(localStorage.getItem(ARCHIVE_PREFIX + executionId) || 'null'); } catch { return null; } };
+    // A failed optional history write cannot block replacement of a proven safe terminal
+    // record. Ambiguous/uncertain records still require preservation; never free critical
+    // state merely to make room. Replacement itself remains atomic + read-back checked.
+    const preserveTerminalHistory = context => archiveBatch(context) ||
+        inspectArchive(ARCHIVE_PREFIX + context.executionId, compactArchive(context)).eligible;
+    const getArchivedBatch = executionId => {
+        try {
+            const key = ARCHIVE_PREFIX + executionId, value = JSON.parse(localStorage.getItem(key) || 'null');
+            const info = inspectArchive(key, value);
+            if (info.format === 'UNKNOWN' || value?.executionId !== executionId) return null;
+            // Legacy diagnostics are projected too: never expose reusable authorization.
+            if (info.format === 'V1') return compactArchive(value);
+            return recognizedV2Archive(key, value) && !value.batchAuthorization ? value : null;
+        } catch { return null; }
+    };
     const amount = (value) => Math.max(0, Math.floor(Number(value) || 0));
     const isOwnOfferPage = (targetWindow = window) => { try { const params = new URL(targetWindow.location.href).searchParams; return params.get('screen') === 'market' && params.get('mode') === 'own_offer'; } catch { return false; } };
     const getDebugLogs = () => { try { return JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]'); } catch { return []; } };
@@ -59,11 +190,10 @@
     const save = (context) => {
         try {
             const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-            if (previous?.batchAuthorization && previous.executionId !== context.executionId && (!isExecutionFinished(previous) || !archiveBatch(previous))) return false;
+            if (previous?.batchAuthorization && previous.executionId !== context.executionId && (!isExecutionFinished(previous) || !preserveTerminalHistory(previous))) return false;
             if (context.batchAuthorization) {
                 if (previous && previous.executionId === context.executionId && Number(previous.revision || 0) !== Number(context.revision || 0)) return false;
                 if (previous && previous.executionId !== context.executionId && !isExecutionFinished(previous)) return false;
-                if (previous?.batchAuthorization && previous.executionId !== context.executionId && !archiveBatch(previous)) return false;
                 const candidate = { ...context, revision: Number(context.revision || 0) + 1 };
                 const text = JSON.stringify(candidate); localStorage.setItem(STORAGE_KEY, text);
                 if (localStorage.getItem(STORAGE_KEY) !== text) return false;
@@ -72,7 +202,7 @@
             localStorage.setItem(STORAGE_KEY, JSON.stringify(context)); return true;
         } catch { return false; }
     };
-    const remove = (reason = 'explicit-remove') => { const execution = read(); if (execution?.batchAuthorization && !archiveBatch(execution)) return false; logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); try { localStorage.removeItem(STORAGE_KEY); return true; } catch { return false; } };
+    const remove = (reason = 'explicit-remove') => { const execution = read(); if (execution?.batchAuthorization && !preserveTerminalHistory(execution)) return false; logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); try { localStorage.removeItem(STORAGE_KEY); return true; } catch { return false; } };
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
     const isExecutionFinished = (execution) => Boolean(execution && (batchTerminal(execution) || execution.finishedAt || execution.endedAt || (execution.queue || []).every((item) => TERMINAL.has(item.status))));
     const getMenuRuntime = (targetWindow = window) => targetWindow.EASMarketOfferMenuRuntime ||= { listenerInitialized: false, executionWindows: new Map(), handledExecutions: new Set(), channel: null };
@@ -606,7 +736,7 @@
         if (!EAS.MarketOffersBatch) await window.EASLoader.loadScript('services/market-offers-batch.js', { reason: 'authorized-market-batch' });
         return EAS.MarketOffersBatch;
     };
-    Object.assign(EAS.MarketOffersExecution, { canMarkErrorAndSkip, captureBatchSnapshot, canResumeBatch, finalizeBatchStop, archiveBatch, getArchivedBatch, batchDurationMs, disposeBatch, submitPreparedOffer, validateBatchForm, inspectBatchConfirmation, reconcileBatchDom, commitBatchResult, renderBatch,
+    Object.assign(EAS.MarketOffersExecution, { canMarkErrorAndSkip, captureBatchSnapshot, canResumeBatch, finalizeBatchStop, archiveBatch, getArchivedBatch, compactArchive, inspectArchive, retainArchives, ARCHIVE_POLICY, STORAGE_CONTRACT, batchDurationMs, disposeBatch, submitPreparedOffer, validateBatchForm, inspectBatchConfirmation, reconcileBatchDom, commitBatchResult, renderBatch,
         refreshBatchVillage: (item, targetWindow) => EAS.MarketEngine.refreshCurrentMarketVillageFromPage(targetWindow.document, item.villageId),
         startBatch: async context => (await loadBatch()).start(context),
         resumeBatch: async () => { const batch = await loadBatch(); await batch.resume(); return true; },

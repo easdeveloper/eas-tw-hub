@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result"></pre>
+<script>window.EAS={};window.game_data={world:'test',player:{id:1},village:{id:9}};</script>
+<script src="../services/market-offers-execution.js"></script>
+<script>
+try {
+ const api=EAS.MarketOffersExecution, prefix='eas_tw_market_offers_archive:';
+ const assert=(x,m)=>{if(!x)throw Error(m);};
+ // Test origin only: target exactly the test keys, never a shared prefix cleanup.
+ const key=prefix+'browser-history';localStorage.removeItem(key);localStorage.removeItem(api.STORAGE_KEY);
+ const c={version:3,executionId:'browser-history',state:'completed',finishedAt:1000,createdAt:1,
+ batchAuthorization:{authorizedAt:1,plan:'must-not-export'},queue:[{id:'item',villageId:'9',status:'created',offerId:'123',
+ attempt:{attemptId:'attempt',state:'completed',submitAt:2,beforeSnapshot:{offerIds:[],rows:[]}}}]};
+ assert(api.save(c),'critical persist');const critical=localStorage.getItem(api.STORAGE_KEY);
+ assert(api.archiveBatch(c),'archive persist');const a=api.getArchivedBatch(c.executionId);
+ assert(a.version===2&&!a.batchAuthorization&&!a.queue,'history-only projection');
+ assert(a.items[0].attemptId==='attempt'&&!api.canResumeBatch(a),'identity without authorization');
+ api.retainArchives({now:Date.now()});assert(localStorage.getItem(key),'current execution archive protected');
+ assert(localStorage.getItem(api.STORAGE_KEY)===critical,'critical bytes unchanged');
+ localStorage.removeItem(api.STORAGE_KEY);api.retainArchives({now:Date.now()});assert(!localStorage.getItem(key),'old eligible history removed');
+ document.title='PASS';document.querySelector('#result').textContent='PASS browser storage/history isolation';
+} catch(error){document.title='FAIL';document.querySelector('#result').textContent=error.stack;}
+</script>

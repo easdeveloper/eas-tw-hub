@@ -100,6 +100,7 @@
         if (context.currentIndex === context.queue.length) { context.endedAt = Date.now(); context.finishedAt = context.endedAt; context.state = 'completed'; }
         else context.state = 'running';
         persist(context); // Commit before cache/history/UI: none can authorize a second submission.
+        if (context.endedAt) { try { api.archiveBatch?.(context); } catch { /* Optional history cannot change a committed result. */ } }
         log('MARKET_ITEM_COMPLETED', context, item, { result: result.evidence });
         try { api.commitBatchResult?.(context, item, result, w); } catch { if (!context.endedAt) return pause(context, 'error', 'CACHE_PROMOTION_FAILED'); }
         log(context.endedAt ? 'MARKET_QUEUE_COMPLETED' : 'MARKET_QUEUE_ADVANCE', context, current(context));
