@@ -89,12 +89,36 @@ still uses existing revision/read-back protections. Ambiguous terminal contexts 
 archive preservation gate. A failed critical write remains a failed critical write.
 Archive logging is best-effort and cannot throw into execution.
 
-## Phase 2 only
+## Fakes Summary V2
 
-FakesExecution still builds `summary = {...context, counts, finishedAt, stopped}`.
-A characterization test documents that existing behavior; no Fake code was changed.
-Future work: compact active records, diagnostic consolidation and evidence storage are
-separate migrations. No IndexedDB migration, loader change or generated build in Phase 1.
+`eas_tw_fakes_execution_summary` is history-only, explicitly tagged with
+`summaryKind: "fakes-execution-summary"` and `version: 2`. It contains terminal
+metadata/counts, compact per-command result rows, and a separate unresolved-attempt
+evidence list. It omits the active queue objects, execution tab binding, auto mode,
+forwarding state, troop configuration, and raw outgoing snapshot object.
+
+Top-level fields are `summaryKind`, `version`, `createdAt`, `finishedAt`, `elapsedMs`,
+`stopped`, optional `stopReason`, `preset`, `commandType`, `counts`, `results`, and
+`unresolvedEvidence`. Result rows contain `commandRef`, source/target village IDs,
+target coordinate, terminal `outcome`, and only applicable executed command type,
+matched outgoing command ID, completion time, or compact error code/reason/time.
+Unresolved evidence contains the non-authorizing command reference and source/target,
+attempt state/time, outgoing snapshot capture time, baseline command IDs, and reason.
+The raw attempt ID is omitted because current attempt IDs embed the execution-tab token.
+Completed/reconciled rows do not retain baseline command ID arrays.
+
+The ordering remains: persist the full terminal execution to
+`eas_tw_fakes_execution`; write the projected V2 summary; only then remove the active
+execution and Fake preset mirrors. If the optional summary write fails, the terminal
+active context remains stored and cannot resume because it is already finished.
+Summary V2 is never read by resume or reconciliation. Existing unversioned summaries
+are legacy V1; they are neither migrated nor deleted, and a later successful run may
+overwrite the existing single summary slot.
+
+The 730-command `fakes-auto-execution.test.cjs` fixture measures the full-context
+legacy-equivalent and compact V2 serialized sizes during the same test run; random
+attempt identifiers make the legacy byte count vary slightly between runs. Active
+execution persistence and outgoing baseline/reconciliation logic are unchanged.
 
 ## Measured synthetic fixture
 

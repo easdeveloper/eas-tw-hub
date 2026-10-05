@@ -5,9 +5,9 @@ const fs = require('node:fs');
 const source = fs.readFileSync('services/fakes-execution.js', 'utf8');
 const outgoingRow = require('./outgoing-dom.cjs').row;
 const KEY = 'eas_tw_fakes_execution';
-function fixture(size = 3, startTime = 100000) {
+function fixture(size = 3, startTime = 100000, options = {}) {
     let now = startTime, timerId = 0, preparations = 0, attacks = 0, confirmations = 0;
-    const timers = new Map(), storage = new Map(), events = [];
+    const timers = new Map(), storage = new Map(), events = []; let legacyEquivalentBytes = null;
     const read = () => JSON.parse(storage.get(KEY) || 'null');
     const write = value => storage.set(KEY, JSON.stringify(value));
     const nodes = new Map();
@@ -25,7 +25,7 @@ function fixture(size = 3, startTime = 100000) {
     const sandbox = { window, URL, console:{debug(){},error(){}}, Date:class extends Date { static now(){return now;} },
         setTimeout(fn, ms) { const id=++timerId;timers.set(id,{fn,at:now+ms});return id; },
         clearTimeout(id) {timers.delete(id);},
-        localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
+        localStorage:{getItem:k=>storage.get(k)||null,setItem(k,v){if(k==='eas_tw_fakes_execution_summary'){if(options.summaryWriteFailure)throw Error('quota');const terminal=JSON.parse(storage.get(KEY)||'null');legacyEquivalentBytes=Buffer.byteLength(JSON.stringify({...terminal,elapsedMs:JSON.parse(v).elapsedMs}));}storage.set(k,v);},removeItem:k=>storage.delete(k)},
         EAS:{ Utils:{parseCoordinate:value=>/^\d+\|\d+$/.test(value)?{coordinate:value}:null},
             CommandRules:{scanCommandRuleErrors:()=>[],validateCommandComposition:()=>({valid:true}),getWorld:()=> 'test'},
             Place:{getCommandForm:()=>form, readTargetReadiness:target=>({targetReady:resolved&&input.value===target,actualTarget:input.value,reason:'TARGET_RESOLUTION_MISSING'}), ensureCommandTarget:target=>({targetValidated:input.value===target}), fillCommandTarget(target){preparations++;events.push('prepare');assert.equal(read().queue[read().currentIndex].status,'preparing');input.value=target;return true;},
@@ -78,7 +78,8 @@ function fixture(size = 3, startTime = 100000) {
         next(){const c=read();navigate('place',c.queue[c.currentIndex].villageId);api().initialize();},
         success(){const c=read();navigate('success',c.queue[c.currentIndex].villageId);api().initialize();tick();},
         confirmation(){const c=read();navigate('confirm',c.queue[c.currentIndex].villageId);api().initialize();tick();},
-        summary:()=>JSON.parse(storage.get('eas_tw_fakes_execution_summary')||'null')};
+        summary:()=>JSON.parse(storage.get('eas_tw_fakes_execution_summary')||'null'),
+        summarySizes:()=>{const summary=JSON.parse(storage.get('eas_tw_fakes_execution_summary')||'null');return {v2Bytes:Buffer.byteLength(JSON.stringify(summary)),legacyEquivalentBytes};}};
 }
 
 test('pending prepares, then attacks after a separate delay; duplicate bootstrap creates one timer',()=>{
@@ -96,7 +97,9 @@ test('730 authorized commands execute sequentially, with one preparation/attack/
     }
     assert.equal(f.read(),null);assert.deepEqual(f.counts(),{preparations:730,attacks:730,confirmations:730});
     assert.deepEqual(f.summary().counts,{total:730,completed:730,skipped:0,errors:0,remaining:0});
-    assert.equal(f.summary().queue.length,730);assert.equal(f.timers.size,0);
+    assert.equal(f.summary().results.length,730);assert.equal(f.timers.size,0);
+    const {v2Bytes,legacyEquivalentBytes}=f.summarySizes();
+    console.log('FAKES_SUMMARY_V2_SIZE '+JSON.stringify({legacyEquivalentBytes,v2Bytes,reductionPercent:Number((100*(1-v2Bytes/legacyEquivalentBytes)).toFixed(2))}));
 });
 for(const state of ['preparing','prepared']) test(`reload during ${state} pauses without repeating preparation`,()=>{
     const f=fixture();const c=f.read();c.queue[0].status=state;f.write(c);f.reload('place');f.tick();
@@ -132,9 +135,48 @@ test('empty queue finishes and retains summary',()=>{const f=fixture(0);f.run();
 test('stop cancels the pending action and preserves audit',()=>{
     const f=fixture();f.run();f.tick();f.api().automaticControl(f.window,'stop');assert.equal(f.timers.size,0);assert.equal(f.read(),null);assert.equal(f.run(),false);assert.equal(f.counts().attacks,0);assert.equal(f.summary().stopped,true);
 });
+test('Summary V2 is an explicit history-only projection with compact successful outcomes',()=>{
+    const f=fixture(1);f.run();f.tick();f.tick();f.confirmation();f.success();
+    const summary=f.summary();
+    assert.equal(summary.summaryKind,'fakes-execution-summary');assert.equal(summary.version,2);
+    assert.equal(summary.counts.completed,1);assert.equal(summary.stopped,false);
+    assert.equal(summary.finishedAt>0,true);assert.equal(summary.createdAt,100000);assert.equal(summary.elapsedMs,summary.finishedAt-summary.createdAt);
+    assert.equal(summary.results.length,1);assert.equal(summary.results[0].outcome,'completed');
+    assert.equal(summary.results[0].sourceVillageId,'9');assert.equal(summary.results[0].target,'501|501');
+    assert.ok(summary.results[0].outgoingCommandId);assert.deepEqual(summary.unresolvedEvidence,[]);
+    for(const field of ['autoMode','executionTab','forwardingIndex','forwardingCommandType','forwardingStartedAt','currentIndex','continueQueue','paused','queue','troopsPerTarget','selectedVillageIds'])assert.equal(Object.hasOwn(summary,field),false,field);
+    assert.equal(JSON.stringify(summary).includes('outgoingSnapshot'),false);
+    assert.equal(JSON.stringify(summary).includes('auto-tab'),false);
+});
+test('stopped unresolved attempt retains baseline evidence without execution tokens',()=>{
+    const f=fixture(1);f.run();f.tick();f.tick();
+    const activeBefore=f.read().queue[0];assert.ok(activeBefore.confirmationAttempt.outgoingSnapshot.beforeCommandIds);
+    assert.equal(f.counts().attacks,1);
+    const baseline=[...activeBefore.confirmationAttempt.outgoingSnapshot.beforeCommandIds];
+    f.api().automaticControl(f.window,'stop');
+    const summary=f.summary(),evidence=summary.unresolvedEvidence[0];
+    assert.equal(summary.stopped,true);assert.equal(summary.stopReason,'USER_STOP');
+    assert.equal(summary.results[0].outcome,'uncertain');
+    assert.equal(evidence.commandRef,'0:9:501|501');assert.equal(evidence.sourceVillageId,'9');
+    assert.equal(evidence.attemptState,'preparing');assert.deepEqual(evidence.beforeCommandIds,baseline);
+    assert.ok(evidence.attemptAt);assert.ok(evidence.snapshotCapturedAt);assert.ok(evidence.reason);
+    for(const field of ['executionTab','executionId','attemptId','outgoingSnapshot','forwardingIndex'])assert.equal(Object.hasOwn(evidence,field),false,field);
+    assert.equal(JSON.stringify(summary).includes('auto-tab'),false);
+});
+test('Summary V2 write failure retains terminal active context and cannot resume or resend',()=>{
+    const f=fixture(1,100000,{summaryWriteFailure:true});f.run();f.tick();f.tick();
+    assert.equal(f.counts().attacks,1);
+    assert.equal(f.api().automaticControl(f.window,'stop'),false);
+    const terminal=f.read();assert.equal(terminal.finishedAt>0,true);assert.equal(terminal.stopped,true);
+    assert.equal(terminal.queue[0].status,'attacking');
+    assert.equal(terminal.queue[0].confirmationAttempt.outgoingSnapshot.beforeCommandIds.length,0);
+    assert.equal(f.summary(),null);assert.equal(f.api().initialize(),false);assert.equal(f.api().resume(f.window),false);
+    assert.equal(f.counts().attacks,1);assert.equal(f.counts().confirmations,0);
+    assert.equal(terminal.autoMode,true);assert.equal(terminal.executionTab,'auto-tab');
+});
 test('skip and error-skip continue at next command and keep counters correct',()=>{
     const f=fixture();f.run();f.api().automaticControl(f.window,'skip');f.next();f.api().automaticControl(f.window,'error');f.next();f.tick();f.tick();f.confirmation();f.success();
-    assert.deepEqual(f.summary().counts,{total:3,completed:1,skipped:1,errors:1,remaining:0});assert.equal(f.summary().errors.length,1);assert.equal(f.counts().attacks,1);
+    assert.deepEqual(f.summary().counts,{total:3,completed:1,skipped:1,errors:1,remaining:0});assert.equal(f.summary().results[1].error.reason,'Erro marcado pelo usuário.');assert.equal(f.counts().attacks,1);
 });
 test('active command cannot be skipped until paused for explicit recovery',()=>{
     const f=fixture();f.run();f.tick();f.tick();assert.equal(f.api().automaticControl(f.window,'skip'),false);assert.equal(f.read().currentIndex,0);
@@ -151,9 +193,17 @@ test('start authorizes AUTO once and binds the village window before the first p
 });
 test('start with an empty authorized queue completes without opening a village',async()=>{
     const f=fixture();assert.equal(await f.api().start({queue:[]}),true);assert.equal(f.read(),null);assert.equal(f.summary().counts.total,0);
+    assert.equal(f.summary().summaryKind,'fakes-execution-summary');assert.equal(f.summary().results.length,0);
 });
 test('last command error completes with an error audit and no send',()=>{
-    const f=fixture(1);f.run();f.tick();f.unit().value=9;f.tick();assert.equal(f.read(),null);assert.equal(f.summary().counts.errors,1);assert.equal(f.summary().errors[0].state,'prepared');assert.equal(f.counts().attacks,0);
+    const f=fixture(1);f.run();f.tick();f.unit().value=9;f.tick();assert.equal(f.read(),null);assert.equal(f.summary().counts.errors,1);assert.equal(f.summary().results[0].outcome,'error');assert.equal(f.summary().results[0].error.reason,'Campos preparados foram alterados. Verifique tropas e alvo.');assert.equal(f.counts().attacks,0);
+});
+test('legacy V1 summary is left untouched until a later successful run overwrites the slot',()=>{
+    const f=fixture(0);const legacy={queue:[{status:'legacy'}],autoMode:true};
+    f.storage.set('eas_tw_fakes_execution_summary',JSON.stringify(legacy));
+    f.run();f.tick();
+    assert.equal(f.summary().summaryKind,'fakes-execution-summary');assert.equal(f.summary().version,2);
+    assert.equal(Object.hasOwn(f.summary(),'queue'),false);
 });
 test('a new execution invalidates the previous controller before any action',()=>{
     const f=fixture();f.run();const c=f.read();c.executionTab='replacement';f.write(c);f.tick();assert.equal(f.counts().preparations,0);assert.equal(f.timers.size,0);
@@ -191,7 +241,7 @@ test('three commands rearm confirmation through cached bootstrap; duplicate comm
         if(i<2){f.navigate('place',9,true);await bootstrap();}
     }
     assert.equal(f.counts().confirmations,3);assert.equal(new Set(attempts).size,3);
-    assert.equal(f.read(),null);assert.ok(f.summary().queue.every(entry=>entry.confirmationAttempt.state==='completed'));
+    assert.equal(f.read(),null);assert.ok(f.summary().results.every(entry=>entry.outcome==='completed'&&entry.outgoingCommandId));
 });
 test('a stale previous-command runtime cannot suppress or process the next confirmation',()=>{
     const f=fixture(3);f.run();f.tick();f.tick();f.confirmation();
