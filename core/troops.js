@@ -396,8 +396,45 @@
         };
     };
 
+    const hasAllVillagesSelected = (doc) => {
+        const pageLinks = Array.from(doc.querySelectorAll('.paged-nav-item'));
+        let container = null;
+        if (pageLinks.length) {
+            container = pageLinks[0].parentElement;
+            if (!container || pageLinks.some(link => link.parentElement !== container)) return false;
+        } else {
+            const wrappers = Array.from(doc.querySelectorAll('.paged-nav, .pagination'));
+            if (wrappers.length === 1) container = wrappers[0];
+            else if (wrappers.length === 0) {
+                const current = Array.from(doc.querySelectorAll('.paged-nav-item-current, [aria-current="page"]'));
+                const parents = [...new Set(current.map(node => node.parentElement).filter(Boolean))];
+                if (parents.length === 1) container = parents[0];
+            }
+        }
+        if (!container) return false;
+
+        const candidates = Array.from(container.querySelectorAll(
+            '.paged-nav-item-current, [aria-current="page"], strong, b, select option:checked'
+        ));
+        // A current link may wrap its own <strong>; treat that as one selected
+        // state rather than two, while keeping sibling states independently checked.
+        const outerCandidates = candidates.filter(candidate =>
+            !candidates.some(other => other !== candidate && other.contains(candidate))
+        );
+        const selectedLabels = new Set(outerCandidates.map(node => {
+            if (node.tagName === 'OPTION' && node.value === '-1') return 'todos';
+            const text = normalizeText(node.textContent);
+            const unwrapped = text.replace(/^[^a-z]+|[^a-z]+$/g, '').trim();
+            return unwrapped === 'todos' ? 'todos' : text;
+        }).filter(Boolean));
+        return selectedLabels.size === 1 && selectedLabels.has('todos');
+    };
+
     const hasPagination = (doc, parsedVillageCount) => {
         const pager = doc.querySelector('.paged-nav-item, .paged-nav-item-current, .pagination');
+        // BR143 keeps page links in the navigation when the selected view is Todos.
+        // Only an explicit selected DOM label proves that these links are residual.
+        if (pager && hasAllVillagesSelected(doc)) return false;
         const pageSizeText = normalizeText(doc.body?.textContent || '');
         const pageSizeMatch = pageSizeText.match(/aldeias por pagina:\s*(\d+)/);
         const pageSize = Number(pageSizeMatch?.[1] || 0);
