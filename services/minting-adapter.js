@@ -2,9 +2,46 @@
     'use strict';
     EAS.Adapters ||= {};
     EAS.Selectors ||= {};
+    // Preserve the controller's existing state names; expose their semantic contract.
+    // NO_ACADEMY requires separate native evidence, not an absent form or token.
+    const STATES = Object.freeze({ AUTO_MINT_AVAILABLE: 'AVAILABLE', AUTO_MINT_ACTIVE: 'ACTIVE',
+        AUTO_MINT_UNAVAILABLE: 'UNAVAILABLE', NO_ACADEMY: 'NO_ACADEMY', READ_ERROR: 'PARSE_FAILED' });
     const START = 'start_auto_minting_session', CANCEL = 'cancel_auto_minting_session';
     const selectors = EAS.Selectors.Minting = Object.freeze({ table: 'table.auto-minting', token: 'input[name="h"]',
         login: 'form#login, input[type="password"], input[name="password"]' });
+    // Like Arrival Planner, encode the displayed server calendar with UTC fields.
+    // This is server wall time, not a Unix instant in the player's PC timezone.
+    const formatEndTime = value => {
+        if (!Number.isSafeInteger(value)) return '—';
+        const date = new Date(value), pad = n => String(n).padStart(2, '0');
+        if (!Number.isFinite(date.getTime())) return '—';
+        return `${pad(date.getUTCDate())}/${pad(date.getUTCMonth() + 1)}/${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+    };
+    const readActiveEndTime = (form, doc) => {
+        try {
+            const controls = form.closest('.auto-minting-controls');
+            if (!controls) return null;
+            // Read a complete leaf line in the proven surrounding controls only.
+            const lines = [...controls.querySelectorAll('div')].filter(node => !node.children.length)
+                .map(node => node.textContent.replace(/\s+/g, ' ').trim()).filter(text => /^Fim\s*:/i.test(text));
+            if (lines.length !== 1) return null;
+            const match = /^Fim:\s*(hoje|amanhã)\s+às\s+(\d{2}):(\d{2}):(\d{2})$/i.exec(lines[0]);
+            if (!match || +match[2] > 23 || +match[3] > 59 || +match[4] > 59) return null;
+            const dates = [...doc.querySelectorAll('#serverDate')];
+            if (dates.length > 1) return null;
+            // Detached responses must use their own date, including across midnight.
+            // Never substitute the PC date or a newer live-page date for a response.
+            const live = !dates.length && doc === document ? EAS.World?.getServerDateTime?.() : null;
+            const dateText = dates[0]?.textContent.trim() || (live?.available ? live.date : '');
+            const parts = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dateText || '');
+            if (!parts) return null;
+            const [, day, month, year] = parts.map(Number), date = new Date(Date.UTC(year, month - 1, day));
+            if (year < 1970 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+            date.setUTCDate(date.getUTCDate() + (match[1].toLowerCase() === 'amanhã' ? 1 : 0));
+            date.setUTCHours(+match[2], +match[3], +match[4], 0);
+            return date.getTime();
+        } catch { return null; } // Optional metadata must never change the ACTIVE decision.
+    };
     // TEMPORARY development diagnostics: remove after live Academy parsing is validated.
     // Only sanitized metadata is logged, never HTML or field values.
     const TEMPORARY_LIVE_DIAGNOSTICS = true;
@@ -18,6 +55,7 @@
                 for (const [key, val] of url.searchParams) {
                     if ((['village', 'group', 't'].includes(key) && /^\d{1,20}$/.test(val))
                         || (key === 'screen' && ['snob', 'overview', 'place', 'login'].includes(val))
+                        || (key === 'mode' && val === 'train')
                         || (key === 'action' && [START, CANCEL].includes(val))) query.append(key, val);
                 }
                 return (url.origin === origin ? origin : '[external-origin]')
@@ -99,8 +137,14 @@
                 return { hasUI: Boolean(ui), hasFixupCSRFInUrl: typeof ui?.fixupCSRFInUrl === 'function' };
             } catch { return { hasUI: false, hasFixupCSRFInUrl: false }; }
         };
+        const diagnosticForms = (doc, baseUrl) => [...new Set([
+            ...(doc?.querySelectorAll('table.auto-minting form') || []),
+            ...[...(doc?.querySelectorAll('form') || [])].filter(form => {
+                try { return [START, CANCEL].includes(new URL(form.getAttribute('action'), baseUrl).searchParams.get('action')); } catch { return false; }
+            })
+        ])];
         const liveDiagnostic = (page, result, villageId, requestedUrl) => {
-            const doc = page.doc, forms = [...(doc?.querySelectorAll('table.auto-minting form') || [])];
+            const doc = page.doc, forms = diagnosticForms(doc, page.url);
             const selected = result.diagnostics;
             const candidates = action => forms.filter(form => { try { return new URL(form.getAttribute('action'), page.url).searchParams.get('action') === action; } catch { return false; } }).length;
             return {
@@ -116,6 +160,7 @@
                 selectedState: result.state, selectedFormAction: selected?.selectedAction ?? null,
                 selectedFormMethod: selected?.method ?? null, selectedFormFieldNames: selected?.fieldNames ?? [],
                 selectedFormHasH: Boolean(selected?.selectedHCount),
+                tokenSource: selected?.tokenSource ?? null, academyPresent: selected?.academyPresent ?? null,
                 resultReason: result.reason,
                 rawFormDiagnostics: forms.map(form => rawFormDiagnostic(form, page.url)),
                 runtimeDiagnostics: runtimeDiagnostic(),
@@ -136,7 +181,7 @@
         const academyUrl = villageId => {
             if (!/^[1-9]\d*$/.test(String(villageId))) throw new Error('INVALID_VILLAGE');
             const url = new URL('/game.php', origin);
-            url.search = new URLSearchParams({ village: String(villageId), screen: 'snob' }).toString();
+            url.search = new URLSearchParams({ village: String(villageId), screen: 'snob', mode: 'train' }).toString();
             const sitter = String(gameData().player?.sitter || 0);
             if (sitter !== '0') url.searchParams.set('t', sitter);
             return url;
@@ -144,36 +189,44 @@
         const parsePage = (doc, url, villageId) => {
             const diagnostics = { finalGetUrl: safeUrl(url), formCount: doc.querySelectorAll('form').length,
                 tableCount: doc.querySelectorAll(selectors.table).length, candidateCount: 0, selectedAction: null,
-                method: null, fieldNames: [], documentHCount: doc.querySelectorAll(selectors.token).length, selectedHCount: 0, selectedHHasValue: false };
+                method: null, fieldNames: [], tokenSource: null, actionHCount: 0, academyPresent: null, documentHCount: doc.querySelectorAll(selectors.token).length, selectedHCount: 0, selectedHHasValue: false };
             const base = { villageId: String(villageId), state: 'PARSE_FAILED', reason: null, endTime: null, actionUrl: null, h: null, diagnostics };
             const result = (state, reason = null) => ({ ...base, state, reason });
             if (doc.querySelector(selectors.login)) return result('SESSION_INVALID', 'LOGIN_PAGE');
             if (!sameContext(url, villageId) || doc.querySelector('meta[http-equiv="refresh" i]')) return result('SESSION_INVALID', 'INVALID_PAGE');
-            if (!diagnostics.tableCount) {
-                const academyPage = doc.querySelector('#content_value, #contentContainer') || (doc.querySelector('#serverDate') && doc.querySelector('#serverTime'));
-                return academyPage ? result('UNAVAILABLE', 'NO_AUTO_MINTING_TABLE') : result('PARSE_FAILED', 'INVALID_PAGE');
-            }
-            if (diagnostics.tableCount !== 1) return result('PARSE_FAILED', 'MULTIPLE_TABLES');
-            const table = doc.querySelector(selectors.table), forms = [...table.querySelectorAll('form')];
+            if (doc.querySelector('.error_box, .error')) return result('PARSE_FAILED', 'GAME_ERROR');
+            // The official action is the evidence; a surrounding table is optional.
+            // Missing forms/tokens never prove that a village has no Academy.
+            if (diagnostics.tableCount > 1) return result('PARSE_FAILED', 'MULTIPLE_TABLES');
+            const forms = [...doc.querySelectorAll('form')];
+            diagnostics.academyPresent = Boolean(diagnostics.tableCount || doc.querySelector('#gold_overview')) || null;
             const candidates = forms.filter(form => {
                 try { return [START, CANCEL].includes(new URL(form.getAttribute('action'), url).searchParams.get('action')); }
                 catch { return false; }
             });
             diagnostics.candidateCount = candidates.length;
-            if (!candidates.length) return forms.length ? result('PARSE_FAILED', 'INVALID_ACTION') : result('UNAVAILABLE', 'NO_AUTO_MINTING_FORM');
+            if (!candidates.length) return forms.length ? result('PARSE_FAILED', 'INVALID_ACTION')
+                : result(diagnostics.academyPresent ? 'UNAVAILABLE' : 'PARSE_FAILED', 'NO_AUTO_MINT_FORM');
             if (candidates.length !== 1) return result('PARSE_FAILED', 'MULTIPLE_FORMS');
             const form = candidates[0], action = new URL(form.getAttribute('action'), url), kind = action.searchParams.get('action');
-            const tokens = form.querySelectorAll(selectors.token);
+            const tokens = form.querySelectorAll(selectors.token), queryTokens = action.searchParams.getAll('h');
             Object.assign(diagnostics, { selectedAction: safeUrl(action), method: form.method.toUpperCase(),
                 fieldNames: [...new Set([...form.querySelectorAll('[name]')].map(field => /^[a-z_\[\]]{1,40}$/.test(field.getAttribute('name')) ? field.getAttribute('name') : '[redacted-name]'))],
-                selectedHCount: tokens.length, selectedHHasValue: tokens.length === 1 && Boolean(tokens[0].value.trim()) });
+                actionHCount: queryTokens.length, selectedHCount: tokens.length, selectedHHasValue: tokens.length === 1 && Boolean(tokens[0].value.trim()) });
             if (!sameContext(action, villageId, kind)) return result('PARSE_FAILED', 'INVALID_ACTION');
             if (form.method.toLowerCase() !== 'post') return result('PARSE_FAILED', 'INVALID_METHOD');
-            if (!tokens.length || (tokens.length === 1 && !tokens[0].value.trim())) return result('PARSE_FAILED', 'NO_H_FIELD');
-            if (tokens.length !== 1 || tokens[0].matches(':disabled') || tokens[0].form !== form) return result('PARSE_FAILED', 'INVALID_H_FIELD');
+            diagnostics.academyPresent = true;
+            if (tokens.length > 1 || (tokens.length === 1 && (tokens[0].matches(':disabled') || tokens[0].form !== form))) return result('PARSE_FAILED', 'INVALID_H_FIELD');
+            if (queryTokens.length > 1) return result('PARSE_FAILED', 'INVALID_H_TOKEN');
+            const inputToken = tokens.length ? tokens[0].value : null, queryToken = queryTokens.length ? queryTokens[0] : null;
+            if (inputToken !== null && queryToken !== null && inputToken !== queryToken) return result('PARSE_FAILED', 'H_TOKEN_CONFLICT');
+            const token = queryToken ?? inputToken;
+            if (!token?.trim()) return result('PARSE_FAILED', 'NO_H_TOKEN');
+            diagnostics.tokenSource = queryToken !== null ? (inputToken !== null ? 'action-and-input' : 'action-query') : 'form-input';
             if ([...form.querySelectorAll('input[name], select[name], textarea[name], button[name]')].some(field => field.name !== 'h' && !field.matches(':disabled'))) return result('PARSE_FAILED', 'UNSUPPORTED_FIELDS');
             if (form.querySelector('button:disabled, input[type="submit"]:disabled')) return result('UNAVAILABLE', 'DISABLED_CONTROL');
-            return { ...base, state: kind === START ? 'AVAILABLE' : 'ACTIVE', actionUrl: action.href, h: tokens[0].value };
+            return { ...base, state: kind === START ? 'AVAILABLE' : 'ACTIVE', actionUrl: action.href, h: token, tokenInInput: tokens.length === 1,
+                endTime: kind === CANCEL ? readActiveEndTime(form, doc) : null };
         };
         const requestDocument = async (url, options = {}) => {
             const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), 20000);
@@ -204,33 +257,33 @@
             try { onDiagnostic(liveDiagnostic(page, result, villageId, requestedGetUrl)); } catch {}
             return result;
         };
-        const activateVillage = async (row, { beforePost = () => true } = {}) => {
+        const activateVillage = async (row, { beforePost = () => false } = {}) => {
             const id = String(row.villageId);
-            const result = (state, outcome, reason = null) => ({ villageId: id, state, outcome, reason, endTime: null });
+            const result = (state, outcome, reason = null, endTime = null) => ({ villageId: id, state, outcome, reason, endTime });
             if (pending.has(id)) return result('PARSE_FAILED', 'SKIPPED', 'ALREADY_RUNNING');
             pending.add(id);
             let sent = false;
             try {
                 const current = await inspectMinting(id);
-                if (current.state !== 'AVAILABLE') return result(current.state, 'SKIPPED', current.reason || 'ALREADY_ACTIVE');
+                if (current.state !== 'AVAILABLE') return result(current.state, 'SKIPPED', current.reason || 'ALREADY_ACTIVE', current.endTime);
                 // The controller durably claims this attempt before the only POST.
                 if (beforePost() !== true) return result('AVAILABLE', 'SKIPPED', 'CANCELLED');
                 sent = true;
-                const page = await requestDocument(current.actionUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ h: current.h }).toString() });
+                const page = await requestDocument(current.actionUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(current.tokenInInput ? { h: current.h } : {}).toString() });
                 if (!page.doc) return result('UNCERTAIN', 'UNCERTAIN', page.reason);
                 const response = parsePage(page.doc, page.url, id);
                 if (response.state === 'SESSION_INVALID') return result('UNCERTAIN', 'UNCERTAIN', response.reason);
                 // A final fresh Academy GET confirms the official state, not an HTTP status or success text.
                 const final = await inspectMinting(id);
-                return final.state === 'ACTIVE' ? result('ACTIVE', 'ACTIVATED') : result('UNCERTAIN', 'UNCERTAIN', final.reason || 'ACTIVATION_NOT_CONFIRMED');
+                return final.state === 'ACTIVE' ? result('ACTIVE', 'ACTIVATED', null, final.endTime) : result('UNCERTAIN', 'UNCERTAIN', final.reason || 'ACTIVATION_NOT_CONFIRMED');
             } catch { return result(sent ? 'UNCERTAIN' : 'PARSE_FAILED', sent ? 'UNCERTAIN' : 'SKIPPED', 'REQUEST_FAILED'); }
             finally { pending.delete(id); }
         };
-        return { available: true, parsePage, inspectMinting, activateVillage,
+        return { available: true, states: STATES, formatEndTime, parsePage, inspectMinting, activateVillage,
             async inspectVillage(village) {
                 const value = await inspectMinting(village.id);
                 // Explicit allowlist: tokens, action URLs and documents never reach storage/UI.
-                return { villageId: String(village.id), villageName: village.name || String(village.id), state: value.state, reason: value.reason, endTime: null };
+                return { villageId: String(village.id), villageName: village.name || String(village.id), state: value.state, reason: value.reason, endTime: value.endTime };
             } };
     };
     EAS.Adapters.Minting = { ...createAdapter(), createAdapter };

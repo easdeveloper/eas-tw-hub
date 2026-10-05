@@ -1,0 +1,47 @@
+<!doctype html><meta charset="utf-8"><title>Minting end time</title><pre id="result">running</pre>
+<script>window.EAS={World:{getGameData:()=>({player:{id:1}}),getServerDateTime:()=>({available:true,date:'31/12/2040',time:'23:59:59'})}};</script>
+<script src="../services/minting-adapter.js"></script><script src="../services/minting.js"></script>
+<script>
+(async()=>{let count=0,errors=[];const check=(v,m)=>{count++;if(!v)errors.push(m)};
+try{
+ const html=await(await fetch('fixtures/minting/br143-auto-active.html')).text(),a=EAS.Adapters.Minting;
+ const url=new URL('/game.php?village=199&screen=snob&mode=train',location.origin);
+ const parse=s=>a.parsePage(new DOMParser().parseFromString(s,'text/html'),url,'199');
+ let r=parse(html);const end=Date.UTC(2026,9,2,6,14,57);
+ check(r.state==='ACTIVE','cancel action proves ACTIVE');check(r.endTime===end,'tomorrow uses response server date, not live/PC date');
+ check(a.formatEndTime(r.endTime)==='02/10/2026 06:14:57','server-calendar formatting');
+ check(parse(html.replace('amanhã','hoje')).endTime===Date.UTC(2026,9,1,6,14,57),'today server day');
+ for(const [day,clock,expected] of [
+  ['01/10/2026','00:00:00',Date.UTC(2026,9,2)],
+  ['31/10/2026','06:14:57',Date.UTC(2026,10,1,6,14,57)],
+  ['31/12/2026','06:14:57',Date.UTC(2027,0,1,6,14,57)],
+  ['28/02/2028','06:14:57',Date.UTC(2028,1,29,6,14,57)],
+  ['28/02/2027','06:14:57',Date.UTC(2027,2,1,6,14,57)]
+ ])check(parse(html.replace('01/10/2026',day).replace('22:14:57','23:59:59').replace('06:14:57',clock)).endTime===expected,'calendar rollover '+day+' '+clock);
+ for(const text of ['Fim: ontem às 06:14:57','Fim: amanhã às 24:14:57','Fim: hoje às 06:60:57','Fim: hoje às 06:14:60','Fim: ??','']){
+  r=parse(html.replace('Fim: amanhã às 06:14:57',text));check(r.state==='ACTIVE'&&r.endTime===null,'optional malformed/missing metadata '+text);
+ }
+ r=parse(html.replace('<span id="serverDate">01/10/2026</span>',''));check(r.state==='ACTIVE'&&r.endTime===null,'missing response date never borrows another page date');
+ r=parse(html.replace('01/10/2026','31/02/2026'));check(r.state==='ACTIVE'&&r.endTime===null,'invalid server date ignored');
+ r=parse(html.replace('auto-minting-controls','unrelated'));check(r.state==='ACTIVE'&&r.endTime===null,'only associated controls inspected');
+ r=parse(html.replace('<div>Fim:', '<div>Fim: hoje às 07:00:00</div><div>Fim:'));check(r.state==='ACTIVE'&&r.endTime===null,'ambiguous end lines ignored');
+ r=parse(html.replace(/<form[\s\S]*?<\/form>/,''));check(r.state!=='ACTIVE'&&r.endTime===null,'end text alone cannot prove active');
+ const off=html.replace('cancel_auto_minting_session','start_auto_minting_session');r=parse(off);check(r.state==='AVAILABLE'&&r.endTime===null,'AVAILABLE unchanged despite end text');
+ let posts=0,active=false;const adapter=a.createAdapter({onDiagnostic:()=>{},fetchPage:async(href,options)=>{
+  if(options.method==='POST'){posts++;active=true}
+  return{ok:true,status:200,url:href,headers:new Headers({'content-type':'text/html'}),text:async()=>active?html:off};
+ }});
+ let stored;const controller=EAS.Minting.createController({read:()=>null,write:s=>{stored=JSON.parse(JSON.stringify(s));return true},now:()=>0,available:()=>true,lock:fn=>fn(),contains:async()=>true,
+  discover:async()=>({villages:[await adapter.inspectVillage({id:199,name:'Academy'})]}),activateVillage:(...args)=>adapter.activateVillage(...args)});
+ controller.configure({groupId:'1'});await controller.verify();check(posts===0,'verification is read only');
+ await controller.activate();r=controller.read().results[0];check(posts===1&&r.state==='ACTIVE'&&r.outcome==='ACTIVATED','activation/reconciliation unchanged');
+ check(r.endTime===end&&stored.results[0].endTime===end,'final GET metadata survives controller/storage');
+ await controller.activate();check(posts===1,'consumed preview does not retry');
+ await controller.verify();check(controller.read().results[0].endTime===end,'verified active metadata survives inspectVillage/controller');
+ await controller.activate();check(posts===1,'already active never posts');
+ const skipped=await adapter.activateVillage({villageId:199});check(skipped.state==='ACTIVE'&&skipped.endTime===end&&posts===1,'already active result preserves metadata');
+ check(a.formatEndTime(null)==='—','unavailable display');
+}catch(e){errors.push(e.stack)}
+document.title=errors.length?'FAIL':'PASS';document.querySelector('#result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${count} assertions`;
+})();
+</script>

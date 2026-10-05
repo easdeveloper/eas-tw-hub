@@ -1,0 +1,61 @@
+<!doctype html><meta charset="utf-8"><title>Minting BR143 forms</title><pre id="result">running</pre>
+<script>window.EAS={World:{getGameData:()=>({player:{id:1}})}};</script>
+<script src="../core/observability.js"></script><script src="../services/minting-adapter.js"></script>
+<script>
+(async()=>{let count=0,errors=[];const check=(v,label)=>{count++;if(!v)errors.push(label)};
+try{
+ const a=EAS.Adapters.Minting,origin=location.origin,url=new URL('/game.php?village=4286&screen=snob&mode=train',origin);
+ check(new Set(Object.values(a.states)).size===5,'five distinct semantic states, preserving controller aliases');
+ const dom=await(await fetch('fixtures/minting/br143-auto-dom.html')).text(),background=await(await fetch('fixtures/minting/br143-auto-fetch.html')).text();
+ const parse=html=>a.parsePage(new DOMParser().parseFromString(html,'text/html'),url,'4286');
+ for(const [html,source] of [[dom,'form-input'],[background,'action-query']]){
+  const r=parse(html);check(r.state==='AVAILABLE','official available '+source);check(r.h==='0d9671c6','token extracted '+source);
+  check(r.diagnostics.tokenSource===source&&r.diagnostics.academyPresent===true,'token location and Academy evidence '+source);
+  check(!JSON.stringify(r.diagnostics).includes('0d9671c6'),'safe diagnostic '+source);
+ }
+ const both=background.replace('</form>','<input type="hidden" name="h" value="0d9671c6"></form>');
+ check(parse(both).state==='AVAILABLE'&&parse(both).diagnostics.tokenSource==='action-and-input','matching representations accepted');
+ check(parse(both.replace('value="0d9671c6"','value="conflict"')).reason==='H_TOKEN_CONFLICT','conflicting tokens fail closed');
+ check(parse(background.replace('&amp;h=0d9671c6','')).reason==='NO_H_TOKEN','missing token diagnosed');
+ check(parse(background.replace('&amp;h=0d9671c6','')).state==='PARSE_FAILED','missing token is read error, not no Academy');
+ check(parse(background.replace('&amp;h=0d9671c6','')).diagnostics.academyPresent===true,'Academy evidence survives missing token');
+ check(parse('<div id="content_value"></div>').state==='PARSE_FAILED','missing form with no Academy evidence is read error');
+ check(parse('<div id="gold_overview"></div>').state==='UNAVAILABLE','recognized Academy without official form unavailable');
+ check(parse('<h2>Academia (Nível 1)</h2>').state==='PARSE_FAILED','localized heading not structural proof');
+ check(parse('<html>unexpected</html>').state==='PARSE_FAILED','unknown document fails closed');
+ check(parse(background+'<div class="error_box">error</div>').reason==='GAME_ERROR','game error blocks');
+ check(parse(background.replace('&amp;h=0d9671c6','&amp;h=0d9671c6&amp;h=0d9671c6')).reason==='INVALID_H_TOKEN','duplicate query token blocks');
+ check(parse(background.replace('4286','999')).reason==='INVALID_ACTION','wrong village blocks');
+ check(parse(background.replace('/game.php?','https://foreign.invalid/game.php?')).reason==='INVALID_ACTION','foreign origin blocks');
+ check(parse(background.replace('Ativar','Unrelated').replace('Academia (Nível 1)','Unknown')).state==='AVAILABLE','localized labels irrelevant');
+ check(parse(background.replace('/game.php?','?')).state==='AVAILABLE','relative action resolves against final page URL');
+ check(parse(background.replace('start_auto_minting_session','cancel_auto_minting_session')).state==='ACTIVE','existing official cancellation-state detection with query token');
+ const mock=(html,{unchanged=false,networkError=false}={})=>{
+  const calls=[],diagnostics=[];let posts=0,gets=0;
+  const adapter=a.createAdapter({origin,onDiagnostic:d=>diagnostics.push(d),fetchPage:async(href,options)=>{
+   calls.push({url:new URL(href),options});const post=options.method==='POST';if(post)posts++;else gets++;
+   if(post&&networkError)throw Error('network');
+   const current=(gets>1?html.replaceAll('0d9671c6','fresh-token'):html);
+   return {ok:true,status:200,url:href,headers:new Headers({'content-type':'text/html'}),text:async()=>posts&&!unchanged?current.replace('start_auto_minting_session','cancel_auto_minting_session'):current};
+  }});return{adapter,calls,diagnostics,get posts(){return posts}};
+ };
+ for(const [html,source] of [[dom,'input'],[background,'query'],[both,'both']]){
+  const m=mock(html);const preview=await m.adapter.inspectVillage({id:4286,name:'Source'});
+  check(preview.state==='AVAILABLE'&&m.posts===0,'verification never activates '+source);
+  check(!JSON.stringify(preview).includes('0d9671c6'),'preview does not retain token '+source);
+  const result=await m.adapter.activateVillage({villageId:4286},{beforePost:()=>true});
+  check(result.state==='ACTIVE'&&result.outcome==='ACTIVATED'&&m.posts===1,'one authorized activation confirmed '+source);
+  const post=m.calls.find(c=>c.options.method==='POST');
+  check(post.url.searchParams.get('action')==='start_auto_minting_session','official action '+source);
+  check(post.url.searchParams.get('h')===(source==='input'?null:'fresh-token'),'exact fresh query representation '+source);
+  check(new URLSearchParams(post.options.body).get('h')===(source==='query'?null:'fresh-token'),'exact fresh body representation '+source);
+  check(m.calls.filter(c=>c.options.method!=='POST').every(c=>c.url.searchParams.get('mode')==='train'),'proven GET route '+source);
+  check(!JSON.stringify(m.diagnostics).includes('0d9671c6')&&!JSON.stringify(m.diagnostics).includes('fresh-token'),'logs redact both sources '+source);
+ }
+ let m=mock(background);await m.adapter.activateVillage({villageId:4286});check(m.posts===0,'no implicit authorization at adapter boundary');
+ m=mock(background,{unchanged:true});let r=await m.adapter.activateVillage({villageId:4286},{beforePost:()=>true});check(r.state==='UNCERTAIN'&&m.posts===1,'HTTP 200 without active proof is uncertain, no retry');
+ m=mock(background,{networkError:true});r=await m.adapter.activateVillage({villageId:4286},{beforePost:()=>true});check(r.state==='UNCERTAIN'&&m.posts===1,'ambiguous network response no retry');
+}catch(e){errors.push(e.stack)}
+document.title=errors.length?'FAIL':'PASS';document.querySelector('#result').textContent=errors.length?'FAIL\n'+errors.join('\n'):`PASS - ${count} assertions`;
+})();
+</script>

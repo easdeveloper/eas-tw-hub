@@ -12,15 +12,15 @@
   const adapter=EAS.Adapters.Minting, parse=html=>adapter.parsePage(doc(html),url,'13186');
   equal(parse(off).state,'AVAILABLE','OFF official action'); equal(parse(on).state,'ACTIVE','ON official action');
   equal(parse(on).endTime,null,'no fragile text time parser');
-  equal(parse(off.replace('name="h"','name="other"')).reason,'NO_H_FIELD','missing h');
-  equal(parse(off.replace('synthetic-off-token','')).reason,'NO_H_FIELD','empty h');
+  equal(parse(off.replace('name="h"','name="other"')).reason,'NO_H_TOKEN','missing h');
+  equal(parse(off.replace('synthetic-off-token','')).reason,'NO_H_TOKEN','empty h');
   equal(parse(off.replace('method="post"','method="get"')).reason,'INVALID_METHOD','invalid method');
   equal(parse(off.replace('start_auto_minting_session','coin')).reason,'INVALID_ACTION','direct coin never eligible');
   equal(parse(off.replace('13186','999')).reason,'INVALID_ACTION','wrong village');
   equal(parse(off.replace('/game.php?', 'https://other.invalid/game.php?')).reason,'INVALID_ACTION','cross origin');
   equal(parse(off.replace('screen=snob','screen=overview')).reason,'INVALID_ACTION','wrong screen');
   equal(parse(off.replace('action=start_auto_minting_session','action=start_auto_minting_session&amp;action=coin')).reason,'INVALID_ACTION','ambiguous action');
-  equal(parse('<div id="content_value">Ativar</div>').state,'UNAVAILABLE','missing table');
+  equal(parse('<div id="content_value">Ativar</div>').state,'PARSE_FAILED','missing table');
   equal(parse('<table class="auto-minting"><tr><td>Ativar Cancelar</td></tr></table>').state,'UNAVAILABLE','text does not imply state');
   equal(parse('<form id="login"><input type="password"></form>').state,'SESSION_INVALID','login');
   equal(parse(off+on).reason,'MULTIPLE_TABLES','ambiguous tables');
@@ -45,7 +45,7 @@
   let m=mock(); const preview=await m.instance.inspectVillage({id:13186,name:'A'});
   equal(preview.state,'AVAILABLE','preview'); equal(m.posts,0,'preview no POST');
   equal(Object.keys(preview).sort(),['endTime','reason','state','villageId','villageName'],'no token retained in preview');
-  const success=await m.instance.activateVillage({villageId:'13186'});
+  const success=await m.instance.activateVillage({villageId:'13186'},{beforePost:()=>true});
   equal([success.state,success.outcome],['ACTIVE','ACTIVATED'],'fresh final state confirms');
   equal(m.calls.map(c=>c.opts.method||'GET'),['GET','GET','POST','GET'],'fresh GET before POST and final GET');
   equal(new URLSearchParams(m.calls[2].opts.body).get('h'),'synthetic-get-2','preview token never reused');
@@ -53,11 +53,11 @@
   equal(new URL(m.calls[2].href).searchParams.get('action'),'start_auto_minting_session','official activation action');
   equal(m.calls.every(c=>new URL(c.href).searchParams.get('village')==='13186'),true,'current screen/village irrelevant');
   equal(JSON.stringify(m.logs).includes('synthetic-get'),false,'logs sanitized');
-  m=mock({first:on}); equal((await m.instance.activateVillage({villageId:13186})).state,'ACTIVE','already ACTIVE skipped');equal(m.posts,0,'ACTIVE never POST');
-  m=mock({fresh:on});await m.instance.inspectVillage({id:13186});await m.instance.activateVillage({villageId:13186});equal(m.posts,0,'became ACTIVE since preview skipped');
-  m=mock({final:off});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','200 and unchanged OFF uncertain');equal(m.posts,1,'uncertain no retry');
-  m=mock({failPost:true});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','HTTP error uncertain');equal(m.posts,1,'HTTP error no retry');
-  m=mock({throwPost:true});equal((await m.instance.activateVillage({villageId:13186})).outcome,'UNCERTAIN','network error uncertain');equal(m.posts,1,'network error no retry');
+  m=mock({first:on}); equal((await m.instance.activateVillage({villageId:13186},{beforePost:()=>true})).state,'ACTIVE','already ACTIVE skipped');equal(m.posts,0,'ACTIVE never POST');
+  m=mock({fresh:on});await m.instance.inspectVillage({id:13186});await m.instance.activateVillage({villageId:13186},{beforePost:()=>true});equal(m.posts,0,'became ACTIVE since preview skipped');
+  m=mock({final:off});equal((await m.instance.activateVillage({villageId:13186},{beforePost:()=>true})).outcome,'UNCERTAIN','200 and unchanged OFF uncertain');equal(m.posts,1,'uncertain no retry');
+  m=mock({failPost:true});equal((await m.instance.activateVillage({villageId:13186},{beforePost:()=>true})).outcome,'UNCERTAIN','HTTP error uncertain');equal(m.posts,1,'HTTP error no retry');
+  m=mock({throwPost:true});equal((await m.instance.activateVillage({villageId:13186},{beforePost:()=>true})).outcome,'UNCERTAIN','network error uncertain');equal(m.posts,1,'network error no retry');
   m=mock();await m.instance.activateVillage({villageId:13186},{beforePost:()=>false});equal(m.posts,0,'claim rejected no POST');
   // Diagnostic-only GET: h exists elsewhere but not in the selected official form.
   const diagnosticHTML = '<div id="gold_overview"></div><input type="hidden" name="h" value="synthetic-outside-secret">'
@@ -73,7 +73,7 @@
     return {url:href+'&h=synthetic-final-secret',ok:true,status:200,redirected:true,headers:new Headers({'content-type':'text/html; secret=synthetic-header-secret'}),text:async()=>diagnosticHTML};
    }});
    const inspected=await diagnosticAdapter.inspectVillage({id:13186});
-   equal(inspected.reason,'NO_H_FIELD','diagnostics do not weaken missing h');
+   equal(inspected.reason,'UNSUPPORTED_FIELDS','query token does not permit unrelated payload fields');
    equal(diagnosticRequests,1,'one GET only');equal(sanitizedCalls,2,'requested and final URL use shared sanitizer');
    equal(diagnosticReport.hCounts,{document:2,autoMintingTable:1,selectedForm:0},'three h count levels');
    equal([diagnosticReport.totalForms,diagnosticReport.autoMintingForms,diagnosticReport.forms.length],[2,2,2],'all table forms reported');
@@ -86,7 +86,7 @@
    equal(diagnosticReport.forms.map(form=>form.buttonTexts),[['Ativar'],['[redacted-text]']],'unknown button text redacted');
    equal(JSON.stringify(diagnosticReport).includes('synthetic-'),false,'all synthetic secrets excluded');
    equal(JSON.stringify(diagnosticReport).includes('<'),false,'no HTML in report');
-   equal(diagnosticReport.requestedUrl,new URL('/game.php?screen=snob&village=13186',origin).href,'requested URL sanitized');
+   equal(diagnosticReport.requestedUrl,new URL('/game.php?screen=snob&mode=train&village=13186',origin).href,'requested URL sanitized');
    equal(diagnosticReport.finalUrl,diagnosticReport.requestedUrl,'final URL secret stripped');
   } finally { EAS.Log.sanitizeUrl=nativeSanitizer; }
   const originalDebug=console.debug,automatic=[];console.debug=(...args)=>automatic.push(args);

@@ -16,7 +16,7 @@
   history.replaceState(null,'','/game.php?screen=snob&village=13186');
   fixture.innerHTML=form('start');const input=document.createElement('input');input.type='hidden';input.name='h';input.value='synthetic-live-secret';fixture.querySelector('form').appendChild(input);
   let value=await adapter.inspectVillage({id:13186});
-  equal(value.reason,'NO_H_FIELD','live h never repairs fetched parser');
+  equal(value.reason,'NO_H_TOKEN','live h never repairs fetched parser');
   equal(report.hCounts.document,0,'fetched document contains no h');
   equal(report.rawMarkers,{containsHInputMarkup:false,containsStartAutoMintingAction:true,containsCancelAutoMintingAction:false},'raw OFF markers');
   equal(report.liveDocumentComparison,{applicable:true,sameVillage:true,hasAutoMintingTable:true,startCandidates:1,cancelCandidates:0,hCounts:{document:1,autoMintingTable:1,matchingForm:1},matchingFormFieldNames:['h']},'live comparison');
@@ -39,7 +39,7 @@
    window.UI={fixupCSRFInUrl:()=>{fixupCalls++;throw new Error('must not execute');}};
    html=form('start').replace('action=start_auto_minting_session','action=start_auto_minting_session&amp;h=synthetic-action-secret');
    const inspected=await adapter.inspectVillage({id:13186});
-   equal(inspected.reason,'NO_H_FIELD','raw action presence does not change parser');
+   equal(inspected.state,'AVAILABLE','proven action token enables available state');
    equal(report.rawFormDiagnostics,[{isStartAutoMinting:true,isCancelAutoMinting:false,method:'POST',hasHQueryParamInRawAction:true,hasHiddenHField:false}],'raw action h presence only');
    equal(report.runtimeDiagnostics,{hasUI:true,hasFixupCSRFInUrl:true},'runtime helper presence');
    equal(fixupCalls,0,'official helper never called');

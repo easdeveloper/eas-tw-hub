@@ -37,7 +37,7 @@
             const discovery = await deps.discover(state.config.groupId);
             const seen = new Set();
             state.results = discovery.villages.filter(row => !seen.has(String(row.villageId)) && seen.add(String(row.villageId))).map(row => ({
-                villageId: String(row.villageId), villageName: String(row.villageName), state: row.state, reason: row.reason || null, endTime: null, outcome: null
+                villageId: String(row.villageId), villageName: String(row.villageName), state: row.state, reason: row.reason || null, endTime: row.state === 'ACTIVE' && Number.isSafeInteger(row.endTime) ? row.endTime : null, outcome: null
             }));
             previewReady = !state.results.some(row => row.state === 'SESSION_INVALID');
             state.status = 'PREVIEW';
@@ -67,7 +67,7 @@
                     if (claimError) throw new Error('CLAIM_FAILED');
                     // Accept success only for a claimed request and confirmed official ACTIVE state.
                     if (result.outcome === 'ACTIVATED' && (!claimed || result.state !== 'ACTIVE')) result = { state: 'UNCERTAIN', outcome: 'UNCERTAIN', reason: 'INVALID_CONFIRMATION' };
-                    Object.assign(row, { state: result.state, outcome: result.outcome, reason: result.reason || null });
+                    Object.assign(row, { state: result.state, outcome: result.outcome, reason: result.reason || null, endTime: result.state === 'ACTIVE' && Number.isSafeInteger(result.endTime) ? result.endTime : null });
                     record(row.outcome === 'ACTIVATED' ? 'SUCCESS' : 'INFO', `${row.villageId}: ${row.outcome} (${row.state}).`); save();
                     if (row.state === 'UNCERTAIN' || row.state === 'SESSION_INVALID') break;
                 }

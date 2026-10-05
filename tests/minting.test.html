@@ -6,8 +6,8 @@ let posts=0,requests=0,active=false,membershipGroup;
 window.fetch=async(href,options={})=>{
  requests++;const url=new URL(href);if(options.method==='POST'){posts++;active=true;}
  const id=url.searchParams.get('village');url.searchParams.delete('action');
- const form=id==='7'?`<table class="auto-minting"><tr><td><form method="post" action="/game.php?village=7&screen=snob&action=${active?'cancel':'start'}_auto_minting_session"><button>${active?'Cancelar':'Ativar'}</button><input name="h" value="synthetic-only"></form></td></tr></table>`:'';
- return {ok:true,status:200,url:url.href,headers:new Headers({'content-type':'text/html'}),text:async()=>'<div id="content_value">'+form+'</div>'};
+ const form=id==='7'?`<table class="auto-minting"><tr><td><div class="auto-minting-controls">${active?'<div><div>1 moeda de ouro</div><div>Fim: amanhã às 06:14:57</div></div>':''}<form method="post" action="/game.php?village=7&screen=snob&action=${active?'cancel':'start'}_auto_minting_session"><button>${active?'Cancelar':'Ativar'}</button><input name="h" value="synthetic-only"></form></div></td></tr></table>`:'';
+ return {ok:true,status:200,url:url.href,headers:new Headers({'content-type':'text/html'}),text:async()=>'<span id="serverDate">01/10/2026</span><div id="content_value">'+form+'</div>'};
 };
 EAS.Data={Groups:{ensureFresh:async()=>[{id:'19',name:'Meu grupo'}],getById:id=>id==='19'?{id:'19',name:'Meu grupo'}:null,ensureMembership:async id=>{membershipGroup=id;return ['7','8'];}},Villages:{ensureFresh:async()=>[],getAll:()=>[{id:7,name:'A'},{id:8,name:'B'},{id:9,name:'Outside'}]},mapLimit:async(items,limit,fn)=>Promise.all(items.map(fn))};
 EAS.Storage.set('minting.v1.mint-test.1.0',{version:1,automation:true,status:'WAITING',nextRunAt:1,config:{groupId:'19',intervalHours:0.001}});
@@ -24,12 +24,14 @@ EAS.Storage.set('minting.v1.mint-test.1.0',{version:1,automation:true,status:'WA
   equal(field('group').value,'19','only selected group migrated');
   await field('discover').onclick();equal(membershipGroup,'19','explicit group');equal(posts,0,'preview read only');
   equal(EAS.Minting.getController().read().results.map(r=>r.villageId),['7','8'],'owned group intersection');
-  equal(EAS.Minting.getController().read().results.map(r=>r.state),['AVAILABLE','UNAVAILABLE'],'preview states');
+  equal(EAS.Minting.getController().read().results.map(r=>r.state),['AVAILABLE','PARSE_FAILED'],'unknown Academy structure is a read error');
   equal(field('activate').disabled,false,'explicit action offered after preview');
   await field('activate').onclick();equal(posts,1,'one official activation');
   equal(EAS.Minting.getController().read().results[0].outcome,'ACTIVATED','transition confirmed');
   equal(field('results').textContent.includes('ATIVADA'),true,'UI confirms activation');equal(field('activate').disabled,true,'consumed preview');
+  equal(field('results').rows[0].cells[2].textContent,'02/10/2026 06:14:57','Fim column displays server end time after activation');
   await field('discover').onclick();equal(EAS.Minting.getController().read().results[0].state,'ACTIVE','active state shown');equal(field('activate').disabled,true,'already active cannot activate');
+  equal(field('results').rows[0].cells[2].textContent,'02/10/2026 06:14:57','Fim column preserved on verification');
   equal(EAS.Runtime.get('minting'),null,'no scheduler runtime');
   win.close();await new Promise(resolve=>setTimeout(resolve,0));equal(EAS.Runtime.get('minting-ui'),null,'UI runtime cleanup');
  }catch(error){failures.push(error.stack);}
