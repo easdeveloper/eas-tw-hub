@@ -453,6 +453,9 @@
             await loadScript('services/market-engine.js');
             await loadScript('services/game-adapters.js');
             await loadScript('core/game-data.js');
+            await loadScript('services/arrival-planner.js');
+            await loadScript('services/tactical-operation-planner.js');
+            await loadScript('services/tactical-operation-data.js');
             await loadScript('services/market-execution-ui.js');
             await loadScript('services/farm-assistant-adapter.js');
             await loadScript('services/mass-farm-execution.js');
