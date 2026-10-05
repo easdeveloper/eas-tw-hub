@@ -3,13 +3,24 @@
 <script>
 (async()=>{
  const host=document.querySelector('#fixture'),load=async name=>(await fetch('fixtures/place/'+name)).text();
- const small=await load('attack-small-rows.html'),ready=await load('ready-empty-outgoing.html'),mixed=await load('mixed-return-farm.html');
+ const small=await load('attack-small-rows.html'),ready=await load('ready-empty-outgoing.html'),mixed=await load('mixed-return-farm.html'),farmAttack=await load('farm-modifier-own-attack.html');
  history.replaceState({},'',location.pathname+'?screen=place&village=675');
  let n=0;const assert=(v,m)=>{if(!v)throw Error(m);n++;};
  const read=()=>EAS.FakesExecution.readOutgoingCommands(window);
  host.innerHTML=ready+small;let r=read();
  assert(r.available&&r.commands.length===2,'two IDs, repeated markers deduplicated');
  assert(r.commands.every(c=>c.type==='attack'),'small + spy and small + reqdef classify attack');
+ host.innerHTML=ready+farmAttack;r=read();
+ assert(r.available&&r.reason===null,'BR143 farm modifier row is available');
+ assert(r.commands.length===1&&r.commands[0].type==='attack'&&r.commands[0].id==='260533199','BR143 row classified as attack candidate');
+ host.innerHTML=ready+farmAttack;host.querySelectorAll('[data-command-type]').forEach(node=>node.removeAttribute('data-command-type'));
+ assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','farm icon without explicit attack evidence fails closed');
+ host.innerHTML=ready+farmAttack;host.querySelectorAll('[data-command-type]')[1].dataset.commandType='support';
+ assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','contradictory explicit attack/support markers fail closed');
+ host.innerHTML=ready+farmAttack;host.querySelector('.icon-container').insertAdjacentHTML('beforeend','<span data-command-id="260533199"><img src="/graphic/command/unknown.webp"></span>');
+ assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','farm modifier plus unrelated unknown command icon fails closed');
+ host.innerHTML=ready+farmAttack;host.querySelector('a[href*="info_command"]').href=host.querySelector('a[href*="info_command"]').href.replace('type=own','type=other');
+ assert(!read().available&&read().reason==='UNCLASSIFIED_COMMAND_MARKERS','farm modifier without own info identity fails closed');
  host.querySelectorAll('img:not([src$="attack_small.webp"])').forEach(e=>e.remove());
  assert(read().available,'small alone');
  for(const icon of ['spy','reqdef']){

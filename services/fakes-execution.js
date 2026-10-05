@@ -19,6 +19,7 @@
     };
 
     const EXECUTION_STORAGE_KEY = 'eas_tw_fakes_execution';
+    const SUMMARY_STORAGE_KEY = 'eas_tw_fakes_execution_summary';
     const PANEL_ID = 'eas-fake-execution-panel';
     const POLL_INTERVAL_MS = 200;
     const OPEN_TIMEOUT_MS = 10000;
@@ -268,19 +269,24 @@
             const ids = [...(quick ? [quick.dataset.id] : []), ...markers.map(node => node.dataset.commandId ?? node.dataset.id), ...(cancel ? [cancel.dataset.id] : []), ...(icon ? [icon.dataset.commandId] : []),
                 ...(url ? [url.searchParams.get('id')] : [])].map(normalizeId);
             if (!ids.length || ids.some(id => !id || id !== ids[0]) || row.querySelector('.quickedit-in')) return result(false, [], 'INVALID_ROW');
-            const types = new Set(Array.from(row.querySelectorAll?.('[data-command-type]') || []).map(node => node.dataset.commandType));
+            const explicitTypes = Array.from(row.querySelectorAll?.('[data-command-type]') || []).map(node => node.dataset.commandType);
+            const types = new Set(explicitTypes);
             if (icon?.dataset.commandType) types.add(icon.dataset.commandType);
-            let secondarySpy = false;
+            let secondarySpy = false, farmModifier = false;
             for (const image of Array.from(row.querySelectorAll?.('img[src]') || [])) {
                 let path;
                 try { path = new URL(image.getAttribute('src'), targetWindow.location.href).pathname; } catch { continue; }
                 if (/\/graphic\/command\/attack\.(?:webp|png|gif)$/.test(path)) types.add('attack');
                 else if (path.endsWith('/graphic/command/attack_small.webp')) types.add('attack');
                 else if (path.endsWith('/graphic/command/support.webp')) types.add('support');
+                else if (path.endsWith('/graphic/command/farm.webp')) farmModifier = true;
                 else if (path.endsWith('/graphic/command/spy.webp')) secondarySpy = true;
                 else if (['/graphic/command/return_attack_small.webp', '/graphic/command/return_spy.webp', '/graphic/command/return_farm.webp'].some(icon => path.endsWith(icon))) types.add('return');
                 else if (path.includes('/graphic/command/')) types.add('unknown');
             }
+            const trustedOwnAttack = explicitTypes.length > 0 && explicitTypes.every(type => type === 'attack') &&
+                url?.searchParams.get('type') === 'own';
+            if (farmModifier && !trustedOwnAttack) types.add('unknown');
             // Proven secondary only for an unambiguous ATTACK; never evidence
             // of an attack on its own, nor an exemption for unknown main icons.
             if (secondarySpy && !(types.size === 1 && types.has('attack'))) types.add('unknown');
@@ -1227,14 +1233,75 @@
             errors: count('error'), remaining: queue.filter((entry) => !TERMINAL_STATES.includes(entry.status)).length };
     };
 
+    const summaryText = (value) => typeof value === 'string' ? value.slice(0, 240) : null;
+    const compactExecutionSummary = (context, terminalContext, stopped) => {
+        const errors = context.errors || [];
+        const results = (context.queue || []).map((entry, index) => {
+            const commandRef = getCommandKey(entry, index);
+            const error = [...errors].reverse().find((item) => item.commandKey === commandRef) || null;
+            const attempt = entry.confirmationAttempt || null;
+            const unresolvedAttempt = ['confirming', 'submitted'].includes(attempt?.state) ||
+                (entry.status === 'completed' && attempt && attempt.state !== 'completed');
+            const attempted = ['attacking', 'forwarding', 'confirm-page', 'confirming', 'submitted'].includes(entry.status) ||
+                ['attacking', 'forwarding', 'confirm-page', 'confirming', 'submitted'].includes(error?.state) ||
+                Boolean(unresolvedAttempt);
+            const outcome = attempted ? 'uncertain' : TERMINAL_STATES.includes(entry.status) ? entry.status : error ? 'error' : 'not-run';
+            const result = {
+                commandRef, sourceVillageId: String(entry.sourceVillageId || entry.villageId || ''),
+                targetVillageId: entry.targetVillageId ?? null, target: summaryText(entry.target), outcome
+            };
+            const executedCommandType = summaryText(entry.executedCommandType);
+            const reconciled = attempt?.state === 'completed' && Boolean(attempt?.outgoingCommandId);
+            const outgoingCommandId = reconciled ? summaryText(attempt.outgoingCommandId) : null;
+            const completedAt = reconciled && Number.isFinite(attempt.completedAt) ? attempt.completedAt : null;
+            if (executedCommandType) result.executedCommandType = executedCommandType;
+            if (outgoingCommandId) result.outgoingCommandId = outgoingCommandId;
+            if (completedAt !== null) result.completedAt = completedAt;
+            if (error || entry.status === 'error') {
+                result.error = {
+                    code: summaryText(error?.code || error?.type || entry.errorCode),
+                    reason: summaryText(error?.reason || error?.message || entry.error),
+                    detectedAt: Number.isFinite(error?.detectedAt) ? error.detectedAt : null
+                };
+            }
+            return { result, unresolved: attempted ? { entry, commandRef, attempt, error } : null };
+        });
+        const unresolvedEvidence = results.flatMap(({ unresolved }) => {
+            if (!unresolved) return [];
+            const { entry, commandRef, attempt, error } = unresolved;
+            const snapshot = attempt?.outgoingSnapshot;
+            const beforeCommandIds = Array.isArray(snapshot?.beforeCommandIds) ? [...snapshot.beforeCommandIds] : null;
+            const evidence = {
+                commandRef, sourceVillageId: String(entry.sourceVillageId || entry.villageId || ''),
+                targetVillageId: entry.targetVillageId ?? null, target: summaryText(entry.target),
+                attemptState: summaryText(attempt?.state),
+                attemptAt: Number.isFinite(attempt?.startedAt) ? attempt.startedAt :
+                    Number.isFinite(entry.preparationWait?.startedAt) ? entry.preparationWait.startedAt :
+                    Number.isFinite(error?.detectedAt) ? error.detectedAt : null,
+                snapshotCapturedAt: Number.isFinite(snapshot?.capturedAt) ? snapshot.capturedAt : null,
+                beforeCommandIds,
+                reason: summaryText(error?.reason || error?.message || entry.error || 'Execution stopped before reconciliation completed.')
+            };
+            return [evidence];
+        });
+        return {
+            summaryKind: 'fakes-execution-summary', version: 2,
+            createdAt: Number.isFinite(context.createdAt) ? context.createdAt : null,
+            finishedAt: terminalContext.finishedAt,
+            elapsedMs: Math.max(0, terminalContext.finishedAt - (context.createdAt || terminalContext.finishedAt)),
+            stopped, ...(stopped ? { stopReason: 'USER_STOP' } : {}),
+            preset: summaryText(context.preset), commandType: summaryText(context.commandType),
+            counts: executionCounts(context), results: results.map(({ result }) => result), unresolvedEvidence
+        };
+    };
+
     const finishExecution = (context, targetWindow, stopped = false) => {
         targetWindow.__easFakesAuto?.stop();
-        const summary = { ...context, counts: executionCounts(context), finishedAt: Date.now(), stopped };
+        const terminalContext = { ...context, counts: executionCounts(context), finishedAt: Date.now(), stopped };
         // Persist the terminal state first, so a stopped run cannot resume on reload.
-        if (!saveContext(summary)) return false;
-        summary.elapsedMs = Math.max(0, summary.finishedAt - (context.createdAt || summary.finishedAt));
-        // Keep the full authorized queue and command errors for local auditing.
-        try { localStorage.setItem('eas_tw_fakes_execution_summary', JSON.stringify(summary)); }
+        if (!saveContext(terminalContext)) return false;
+        const summary = compactExecutionSummary(context, terminalContext, stopped);
+        try { localStorage.setItem(SUMMARY_STORAGE_KEY, JSON.stringify(summary)); }
         catch { return false; }
         targetWindow.__easFakesAuto?.stop();
         removeContext();
