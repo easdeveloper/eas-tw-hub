@@ -126,6 +126,30 @@
             return { sourceId: group.sourceId, available, allocated: group.allocated, remaining, overAllocated, unknown };
         });
     };
+    const nobleTrainSize = role => /^nt[2-5]$/.test(role) ? Number(role.slice(2)) : null;
+    const buildNobleTrain = ({ slot: input, candidate, count = nobleTrainSize(input?.role) }) => {
+        const slot = normalizeSlot(input), blockers = [];
+        if (![2, 3, 4, 5].includes(count)) return { valid: false, blockers: ['INVALID_NOBLE_TRAIN_SIZE'], slots: [] };
+        if (!trustedAvailability(candidate)) blockers.push('AVAILABILITY_UNTRUSTED_OR_INCOMPLETE');
+        const troops = candidate?.ownHome || {};
+        for (const unit of ['axe', 'light', 'snob']) if (!integer(troops[unit]) || troops[unit] < 0) blockers.push(`AVAILABILITY_UNKNOWN:${unit}`);
+        for (const unit of ['ram', 'catapult', 'knight']) if (troops[unit] != null && (!integer(troops[unit]) || troops[unit] < 0)) blockers.push(`INVALID_QUANTITY:${unit}`);
+        if (integer(troops.snob) && troops.snob < count) blockers.push('INSUFFICIENT_NOBLES');
+        const slots = Array.from({ length: count }, (_, index) => {
+            const quantities = { snob: 1 };
+            for (const unit of ['axe', 'light']) {
+                const total = troops[unit];
+                if (integer(total) && total >= 0) quantities[unit] = Math.floor(total / count) + (index < total % count ? 1 : 0);
+                if (quantities[unit] < 150) blockers.push(unit === 'axe' ? 'INSUFFICIENT_AXE_ESCORT' : 'INSUFFICIENT_LIGHT_ESCORT');
+            }
+            if (index === 0) for (const unit of ['ram', 'catapult', 'knight']) if (integer(troops[unit]) && troops[unit] > 0) quantities[unit] = unit === 'knight' ? 1 : troops[unit];
+            const offset = integer(slot.arrivalOffsetMs) ? slot.arrivalOffsetMs + index * 100 : null;
+            return { ...slot, id: `${slot.id}:nt:${index + 1}`, role: 'attack', parentSlotId: slot.id, trainIndex: index + 1, trainSize: count,
+                arrivalOffsetMs: integer(offset) ? offset : null,
+                composition: { requestedMode: 'custom', quantities, confirmed: true, evidence: { policy: 'noble-train-v1', snapshot: copy(candidate?.evidence ?? null) }, limitingUnits: [] } };
+        });
+        return { valid: blockers.length === 0, blockers: [...new Set(blockers)], slots };
+    };
     const validatePlan = ({ operation: input, candidates: supplied = [], serverNowMs, externalConflicts = [] }) => {
         const operation = normalizeOperation(input), candidates = supplied.map(normalizeCandidate), blockers = [];
         if (!operation.id || !integer(operation.revision) || operation.revision < 0) blockers.push('OPERATION_IDENTITY_MISSING');
@@ -134,15 +158,19 @@
         if (!integer(operation.centralArrivalMs)) blockers.push('CENTRAL_ARRIVAL_UNAVAILABLE');
         if (!operation.slots.length) blockers.push('NO_SLOTS');
         if (new Set(operation.slots.map(slot => slot.id)).size !== operation.slots.length) blockers.push('DUPLICATE_SLOT_ID');
-        if (operation.ntTemplate && operation.ntTemplate !== 'NT4') blockers.push('UNSUPPORTED_NT_TEMPLATE');
-        const nobleSlots = operation.slots.filter(slot => slot.role === 'noble');
-        const nt4PolicyPending = operation.ntTemplate === 'NT4' && nobleSlots.length > 0 &&
-            (nobleSlots.length !== 4 || operation.slotPolicy?.nt4Confirmed !== true);
-        const balances = aggregateTroops(operation.slots, candidates);
-        const missions = operation.slots.map(slot => {
-            const issues = [...blockers], warnings = [];
-            if (!slot.id) issues.push('SLOT_ID_MISSING');
-            if (!['attack', 'noble', 'support'].includes(slot.role)) issues.push('INVALID_ROLE');
+        const expanded = operation.slots.flatMap(slot => {
+            const count = nobleTrainSize(slot.role);
+            if (!count) return [{ ...slot, parentSlotId: slot.id, trainBlockers: [] }];
+            const matches = candidates.filter(c => c.source.id === slot.source.id);
+            const train = buildNobleTrain({ slot, candidate: matches.length === 1 ? matches[0] : null, count });
+            return train.slots.map(command => ({ ...command, trainBlockers: train.blockers }));
+        });
+        if (new Set(expanded.map(slot => slot.id)).size !== expanded.length) blockers.push('DUPLICATE_SLOT_ID');
+        const balances = aggregateTroops(expanded, candidates);
+        const missions = expanded.map(slot => {
+            const issues = [...blockers, ...slot.trainBlockers], warnings = [];
+            if (!slot.id || !slot.parentSlotId) issues.push('SLOT_ID_MISSING');
+            if (!['attack', 'support'].includes(slot.role)) issues.push('INVALID_ROLE');
             if (!slot.source.id || !slot.source.coord) issues.push('SOURCE_MISSING');
             const matches = candidates.filter(candidate => candidate.source.id === slot.source.id);
             const candidate = matches.length === 1 ? matches[0] : null;
@@ -159,21 +187,19 @@
             const timing = calculateTiming({ centralArrivalMs: operation.centralArrivalMs, arrivalOffsetMs: slot.arrivalOffsetMs, travelTimeMs: travel.travelTimeMs });
             if (!timing.available) issues.push('TIMING_UNAVAILABLE');
             else if (integer(serverNowMs) && timing.sendAtMs <= serverNowMs) issues.push('SEND_TIME_NOT_FUTURE');
-            if (operation.ntTemplate === 'NT4' && slot.role === 'noble' && slot.composition.quantities?.snob !== 1) issues.push('NT4_NOBLE_COMPOSITION_PENDING');
-            if (nt4PolicyPending && slot.role === 'noble') issues.push('NT4_POLICY_PENDING');
             const night = evaluateNightBonus(timing.available ? ((timing.desiredArrivalMs % DAY) + DAY) % DAY : null, operation.nightBonus);
             if (night.state !== 'outside') warnings.push({ code: 'NIGHT_BONUS_' + night.state.toUpperCase(), ...night });
-            for (const conflict of externalConflicts) if (conflict && (conflict.slotId === slot.id || conflict.sourceId === slot.source.id)) warnings.push({ code: 'EXTERNAL_CONFLICT', evidence: copy(conflict) });
+            for (const conflict of externalConflicts) if (conflict && (conflict.slotId === slot.id || conflict.slotId === slot.parentSlotId || conflict.sourceId === slot.source.id)) warnings.push({ code: 'EXTERNAL_CONFLICT', evidence: copy(conflict) });
             warnings.push(...copy(candidate?.warnings || []), ...copy(candidate?.conflicts || []).map(evidence => ({ code: 'EXTERNAL_CONFLICT', evidence })));
-            return { operationId: operation.id, revision: operation.revision, slotId: slot.id, role: slot.role,
-                commandType: slot.role === 'support' ? 'support' : ['attack', 'noble'].includes(slot.role) ? 'attack' : null,
+            return { operationId: operation.id, revision: operation.revision, slotId: slot.id, parentSlotId: slot.parentSlotId, trainIndex: slot.trainIndex ?? null, trainSize: slot.trainSize ?? null, role: slot.role,
+                commandType: slot.role === 'support' ? 'support' : slot.role === 'attack' ? 'attack' : null,
                 source: copy(slot.source), target: copy(operation.target), composition: copy(slot.composition),
                 limitingUnits: travel.limitingUnits, travelEvidence: travel.evidence, travelTimeMs: travel.travelTimeMs,
                 ...timing, validationStatus: issues.length ? 'blocked' : 'ready', blockers: [...new Set(issues)], warnings };
         });
         missions.sort((a, b) => (a.sendAtMs ?? Infinity) - (b.sendAtMs ?? Infinity) || String(a.slotId).localeCompare(String(b.slotId)));
-        return { operation, balances, missions, valid: blockers.length === 0 && !nt4PolicyPending && missions.every(mission => mission.validationStatus === 'ready'), blockers: [...new Set([...blockers, ...(nt4PolicyPending ? ['NT4_POLICY_PENDING'] : []), ...missions.flatMap(mission => mission.blockers)])] };
+        return { operation, balances, missions, valid: blockers.length === 0 && missions.every(mission => mission.validationStatus === 'ready'), blockers: [...new Set([...blockers, ...missions.flatMap(mission => mission.blockers)])] };
     };
     EAS.TacticalOperationPlanner = Object.freeze({ normalizeOperation, normalizeSlot, normalizeComposition, normalizeCandidate,
-        validateComposition, resolveTravelDuration, calculateTiming, evaluateNightBonus, aggregateTroops, validatePlan });
+        nobleTrainSize, buildNobleTrain, validateComposition, resolveTravelDuration, calculateTiming, evaluateNightBonus, aggregateTroops, validatePlan });
 })();

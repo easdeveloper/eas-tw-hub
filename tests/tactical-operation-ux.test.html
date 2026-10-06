@@ -1,0 +1,41 @@
+﻿<!doctype html><meta charset="utf-8"><title>running</title><link rel="stylesheet" href="../css/eas.css"><pre id="result">running</pre>
+<style>.eas-window__body{height:650px;overflow:auto}.tactical-operation-table-wrap{height:350px}.tactical-operation-unit{min-width:100px}</style>
+<script>
+let scans=0;const candidate={source:{id:'1',coord:'500|500',name:'Source'},ownHome:{axe:6424,light:3119,ram:120,catapult:50,knight:1,snob:5},evidence:{trusted:true,complete:true,fresh:true},travelDurations:Object.fromEntries(['axe','light','ram','catapult','knight','snob'].map(u=>[u,{trusted:true,durationMs:1000}]))};
+window.EAS={Modules:{},Utils:{createServerDateTime:()=>({year:2026,month:10,day:7,hours:8,minutes:1,seconds:0,milliseconds:0}),parseCoordinate:s=>{const m=String(s).match(/(\d{1,3}\|\d{1,3})/);return m?{coordinate:m[1]}:null;}},World:{getServerDateTime:()=>({available:true,year:2026,month:10,day:6,hours:0,minutes:0,seconds:0,milliseconds:0})},
+TacticalOperationData:{analyzeTarget:async options=>{scans++;window.lastTarget=options.target;return{target:{coord:'484|527'},candidates:Array.from({length:35},(_,i)=>({...candidate,source:{...candidate.source,id:String(i+1),name:'Village '+i}}))};}},
+UI:{createWindow:()=>{const body=document.createElement('div');body.className='eas-window__body';document.body.append(body);return{body,close:()=>body.remove()};}}};
+</script>
+<script src="../services/tactical-operation-planner.js"></script><script src="../services/tactical-operation-controller.js"></script><script src="../modules/tactical-operation-planner.js"></script><script src="../services/arrival-planner.js"></script>
+<script>
+(async()=>{const fails=[];let assertions=0;const check=(v,m)=>{assertions++;if(!v)fails.push(m)};
+const parser=EAS.ArrivalPlanner.resolveOperationTarget, href='https://example.test/game.php?screen=info_village&id=308#484;527';
+const doc=new DOMParser().parseFromString('<table id="village_info"><tr><td class="village-name">FANTASMA</td><td>484|527</td><td><a href="?screen=info_player&id=6225864">charqboy</a></td></tr></table>','text/html');
+const target=parser(doc,href);check(target.coord==='484|527'&&target.villageId==='308'&&target.playerId==='6225864'&&target.playerName==='charqboy'&&target.name==='FANTASMA','existing coordinate parser plus scoped player metadata');
+check(parser(doc,href.replace('484;527','485;527'))===null,'conflicting coordinate rejected');
+const blank=new DOMParser().parseFromString('<div></div>','text/html');check(parser(blank,href).coord==='484|527'&&parser(blank,href).playerId===null,'missing optional metadata safe');check(parser(blank,href.split('#')[0])===null,'missing coordinate fails');
+const w=await EAS.Modules.TacticalOperationPlanner.open({target});const root=w.body.querySelector('.tactical-operation-planner');
+check(root.querySelector('[data-op-target-input]').value==='484|527'&&root.querySelector('[data-op-player-input]').value==='charqboy','context prefills');check(scans===0,'opening does not scan');
+root.querySelector('[data-op-date]').value='07/10/2026';root.querySelector('[data-op-time]').value='08:01:00.000';
+const done=new Promise(r=>root.addEventListener('tactical-operation-analysis-finished',r,{once:true}));root.querySelector('[data-op-analyze]').click();await done;
+check(lastTarget.villageId==='308'&&lastTarget.playerId==='6225864','normal analysis receives stable context');
+const id=EAS.Modules.TacticalOperationPlanner.getState().draft.operation.slots[20].id;
+const row=()=>[...root.querySelectorAll('[data-slot-id]')].find(r=>r.dataset.slotId===id);const scroller=root.querySelector('.tactical-operation-table-wrap');
+scroller.scrollTop=row().offsetTop-100;
+const act=(selector,value)=>{const before=row().getBoundingClientRect().top;const el=row().querySelector(selector);if(value!==undefined){el.value=value;el.dispatchEvent(new Event('change',{bubbles:true}));}else el.click();check(Math.abs(row().getBoundingClientRect().top-before)<3,'anchor '+selector);};
+act('[data-role]','attack');act('[data-custom]');
+check([...row().querySelectorAll('[data-quantity]')].every(i=>i.value==='0'),'direct CUSTOM starts zero');check(row().querySelector('[data-available="axe"]').textContent.includes('6424 disponíveis'),'availability visible');
+act('[data-quantity][data-unit="axe"]','150');act('[data-confirm]');check(EAS.Modules.TacticalOperationPlanner.getState().validation.missions.find(m=>m.slotId===id).validationStatus==='ready','direct custom confirmation works');
+act('[data-custom-close]');act('[data-custom]');act('[data-offset]','-500');act('[data-materialize]');act('[data-custom]');act('[data-confirm]');
+check(scans===1,'all editing reuses snapshot');
+act('[data-role]','nt4');check(row().textContent.includes('NT1 — READY')&&row().textContent.includes('Duração')&&row().textContent.includes('Composição automática — somente leitura'),'correct NT Portuguese');
+act('[data-role]','support');act('[data-custom]');check([...row().querySelectorAll('[data-quantity]')].every(i=>i.value==='0'),'support custom directly zero');act('[data-quantity][data-unit="axe"]','150');act('[data-confirm]');
+check(EAS.Modules.TacticalOperationPlanner.getState().validation.missions.find(m=>m.slotId===id).commandType==='support','support confirmed');
+root.querySelector('[data-filter="SELECTED"]').click();check(root.querySelectorAll('[data-slot-id]').length===1,'filter intentional navigation not reversed');
+const saved=EAS.Modules.TacticalOperationPlanner.getState().draft; saved.operation.candidates[20].ownHome.snob=0;
+// A separate analysis fixture supplies a genuine blocked train.
+candidate.ownHome.snob=0;const done2=new Promise(r=>root.addEventListener('tactical-operation-analysis-finished',r,{once:true}));root.querySelector('[data-op-analyze]').click();await done2;
+const role=root.querySelector('[data-role]');role.value='nt4';role.dispatchEvent(new Event('change',{bubbles:true}));check(root.textContent.includes('NT1 — BLOCKED'),'correct blocked string');check(!/Dura\?\?o|Composi\?\?o|NT1 \?/.test(root.textContent),'broken variants absent');
+document.getElementById('result').textContent=fails.length?'FAIL\n'+fails.join('\n'):`PASS ${assertions} assertions`;document.title=fails.length?'FAIL':'PASS';
+})().catch(e=>{document.title='FAIL';document.getElementById('result').textContent=e.stack});
+</script>

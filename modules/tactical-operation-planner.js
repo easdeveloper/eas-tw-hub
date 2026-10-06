@@ -4,7 +4,7 @@
     EAS.Modules = EAS.Modules || {};
     EAS.Modules.TacticalOperationPlanner = EAS.Modules.TacticalOperationPlanner || {};
 
-    const UNIT_LABELS = { spear: 'Lanceiro', sword: 'Espadachim', archer: 'Arqueiro', spy: 'Explorador', heavy: 'Pesada', light: 'Leve', axe: 'Machado', ram: 'Aríete', catapult: 'Catapulta', snob: 'Nobre' };
+    const UNIT_LABELS = { spear: 'Lanceiro', sword: 'Espadachim', archer: 'Arqueiro', spy: 'Explorador', heavy: 'Pesada', light: 'Leve', axe: 'Machado', ram: 'Aríete', catapult: 'Catapulta', knight: 'Paladino', snob: 'Nobre' };
     const OFFENSIVE_UNITS = ['axe', 'light', 'marcher', 'ram', 'catapult'];
     const DEFENSIVE_UNITS = ['spear', 'sword', 'archer', 'heavy'];
     const safeInteger = value => Number.isSafeInteger(Number(value)) ? Number(value) : null;
@@ -82,7 +82,13 @@
         return { ...draft, analysis };
     };
 
-    const render = (root, draft, validation) => {
+    const render = (root, draft, validation, anchorId = null) => {
+        const findRow = () => [...root.querySelectorAll('[data-slot-id]')].find(row => row.dataset.slotId === anchorId);
+        const row = anchorId ? findRow() : null;
+        const scrollers = [];
+        if (row) for (let node = row.parentElement; node; node = node.parentElement) {
+            if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) scrollers.push({ node, top: node.scrollTop, left: node.scrollLeft, y: row.getBoundingClientRect().top - node.getBoundingClientRect().top });
+        }
         if (!Array.isArray(validation?.balances)) throw new Error('REVIEW_BALANCES_UNAVAILABLE');
         const visibleIds = new Set(validation.visibleSlotIds || []);
         const visible = draft.operation.slots.filter(slot => visibleIds.has(slot.id));
@@ -92,11 +98,15 @@
         root.querySelector('[data-op-summary]').textContent = `${validation.analyzedCount} analisadas · ${validation.selectedCount} planejadas · ${validation.blockedCount} bloqueadas${draft.reviewState === 'approved' ? ' · revisão aprovada' : ''}`;
         const table = root.querySelector('[data-op-table]');
         table.innerHTML = visible.length ? visible.map(slot => {
-            const mission = validation.missions.find(item => item.slotId === slot.id);
+            const train = EAS.TacticalOperationPlanner.nobleTrainSize(slot.role);
+            const commands = validation.missions.filter(item => (item.parentSlotId || item.slotId) === slot.id);
+            const mission = commands.find(item => item.validationStatus === 'blocked') || commands[0];
+            const trainReview = train ? commands.slice().sort((a, b) => a.trainIndex - b.trainIndex).map(command => `<div data-nt-command="${command.trainIndex}"><strong>NT${command.trainIndex} \u2014 ${command.validationStatus === 'ready' ? 'READY' : 'BLOCKED'}</strong><br>${escapeHtml(unitText(command.composition.quantities))}<br>Envio ${formatCalendarTimestamp(command.sendAtMs, true)}<br>Dura\u00e7\u00e3o ${formatDuration(command.travelTimeMs)}<br>Chegada ${formatCalendarTimestamp(command.desiredArrivalMs, true)}<br><small>${escapeHtml(command.blockers.join(', '))}</small></div>`).join('') : '';
             const quantities = unitText(slot.composition.quantities);
             const candidate = draft.operation.candidates.find(item => String(item.source.id) === String(slot.source.id));
             const balance = validation.balances.find(item => String(item.sourceId) === String(slot.source.id));
-            const quantityEditors = state.customOpenIds.has(slot.id) ? Object.keys(candidate?.ownHome || {}).map(unit => `<label class="tactical-operation-unit">${escapeHtml(UNIT_LABELS[unit] || unit)}<input type="number" min="0" step="1" value="${Number(slot.composition.quantities?.[unit]) || 0}" data-quantity="${escapeHtml(slot.id)}" data-unit="${escapeHtml(unit)}"></label>`).join('') : '';
+            const availabilityTrusted = candidate?.evidence?.trusted === true && candidate.evidence.complete === true && candidate.evidence.fresh === true;
+            const quantityEditors = !train && state.customOpenIds.has(slot.id) ? Object.keys(candidate?.ownHome || {}).map(unit => `<label class="tactical-operation-unit">${escapeHtml(UNIT_LABELS[unit] || unit)}<input type="number" min="0" step="1" value="${Number(slot.composition.quantities?.[unit]) || 0}" data-quantity="${escapeHtml(slot.id)}" data-unit="${escapeHtml(unit)}"><span data-available="${escapeHtml(unit)}">/ ${availabilityTrusted && Number.isSafeInteger(candidate.ownHome[unit]) ? candidate.ownHome[unit] + ' dispon\u00edveis' : 'n\u00e3o verificado'}</span></label>`).join('') : '';
             const village = EAS.Villages?.getById?.(Number(slot.source.id));
             const villageName = slot.source.name || village?.name || null;
             const villageCoord = slot.source.coord || village?.coordinate || null;
@@ -107,33 +117,33 @@
             const nobleCount = trustedTroops && Number.isSafeInteger(candidate?.ownHome?.snob) ? candidate.ownHome.snob : null;
             const evidence = candidate?.evidence?.trusted ? 'Tropas verificadas' : 'Tropas não verificadas';
             const active = slot.role !== 'unused';
-            const selectedLabel = slot.role === 'unused' ? 'Não selecionada' : ({ attack: 'Ataque', support: 'Apoio', noble_train_manual: 'Nobre manual' }[slot.role] || slot.role);
+            const selectedLabel = slot.role === 'unused' ? 'Não selecionada' : ({ attack: 'Ataque', support: 'Apoio', nt2: 'NT(2)', nt3: 'NT(3)', nt4: 'NT(4)', nt5: 'NT(5)' }[slot.role] || slot.role);
             const commandState = !active ? 'Não selecionada' : mission?.validationStatus === 'ready' ? 'Pronta' : 'Bloqueada';
             return `<tr data-slot-id="${escapeHtml(slot.id)}" class="${mission?.validationStatus === 'blocked' ? 'eas-table-row--error' : ''}">
                 <td><strong>${escapeHtml(displayName)}</strong><br><small>${escapeHtml(villageCoord || 'Coordenada não disponível')} · ${evidence}</small><br><small>ID: ${escapeHtml(slot.source.id)}</small></td>
-                <td><select data-role="${escapeHtml(slot.id)}"><option value="unused" ${slot.role === 'unused' ? 'selected' : ''}>Não selecionar</option><option value="attack" ${slot.role === 'attack' ? 'selected' : ''}>Ataque</option><option value="support" ${slot.role === 'support' ? 'selected' : ''}>Apoio</option><option value="noble_train_manual" ${slot.role === 'noble_train_manual' ? 'selected' : ''}>Nobre manual</option></select><small>${selectedLabel}</small></td>
-                <td>${active ? `<strong>${slot.composition.requestedMode === 'full' ? 'FULL' : 'CUSTOM'}</strong><br><small>${escapeHtml(quantities)}</small>${slot.composition.requestedMode === 'custom' ? `<div>${state.customOpenIds.has(slot.id) ? `${quantityEditors}<button type="button" data-custom-close="${escapeHtml(slot.id)}">Fechar editor</button>` : `<button type="button" data-custom="${escapeHtml(slot.id)}">Editar CUSTOM</button>`}</div>` : ''}` : `<small>Ofensivas: ${offensiveCount == null ? 'não verificadas' : offensiveCount} · Defensivas: ${defensiveCount == null ? 'não verificadas' : defensiveCount} · Nobres: ${nobleCount == null ? 'não verificado' : nobleCount}</small>`}</td>
-                <td>${active ? `<label class="tactical-operation-offset">Deslocamento da chegada (ms)<input type="number" min="0" step="1" value="${Number(slot.arrivalOffsetMs) || 0}" data-offset="${escapeHtml(slot.id)}"></label>` : '-'}</td>
+                <td><select data-role="${escapeHtml(slot.id)}"><option value="unused" ${slot.role === 'unused' ? 'selected' : ''}>Não selecionar</option><option value="attack" ${slot.role === 'attack' ? 'selected' : ''}>Ataque</option><option value="support" ${slot.role === 'support' ? 'selected' : ''}>Apoio</option>${[2, 3, 4, 5].map(n => `<option value="nt${n}" ${slot.role === `nt${n}` ? 'selected' : ''}>NT(${n})</option>`).join('')}</select><small>${selectedLabel}</small></td>
+                <td>${train ? trainReview : active ? `<strong>${slot.composition.requestedMode === 'full' ? 'FULL' : 'CUSTOM'}</strong><br><small>${escapeHtml(quantities)}</small>${slot.composition.requestedMode === 'custom' ? `<div>${state.customOpenIds.has(slot.id) ? `${quantityEditors}<button type="button" data-custom-close="${escapeHtml(slot.id)}">Fechar editor</button>` : `<button type="button" data-custom="${escapeHtml(slot.id)}">Editar CUSTOM</button>`}</div>` : ''}` : `<small>Ofensivas: ${offensiveCount == null ? 'não verificadas' : offensiveCount} · Defensivas: ${defensiveCount == null ? 'não verificadas' : defensiveCount} · Nobres: ${nobleCount == null ? 'não verificado' : nobleCount}</small>`}</td>
+                <td>${active ? `<label class="tactical-operation-offset">Deslocamento da chegada (ms)<input type="number" step="1" value="${Number(slot.arrivalOffsetMs) || 0}" data-offset="${escapeHtml(slot.id)}"></label>` : '-'}</td>
                 <td>${active ? `<strong>Envio</strong><br>${formatCalendarTimestamp(mission?.sendAtMs)}<br><small>Duração</small><br>${formatDuration(mission?.travelTimeMs)}<br><small>Chegada</small><br>${formatCalendarTimestamp(mission?.desiredArrivalMs, true)}` : '-'}</td>
                 <td><span class="eas-status eas-status--${!active ? 'info' : mission?.validationStatus === 'ready' ? 'success' : 'error'}">${commandState}</span>${active ? `<br><small>${escapeHtml((mission?.blockers || []).join(', '))}</small>` : ''}</td>
-                <td>${active ? `<button type="button" data-materialize="${escapeHtml(slot.id)}">Materializar FULL</button>${slot.composition.requestedMode === 'full' ? `<button type="button" data-custom="${escapeHtml(slot.id)}">Usar CUSTOM</button>` : ''}<button type="button" data-confirm="${escapeHtml(slot.id)}" ${slot.composition.confirmed ? 'disabled' : ''}>Confirmar</button>` : 'Selecione um tipo de comando'}</td>
+                <td>${train ? 'Composi\u00e7\u00e3o autom\u00e1tica \u2014 somente leitura' : active ? `<button type="button" data-materialize="${escapeHtml(slot.id)}">Materializar FULL</button>${slot.composition.requestedMode === 'full' ? `<button type="button" data-custom="${escapeHtml(slot.id)}">Usar CUSTOM</button>` : ''}<button type="button" data-confirm="${escapeHtml(slot.id)}" ${slot.composition.confirmed ? 'disabled' : ''}>Confirmar</button>` : 'Selecione um tipo de comando'}</td>
             </tr>`;
         }).join('') : '<tr><td colspan="7">Nenhum slot visible. Alterar o filtro.</td></tr>';
         root.querySelectorAll('[data-quantity]').forEach(input => input.addEventListener('change', () => {
             state.draft = EAS.TacticalOperationController.setCustomQuantity(state.draft, input.dataset.quantity, input.dataset.unit, parseCustomQuantityInput(input));
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, input.dataset.quantity);
         }));
         root.querySelectorAll('[data-role]').forEach(select => select.addEventListener('change', () => {
             state.draft = EAS.TacticalOperationController.setRole(state.draft, select.dataset.role, select.value);
-            if (select.value === 'unused') state.customOpenIds.delete(select.dataset.role);
+            if (select.value === 'unused' || EAS.TacticalOperationPlanner.nobleTrainSize(select.value)) state.customOpenIds.delete(select.dataset.role);
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, select.dataset.role);
         }));
         root.querySelectorAll('[data-offset]').forEach(input => input.addEventListener('change', () => {
             state.draft = EAS.TacticalOperationController.setArrivalOffset(state.draft, input.dataset.offset, safeInteger(input.value));
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, input.dataset.offset);
         }));
         root.querySelectorAll('[data-materialize]').forEach(button => button.addEventListener('click', () => {
             const slot = state.draft.operation.slots.find(item => item.id === button.dataset.materialize);
@@ -143,24 +153,24 @@
             state.customOpenIds.delete(button.dataset.materialize);
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
             setStatus('FULL materializado. Confirme a composição antes da revisão.', 'info');
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, button.dataset.materialize);
         }));
         root.querySelectorAll('[data-custom]').forEach(button => button.addEventListener('click', () => {
             state.draft = EAS.TacticalOperationController.useCustomComposition(state.draft, button.dataset.custom);
             state.customOpenIds.add(button.dataset.custom);
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
             setStatus('Modo CUSTOM selecionado. Edite quantidades e confirme a composição.', 'info');
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, button.dataset.custom);
         }));
         root.querySelectorAll('[data-custom-close]').forEach(button => button.addEventListener('click', () => {
             state.customOpenIds.delete(button.dataset.customClose);
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, button.dataset.customClose);
         }));
         root.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', () => {
             state.draft = EAS.TacticalOperationController.confirmComposition(state.draft, button.dataset.confirm);
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
             setStatus('Composição confirmada. A revisão permanece somente em memória.', 'info');
-            render(root, state.draft, state.validation);
+            render(root, state.draft, state.validation, button.dataset.confirm);
         }));
         root.querySelectorAll('[data-approve]').forEach(button => button.addEventListener('click', () => {
             state.draft = EAS.TacticalOperationController.approveReview(state.draft);
@@ -174,15 +184,6 @@
             state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
             render(root, state.draft, state.validation);
         });
-        const addNoble = root.querySelector('[data-op-add-noble]');
-        if (addNoble) addNoble.onclick = () => {
-            const sourceId = root.querySelector('[data-op-manual-source]')?.value;
-            const index = state.draft.operation.slots.filter(slot => slot.role === 'noble').length;
-            state.draft = EAS.TacticalOperationController.addManualNobleSlot(state.draft, sourceId, index, 0, { snob: 1 });
-            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-            setStatus('Nobre manual adicionado. NT4 permanece bloqueado até política explicitamente revisada.', 'error');
-            render(root, state.draft, state.validation);
-        };
         const review = root.querySelector('[data-op-review]');
         if (review) {
             review.disabled = !validation.valid || validation.selectedCount === 0;
@@ -203,27 +204,31 @@
             const evidence = balance.unknown ? 'Evidência não verificada' : 'Derivado';
             return `<div class="tactical-operation-balance"><strong>${escapeHtml(identity)}</strong><span>${escapeHtml(coord || 'Coordenada não disponível')}</span><small>ID: ${escapeHtml(balance.sourceId)}</small><span>${evidence}</span><span>Disponível: ${escapeHtml(unitText(balance.available || {}))}</span><span>Alocado: ${escapeHtml(unitText(balance.allocated || {}))}</span><span>Restante: ${escapeHtml(unitText(balance.remaining || {}))}</span><span>Excedido: ${escapeHtml(unitText(balance.overAllocated || {}))}</span></div>`;
         }).join('') || '<small>Sem saldos derivados.</small>';
+        const restored = anchorId ? findRow() : null;
+        if (restored) for (const saved of scrollers) {
+            saved.node.scrollTop = saved.top;
+            saved.node.scrollLeft = saved.left;
+            saved.node.scrollTop += restored.getBoundingClientRect().top - saved.node.getBoundingClientRect().top - saved.y;
+        }
     };
 
-    const open = async () => {
+    const open = async ({ target: targetContext = null } = {}) => {
         const win = EAS.UI.createWindow({ id: 'eas-tactical-operation-planner', title: '🗺️ Operação Tática — Revisão', width: 1120, className: 'tactical-operation-planner-window' });
         win.body.innerHTML = '<div class="tactical-operation-planner"></div>';
         const root = win.body.querySelector('.tactical-operation-planner');
         root.innerHTML = `<div class="tactical-operation-header"><div><h2>Operação Tática</h2><p data-op-target>Analise uma alvo antes de revisar.</p></div><button type="button" data-op-close>Fechar</button></div>
             <div class="tactical-operation-controls"><label>Alvo<input data-op-target-input placeholder="484|527" value=""></label><label>Nome do jogador<input data-op-player-input placeholder="chargboy"></label><label>Data do servidor<input data-op-date placeholder="DD/MM/AAAA"></label><label>Hora do servidor<input data-op-time placeholder="HH:MM:SS.mmm"></label><button type="button" data-op-analyze>Analisar alvo</button></div>
             <div class="tactical-operation-filters"><button type="button" data-filter="ALL" class="eas-button--active">Todos</button><button type="button" data-filter="OFFENSIVE">Ofensivas</button><button type="button" data-filter="DEFENSIVE">Defensivas</button><button type="button" data-filter="HAS_NOBLE">Com nobre</button><button type="button" data-filter="SELECTED">Selecionadas</button></div>
-            <div class="tactical-operation-nt"><label>Origem para nobre manual<select data-op-manual-source></select></label><button type="button" data-op-add-noble>Adicionar nobre manual</button><span>Política NT4 não confirmada</span></div>
             <div class="tactical-operation-summary"><strong data-op-summary>Sem análise</strong><span data-op-status class="eas-status eas-status--info">A execução não é iniciada.</span></div>
             <div class="tactical-operation-review"><button type="button" data-op-review disabled>Aprovar revisão</button></div>
             <div class="tactical-operation-table-wrap"><table class="eas-table"><thead><tr><th>Origem</th><th>Função</th><th>Composição / evidência</th><th>Deslocamento</th><th>Envio / duração</th><th>Estado</th><th>Ações</th></tr></thead><tbody data-op-table></tbody></table></div>
             <details class="tactical-operation-balances"><summary>Saldos derivados por aldeia</summary><div class="tactical-operation-balance-list" data-op-balances></div></details>
             <div class="tactical-operation-notice"><strong>Segurança</strong><p>Somente revisão e planejamento em memória. Nenhum comando, scheduler, Rally Point, timer ou envio é criado.</p></div>`;
+        if (targetContext?.coord) {
+            root.querySelector('[data-op-target-input]').value = targetContext.coord;
+            root.querySelector('[data-op-player-input]').value = targetContext.playerName || '';
+        }
         root.querySelector('[data-op-close]').addEventListener('click', () => win.close());
-        root.querySelector('[data-op-manual-source]').innerHTML = '<option value="">Selecione uma origem após análise</option>';
-        root.querySelector('[data-op-add-noble]').disabled = true;
-        root.querySelector('[data-op-manual-source]').addEventListener('change', event => {
-            root.querySelector('[data-op-add-noble]').disabled = !event.target.value || !state.draft;
-        });
         root.querySelector('[data-op-analyze]').addEventListener('click', async () => {
             const target = root.querySelector('[data-op-target-input]').value.trim();
             const playerName = root.querySelector('[data-op-player-input]').value.trim();
@@ -235,12 +240,10 @@
             try {
                 setStatus('Analisando alvo e evidências read-only…');
                 render(root, createOperation({ candidates: [] }), emptyValidation([]));
-                const analysis = await EAS.TacticalOperationData.analyzeTarget({ target: { coord: target, playerName } });
+                const analysis = await EAS.TacticalOperationData.analyzeTarget({ target: { coord: target, playerName, ...(target === targetContext?.coord ? { villageId: targetContext.villageId, ...(playerName === targetContext.playerName && targetContext.playerId != null ? { playerId: targetContext.playerId } : {}) } : {}) } });
                 const serverNow = EAS.World.getServerDateTime?.();
                 const viewModel = adaptAnalysisResult(analysis, centralArrivalMs, serverNow?.available ? calendarMilliseconds(serverNow) : null);
                 state.analysis = viewModel; state.draft = buildDraft(viewModel);
-                root.querySelector('[data-op-manual-source]').innerHTML = '<option value="">Selecione uma origem</option>' + viewModel.candidates.map(candidate => `<option value="${escapeHtml(candidate.source.id)}">${escapeHtml(candidate.source.name || candidate.source.coord)}</option>`).join('');
-                root.querySelector('[data-op-add-noble]').disabled = true;
                 state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
                 setStatus(!Number.isSafeInteger(viewModel.serverNowMs) ? 'Relógio do servidor indisponível. Revisão bloqueada.' : viewModel.partial ? 'Análise parcial concluída. Evidências pendentes foram preservadas.' : 'Análise concluída. Revise os slots sem executar operações.', !Number.isSafeInteger(viewModel.serverNowMs) ? 'error' : viewModel.partial ? 'info' : 'success');
                 render(root, state.draft, state.validation);

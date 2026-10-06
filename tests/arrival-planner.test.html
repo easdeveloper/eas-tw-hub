@@ -27,7 +27,7 @@ const a=EAS.ArrivalPlanner,x=EAS.ArrivalExecution,s=EAS.MissionScheduler,e=EAS.S
 localStorage.removeItem(s.STORAGE_KEY);
 check(a.initialize(),'valid target'); a.initialize();
 check(document.querySelectorAll('#eas-arrival-actions').length===1,'singleton panel');
-check(document.querySelectorAll('#eas-arrival-actions button').length===2,'attack/support once');
+check(document.querySelectorAll('#eas-arrival-actions button').length===3,'attack/support once');
 check(document.querySelectorAll('[data-eas-snip]').length===2,'attack only, no duplicates');
 const rows=document.querySelectorAll('tr.command-row');const one=a.parseIncoming(rows[0]),two=a.parseIncoming(rows[1]);
 check(one.enemyCommandId==='1050744433'&&two.enemyCommandId==='2137233775','same name distinct IDs');

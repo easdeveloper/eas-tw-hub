@@ -92,3 +92,30 @@ Arrival and server-now inputs are normalized as UTC arithmetic over explicit ser
 The real public-map record for 484|527 resolved successfully, but the optional supplied player name did not resolve. Previously this discarded the whole target. Coordinate resolution now remains primary; `playerName` stays null unless verified, while `ownerNameValidation` preserves the supplied name, target owner ID and validated/unresolved/not-supplied status. PublicMap owner ID 0 is explicitly unowned; absent owner ID stays unknown. Abort and rate limits still stop collection.
 
 Compact diagnostics expose `failureStage`, `errorCode`, and a bounded explanatory `errorMessage` for target, own-village refresh/read, troop refresh/read and map_info failures. Per-source map failures retain their own diagnostics. Messages intentionally do not copy raw exceptions, HTML, URLs or tokens. The read-only Console command above is unchanged.
+
+## Phase 4 — automatic NT(N), planning/review only
+
+The provisional manual noble workflow is retired. Desk roles are UNUSED, ATTACK, SUPPORT, NT(2), NT(3), NT(4), NT(5). Single-noble attacks use ordinary ATTACK FULL/CUSTOM. Earlier notes about unresolved NT4 policy describe previous phases and are superseded here.
+
+Pure domain APIs:
+- `nobleTrainSize(role)` recognizes `nt2` through `nt5`.
+- `buildNobleTrain({slot, candidate, count?})` returns `{valid, blockers, slots}`. No inputs are mutated and no live data is read.
+- `validatePlan()` expands each NT parent slot, validates the derived commands through the existing composition/timing path, aggregates their troop allocations with other selected slots, and sorts review records by actual send time. Each review record identifies `parentSlotId`, `trainIndex` and `trainSize`.
+
+Axe and light divide by floor(total/N), with remaining units assigned from NT1 forwards. Siege is allocated entirely to NT1; one knight, when present, also goes only to NT1. Every command gets one noble. Other units are ignored. Optional missing siege/knight does not require a new scan. Extra nobles remain available.
+
+Generated commands require at least 150 axe and 150 light each. Blockers are `INSUFFICIENT_NOBLES`, `INSUFFICIENT_AXE_ESCORT`, `INSUFFICIENT_LIGHT_ESCORT`; invalid/unknown evidence and timing retain existing fail-closed checks. No downgrade occurs. Unknown escorts are not replaced with zero. NT1 arrives at central arrival plus parent offset; subsequent commands add exactly 100 ms each. Each composition independently resolves its limiting units and duration; no travel modifier was added.
+
+Controller selection derives trains automatically. NT composition editing/materialization/confirmation APIs are no-ops for NT slots, and those controls are absent from their rows. Derived compositions use the existing concrete composition validation representation internally; they are not editable CUSTOM requests. Returning to ATTACK/SUPPORT clears NT composition and requires the ordinary explicit workflow. UNUSED releases allocations. Summary counts are source-slot counts; a blocked train counts as one blocked selected slot. Per-command review shows READY/BLOCKED, specific blockers, troops, send, duration and millisecond arrival.
+
+No Scheduler mission, authorization, execution timer, baseline or command is created. Data scanning semantics are unchanged. BR143 validation should select NT(4) on a suitable analyzed source, verify the four compositions, 100 ms spacing, independent send times and derived remaining nobles, without sending anything.
+
+## Focused UX refinement after real Phase 4 validation
+
+CUSTOM can be opened directly from ATTACK/SUPPORT. The controller materializes only zero selected quantities from the already trusted candidate's unit keys when the draft is empty; existing FULL-to-CUSTOM quantities remain preserved. The editor reads availability directly from candidate.ownHome and displays it separately from selected quantities. Untrusted availability is labelled unverified, never converted into permission. Opening/editing CUSTOM makes no data request. The prior implementation had no domain FULL prerequisite, but left a fresh CUSTOM map empty and displayed inputs without availability; this explicit initialization and availability presentation remove that UI ambiguity.
+
+The contextual OPERAÇÃO action shares Arrival's existing info_village mount and resolveTarget identity checks. resolveOperationTarget adds optional player metadata from unambiguous info_player links scoped to #village_info. Coordinates and stable village IDs remain primary; names remain contextual. The action loads the existing Planner module on demand and calls open({target}); no analysis starts until the user clicks Analisar alvo. Stable IDs are forwarded to ordinary analysis while the coordinate remains unchanged; editing the coordinate drops the old IDs.
+
+Slot-local rerenders capture the affected data-slot-id row's relative viewport position and the actual scrollable ancestor positions. Immediately after rendering, the same row is found and scroll offsets are corrected synchronously, including nested scrollers. No timers are added. Filters and new analysis do not invoke anchor restoration.
+
+Phase 4 literal question marks in NT presentation strings were source corruption, not domain data. Those strings now use JavaScript Unicode escapes to produce Portuguese text and em dashes consistently through the local builder. NT distribution/timing logic is unchanged.

@@ -1,4 +1,4 @@
-﻿const { test } = require('node:test');
+const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -27,7 +27,7 @@ test('attack arrives before central and support arrives after, exact arithmetic'
     assert.equal(result.missions[0].sendAtMs, central - 1000 - H);
 });
 test('review orders by send time: slower support arriving later sends first', () => {
-    const result = plan([slot(), slot('b', 'support', 2000, { ram: 1 }), slot('n', 'noble', 0, { snob: 1 })]);
+    const result = plan([slot(), slot('b', 'support', 2000, { ram: 1 }), slot('n', 'attack', 0, { snob: 1 })]);
     assert.equal(result.valid, true);
     assert.deepEqual(plain(result.missions.map(m => m.slotId)), ['n', 'b', 'a']);
     assert.equal(result.missions[0].commandType, 'attack');
@@ -71,9 +71,10 @@ test('FULL needs concrete confirmed composition; full does not resolve live troo
     assert.equal(plan([s]).valid, true);
 });
 test('invalid quantities and empty compositions are rejected without correction', () => {
-    for (const quantities of [{ spear: -1 }, { spear: 1.5 }, { spear: '1' }, { spear: NaN }, { spear: Number.MAX_SAFE_INTEGER + 1 }, { spear: 0 }, {}]) {
+    for (const quantities of [{ spear: -1 }, { spear: 1.5 }, { spear: '1' }, { spear: null }, { spear: NaN }, { spear: Number.MAX_SAFE_INTEGER + 1 }, { spear: 0 }, {}]) {
         assert.equal(api.validateComposition(composition(quantities), candidate()).valid, false);
     }
+    assert.equal(api.validateComposition(composition({ spear: null }), candidate()).blockers.includes('INVALID_QUANTITY'), true);
     const zerosAndPositive = api.validateComposition(composition({ spear: 0, ram: 1 }), candidate());
     assert.equal(zerosAndPositive.valid, true);
     assert.equal(zerosAndPositive.blockers.includes('INVALID_QUANTITY'), false);
@@ -99,19 +100,7 @@ test('night window crossing midnight and unknown window remain distinct', () => 
     assert.equal(api.evaluateNightBonus(H, { known: false }).state, 'unknown');
     assert.equal(api.evaluateNightBonus(H, { known: true, start: 0, end: 0 }).state, 'ambiguous');
 });
-test('NT4 remains blocked for undefined offsets/policy and never distributes troops', () => {
-    const slots = Array.from({ length: 4 }, (_, i) => slot(String(i), 'noble', null, { snob: 1 }));
-    const op = { ...operation(slots), ntTemplate: 'NT4' };
-    const before = JSON.stringify(op);
-    const result = plan(slots, [candidate()], { operation: op });
-    assert.equal(result.valid, false); assert.ok(result.blockers.includes('NT4_POLICY_PENDING'));
-    assert.ok(result.blockers.includes('ARRIVAL_OFFSET_UNDEFINED')); assert.equal(JSON.stringify(op), before);
-    op.slotPolicy = { nt4Confirmed: true };
-    assert.equal(plan(slots, [candidate()], { operation: op }).valid, false);
-    slots.forEach((s, i) => { s.arrivalOffsetMs = i * 100; });
-    assert.equal(plan(slots, [candidate()], { operation: op }).valid, true);
-    op.ntTemplate = 'NT5'; assert.equal(plan(slots, [candidate()], { operation: op }).valid, false);
-});
+
 test('missing source, missing server now and past send block review', () => {
     const s = slot(); delete s.source;
     assert.equal(plan([s]).valid, false);

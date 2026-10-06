@@ -7,7 +7,7 @@ try{
 localStorage.removeItem('eas_tw_scheduler_v2');
 let w=await navigate('screen=info_village&id=9113&village=103586');
 check(w.fixtureState.ready===1,'local VM bootstrap once');check(w.fixtureState.errors.length===0,'bootstrap no error: '+w.fixtureState.errors.join(','));
-check(w.document.querySelectorAll('#eas-arrival-actions button').length===2,'local static factory exposes arrival buttons');
+check(w.document.querySelectorAll('#eas-arrival-actions button').length===3,'local static factory exposes arrival buttons');
 check(w.fixtureState.fetches===0&&w.fixtureState.submits===0,'idle info page zero request/send');
 const now=Math.floor(w.EAS.ArrivalPlanner.clock());
 const mission=w.EAS.MissionScheduler.createMission({id:'arrival-navigation',sourceModule:'arrival-planner',mode:'snipe_support',type:'support',commandType:'support',villageId:'103586',targetCoord:'524|438',targetVillageId:'9113',troops:{spy:5},expectedTroopsSnapshot:{spy:5},attemptId:'nav-attempt',travelTimeMs:600000,arrivalAuthorized:true,sendAtMs:now+120000,sendTimestamp:w.EAS.ArrivalPlanner.legacyTime(now+120000),status:'confirmation-ready',attackProcess:2,tabExecutionId:'nav-tab',submitAuthorization:{missionId:'arrival-navigation',attemptId:'nav-attempt',allowedStage:'attack-confirmation',used:false}});

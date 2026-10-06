@@ -203,9 +203,9 @@ test('review sorting is by send timestamp and filters do not mutate roles', () =
     const slotId = draft.operation.slots[0].id;
     const first = api.setCustomQuantity(draft, slotId, 'spear', 1);
     const second = api.setRole(first, slotId, 'support');
-    const third = api.setRole(second, slotId, 'noble_train_manual');
+    const third = second;
     const result = api.validateDraft(third);
-    assert.equal(result.missions[0].role, 'noble');
+    assert.equal(result.missions[0].role, 'support');
     assert.equal(result.missions[0].sendAtMs, 19_000);
     assert.equal(api.setFilter(draft, 'OFFENSIVE').operation.slots[0].role, 'attack');
 });
@@ -222,16 +222,6 @@ test('approval is a review marker with zero side effects', () => {
     assert.equal(api.approveReview(draft), draft);
 });
 
-test('manual NT draft is not policy confirmed and remains fail-closed', () => {
-    const draft = api.createDraft({ ...base, candidates: [candidate], ntTemplate: 'NT4', slotPolicy: { nt4Confirmed: false } });
-    const nt = api.addManualNobleSlot(draft, '1', 0, 0, { snob: 1 });
-    const result = api.validateDraft(nt);
-    assert.equal(result.valid, false);
-    assert.ok(result.blockers.includes('NT4_POLICY_PENDING'));
-    assert.equal(result.missions.find(mission => mission.role === 'noble').commandType, 'attack');
-    assert.equal(nt.operation.slotPolicy.nt4Confirmed, false);
-    assert.equal(nt.operation.slots.filter(slot => slot.role === 'noble_train_manual').length, 1);
-});
 
 test('fresh candidates are UNUSED and do not require composition, allocation, or timing', () => {
     const draft = api.createDraft(base);
@@ -266,19 +256,6 @@ test('ATTACK and SUPPORT activate validation; returning to UNUSED releases alloc
     assert.equal(unusedResult.balances[0].remaining.spear, 100);
 });
 
-test('selecting manual noble role remains NT4 fail-closed; UNUSED removes its policy blocker', () => {
-    const draft = api.createDraft(base);
-    const slotId = draft.operation.slots[0].id;
-    const manualNoble = api.setRole(draft, slotId, 'noble_train_manual');
-    const blocked = api.validateDraft(manualNoble);
-    assert.ok(blocked.blockers.includes('NT4_POLICY_PENDING'));
-    assert.equal(blocked.selectedCount, 1);
-    const unused = api.setRole(manualNoble, slotId, 'unused');
-    const result = api.validateDraft(unused);
-    assert.equal(result.valid, true);
-    assert.equal(result.selectedCount, 0);
-    assert.equal(result.blockedCount, 0);
-});
 
 test('ATTACK and SUPPORT without a noble command ignore unresolved NT4 policy', () => {
     for (const role of ['attack', 'support']) {
@@ -294,42 +271,7 @@ test('ATTACK and SUPPORT without a noble command ignore unresolved NT4 policy', 
     }
 });
 
-test('valid ATTACK plus unresolved manual noble blocks only the noble row', () => {
-    const candidates = [candidate, { ...candidate, source: { id: '2', coord: '502|500', name: 'B' } }];
-    const draft = api.createDraft({ ...base, candidates });
-    const firstId = draft.operation.slots[0].id;
-    const secondId = draft.operation.slots[1].id;
-    const attack = api.confirmComposition(api.setCustomQuantity(api.setRole(draft, firstId, 'attack'), firstId, 'spear', 10), firstId);
-    const manual = api.addManualNobleSlot(attack, '2', 0, 0, { snob: 1 });
-    const result = api.validateDraft(manual);
-    assert.equal(result.valid, false);
-    assert.equal(result.blockers.includes('NT4_POLICY_PENDING'), true);
-    const attackMission = result.missions.find(mission => mission.role === 'attack');
-    const nobleMission = result.missions.find(mission => mission.role === 'noble');
-    assert.equal(attackMission.validationStatus, 'ready');
-    assert.equal(attackMission.blockers.includes('NT4_POLICY_PENDING'), false);
-    assert.equal(nobleMission.validationStatus, 'blocked');
-    assert.equal(nobleMission.blockers.includes('NT4_POLICY_PENDING'), true);
-    assert.equal(result.selectedCount, 2);
-    assert.equal(result.blockedCount, 1);
-    assert.ok(secondId);
-});
 
-test('valid SUPPORT plus unresolved manual noble blocks only the noble row', () => {
-    const candidates = [candidate, { ...candidate, source: { id: '2', coord: '502|500', name: 'B' } }];
-    const draft = api.createDraft({ ...base, candidates });
-    const supportId = draft.operation.slots[0].id;
-    const support = api.confirmComposition(api.setCustomQuantity(api.setRole(draft, supportId, 'support'), supportId, 'spear', 10), supportId);
-    const manual = api.addManualNobleSlot(support, '2', 0, 0, { snob: 1 });
-    const result = api.validateDraft(manual);
-    const supportMission = result.missions.find(mission => mission.role === 'support');
-    const nobleMission = result.missions.find(mission => mission.role === 'noble');
-    assert.equal(supportMission.validationStatus, 'ready');
-    assert.equal(supportMission.blockers.includes('NT4_POLICY_PENDING'), false);
-    assert.equal(nobleMission.validationStatus, 'blocked');
-    assert.equal(nobleMission.blockers.includes('NT4_POLICY_PENDING'), true);
-    assert.equal(result.blockedCount, 1);
-});
 
 test('filters preserve role and composition; SELECTED contains only active slots', () => {
     const draft = api.createDraft({ ...base, candidates: [candidate, { ...candidate, source: { id: '2', coord: '499|499', name: 'B' } }] });

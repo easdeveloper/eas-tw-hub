@@ -10,7 +10,7 @@ check(w.fixtureState.ready===1&&w.fixtureState.errors.length===0,'real local use
 check(!d.querySelector('#village_info'),'fixture does not provide synthetic target container');
 check(d.querySelectorAll('.command_hover_details[data-command-type="attack"]').length===26,'26 attack markers');
 check(d.querySelectorAll('.command_hover_details[data-command-type="support"]').length===65,'65 support markers');
-check(d.querySelectorAll('#eas-arrival-actions button').length===2,'bootstrap mounts ATTACK/SUPPORT from reported URL');
+check(d.querySelectorAll('#eas-arrival-actions button').length===3,'bootstrap mounts ATTACK/SUPPORT from reported URL');
 check(d.querySelectorAll('[data-eas-snip]').length===25,'one SNIP per attack row, including multiple/mixed markers');
 const mounted=w.EAS.Logger.entries().find(event=>event.event==='ARRIVAL_PAGE_MOUNTED');
 check(mounted?.data.commandRows===78&&mounted.data.attackRows===25&&mounted.data.snipeButtonsInserted===25,'central logger exposes row and insertion counts');
@@ -32,6 +32,14 @@ w.EAS.Runtime.dispose('arrival-page');const detached=d.querySelector('tr.command
 check(!detached.querySelector('[data-eas-snip]'),'Runtime.dispose disconnects observer');
 w.EAS.ArrivalPlanner.initialize();await delay(150);check(detached.querySelectorAll('[data-eas-snip]').length===1,'explicit remount after dispose works');
 check(w.fixtureState.fetches===0,'UI mount and dynamic updates never request map_info');
+check(d.querySelector('[data-eas-operation]').textContent === 'OPERA\u00c7\u00c3O','contextual Operation label');
+const beforeOperationFetches=w.fixtureState.fetches;
+d.querySelector('[data-eas-operation]').click();
+for(let i=0;i<100&&!d.querySelector('#eas-tactical-operation-planner');i++)await delay(20);
+check(d.querySelector('#eas-tactical-operation-planner [data-op-target-input]')?.value==='524|438','Operation opens and prefills target using existing URL resolver');
+check(w.fixtureState.fetches===beforeOperationFetches,'Operation click does not analyze or send');
+d.querySelector('#eas-tactical-operation-planner [data-op-close]')?.click();
+
 const original=w.location.href;
 w.history.replaceState({},'',original.replace('#524;438','#525;438'));
 check(w.EAS.ArrivalPlanner.resolveTarget().coords==='525|438','URL target is read afresh');
@@ -45,7 +53,7 @@ for(let i=0;i<100&&!frame.contentWindow.fixtureState?.ready;i++)await delay(20);
 const legacy=frame.contentWindow;
 check(legacy.__EASFakeBootstrapMark&&legacy.EASFakeBootstrapDebug.silentExistingUIBranch===true,'exercises existing UI silent branch');
 check(legacy.fixtureState.ready===1&&legacy.fixtureState.errors.length===0,'silent bootstrap completes');
-check(legacy.document.querySelectorAll('#eas-arrival-actions button').length===2&&legacy.document.querySelectorAll('[data-eas-snip]').length===25,'silent existing UI branch also mounts Arrival');
+check(legacy.document.querySelectorAll('#eas-arrival-actions button').length===3&&legacy.document.querySelectorAll('[data-eas-snip]').length===25,'silent existing UI branch also mounts Arrival');
 check(legacy.fixtureState.fetches===0,'silent mount has no background requests');
 }catch(error){failures.push(error.stack);}finally{frame.remove();}
 document.getElementById('result').textContent=failures.length?'FAIL\n'+failures.join('\n'):`PASS — ${count} assertions`;document.title=failures.length?'FAIL':'PASS';})();

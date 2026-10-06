@@ -126,6 +126,18 @@
             name: (table?.querySelector('h2, .village-name') || doc.querySelector('#content_value h2'))?.textContent.trim() || coordinates } };
     };
     const resolveTarget = (doc = document, href = location.href) => readPageTarget(doc, href).target || null;
+    const resolveOperationTarget = (doc = document, href = location.href) => {
+        const target = resolveTarget(doc, href);
+        if (!target) return null;
+        const players = [...(doc.querySelector('#village_info')?.querySelectorAll('a[href*="screen=info_player"]') || [])].map(link => {
+            const url = new URL(link.getAttribute('href'), href);
+            return url.searchParams.get('screen') === 'info_player' ? { id: id(url.searchParams.get('id')), name: link.textContent.trim() || null } : null;
+        }).filter(player => player?.id);
+        const unique = [...new Set(players.map(player => player.id))];
+        const player = unique.length === 1 ? players[0] : null;
+        return { coord: target.coords, villageId: target.id, name: target.name === target.coords ? null : target.name,
+            playerId: player?.id || null, playerName: player?.name || null, evidence: { source: 'info-village-page' } };
+    };
     const globalPage = () => {
         const q = new URL(location.href).searchParams;
         return q.get('screen') === 'overview_villages' && q.get('mode') === 'incomings' && q.get('type') === 'unignored' && q.get('subtype') === 'attacks';
@@ -331,6 +343,21 @@
                 const button = document.createElement('button'); button.type = 'button'; button.className = 'btn'; button.textContent = label;
                 button.onclick = () => { const current = resolveTarget(); if (current) open(mode, current); }; panel.append(button);
             });
+            const operation = document.createElement('button'); operation.type = 'button'; operation.className = 'btn';
+            operation.dataset.easOperation = ''; operation.textContent = 'OPERA\u00c7\u00c3O';
+            operation.onclick = async () => {
+                const context = resolveOperationTarget(); if (!context || operation.disabled) return;
+                operation.disabled = true;
+                try {
+                    for (const [name, asset] of [['TacticalOperationPlanner', 'services/tactical-operation-planner.js'], ['TacticalOperationController', 'services/tactical-operation-controller.js'], ['TacticalOperationData', 'services/tactical-operation-data.js']])
+                        if (!EAS[name]) await window.EASLoader.loadScript(asset);
+                    const module = await EAS.UI.loadModule('tactical-operation-planner');
+                    const current = resolveOperationTarget();
+                    if (current && current.villageId === context.villageId && current.coord === context.coord) await module.open({ target: current });
+                } catch { log('OPERATION_OPEN_FAILED', { reason: 'PLANNER_UNAVAILABLE' }); }
+                finally { operation.disabled = false; }
+            };
+            panel.append(operation);
             if (anchor.id === 'village_info') anchor.after(panel); else anchor.prepend(panel);
         }
         for (const row of rows) {
@@ -418,5 +445,5 @@
         }
         return result;
     };
-    EAS.ArrivalPlanner = { MODES, antiTroopsValid, antiMissionValid, parseOwnAttack, ownReference, log, clock, format, legacyTime, duration, parseMapInfo, mapInfo, candidateUnits, search, composition, resolveTarget, parseIncoming, createMission, open, initialize, disposePage, close: () => active?.close() };
+    EAS.ArrivalPlanner = { MODES, antiTroopsValid, antiMissionValid, parseOwnAttack, ownReference, log, clock, format, legacyTime, duration, parseMapInfo, mapInfo, candidateUnits, search, composition, resolveTarget, resolveOperationTarget, parseIncoming, createMission, open, initialize, disposePage, close: () => active?.close() };
 })();
