@@ -210,6 +210,105 @@ test('review sorting is by send timestamp and filters do not mutate roles', () =
     assert.equal(api.setFilter(draft, 'OFFENSIVE').operation.slots[0].role, 'attack');
 });
 
+test('Final Review expands mixed ATTACK, SUPPORT, and NT2 into send-ordered real commands', () => {
+    const candidates = [
+        { source: { id: '2', coord: '502|500', name: 'Attack source' }, ownHome: { spear: 100, spy: 9 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { spear: { durationMs: 3000, trusted: true } } },
+        { source: { id: '1', coord: '501|500', name: 'Support source' }, ownHome: { ram: 20 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { ram: { durationMs: 3000, trusted: true } } },
+        { source: { id: '3', coord: '503|500', name: 'Train source' }, ownHome: { axe: 301, light: 301, snob: 3, knight: 1, spy: 99 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: {
+            axe: { durationMs: 5000, trusted: true }, light: { durationMs: 5000, trusted: true }, knight: { durationMs: 6000, trusted: true }, snob: { durationMs: 4000, trusted: true }
+        } }
+    ];
+    let draft = api.createDraft({ ...base, target: { ...target, playerName: 'Player' }, candidates });
+    const [attackSlot, supportSlot, trainSlot] = draft.operation.slots;
+    draft = api.setCustomQuantity(api.setRole(draft, attackSlot.id, 'attack'), attackSlot.id, 'spear', 10);
+    draft = api.confirmComposition(draft, attackSlot.id);
+    draft = api.setCustomQuantity(api.setRole(draft, supportSlot.id, 'support'), supportSlot.id, 'ram', 2);
+    draft = api.confirmComposition(draft, supportSlot.id);
+    draft = api.setRole(draft, trainSlot.id, 'nt2');
+
+    const review = api.buildFinalReview(draft, { unitOrder: ['spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob', 'militia'] });
+    assert.equal(review.validation.state, 'READY', JSON.stringify({ validation: review.validation, commands: review.commands.map(command => ({ status: command.validationStatus, blockers: command.blockers })) }));
+    assert.equal(review.validation.troopEvidenceValid, true);
+    assert.equal(review.validation.noOverAllocation, true);
+    assert.equal(review.validation.timingAvailable, true);
+    assert.deepEqual(review.commands.map(command => command.slotId), [
+        `${trainSlot.id}:nt:1`, `${trainSlot.id}:nt:2`, supportSlot.id, attackSlot.id
+    ]);
+    assert.equal(review.commands[0].trainIndex, 1);
+    assert.equal(review.commands[1].trainIndex, 2);
+    assert.equal(review.commands[2].sendAtMs, review.commands[3].sendAtMs);
+    assert.deepEqual(review.commands.map(command => command.commandType), ['attack', 'attack', 'support', 'attack']);
+    assert.deepEqual(review.commands.map(command => command.composition.quantities), [
+        { snob: 1, axe: 151, light: 151, knight: 1 },
+        { snob: 1, axe: 150, light: 150 },
+        { ram: 2 },
+        { spear: 10 }
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(review.totals)), { snob: 2, axe: 301, light: 301, knight: 1, ram: 2, spear: 10 });
+    assert.deepEqual(JSON.parse(JSON.stringify(review.counts)), { villages: 3, attacks: 1, supports: 1, trains: 1, nobleCommands: 2, commands: 4 });
+    assert.equal(Object.hasOwn(review.totals, 'spy'), false);
+    assert.deepEqual(JSON.parse(JSON.stringify(review.unitOrder.slice(0, 4))), ['spear', 'sword', 'axe', 'archer']);
+});
+
+test('Final Review expands NT4 and counts only generated noble commands, not spare nobles', () => {
+    const trainCandidate = {
+        source: { id: '4', coord: '504|500', name: 'NT4 source' }, ownHome: { axe: 6424, light: 3119, snob: 5, spy: 20 },
+        evidence: { trusted: true, complete: true, fresh: true },
+        travelDurations: { axe: { durationMs: 1000, trusted: true }, light: { durationMs: 1000, trusted: true }, snob: { durationMs: 1000, trusted: true } }
+    };
+    let draft = api.createDraft({ ...base, candidates: [trainCandidate] });
+    draft = api.setRole(draft, draft.operation.slots[0].id, 'nt4');
+    const review = api.buildFinalReview(draft);
+    assert.equal(review.commands.length, 4);
+    assert.deepEqual(review.commands.map(command => [command.trainIndex, command.trainSize]), [[1, 4], [2, 4], [3, 4], [4, 4]]);
+    assert.deepEqual(JSON.parse(JSON.stringify(review.totals)), { snob: 4, axe: 6424, light: 3119 });
+    assert.deepEqual(JSON.parse(JSON.stringify(review.counts)), { villages: 1, attacks: 0, supports: 0, trains: 1, nobleCommands: 4, commands: 4 });
+    assert.ok(review.commands.every(command => !Object.values(command.composition.quantities).includes(0)));
+});
+
+test('Final Review blocks a single late child, propagates blockers, and rejects missing timing', () => {
+    const trainCandidate = {
+        source: { id: '5', coord: '505|500', name: 'Blocked source' }, ownHome: { axe: 300, light: 300, snob: 2 },
+        evidence: { trusted: true, complete: true, fresh: true },
+        travelDurations: { axe: { durationMs: 5000, trusted: true }, light: { durationMs: 5000, trusted: true }, snob: { durationMs: 5000, trusted: true } }
+    };
+    let draft = api.createDraft({ ...base, centralArrivalMs: 15_000, candidates: [trainCandidate] });
+    draft = api.setRole(draft, draft.operation.slots[0].id, 'nt2');
+    const review = api.buildFinalReview(draft);
+    assert.equal(review.validation.state, 'BLOCKED');
+    assert.equal(review.validation.ready, 1, JSON.stringify({ validation: review.validation, commands: review.commands.map(command => ({ status: command.validationStatus, blockers: command.blockers, sendAtMs: command.sendAtMs })) }));
+    assert.equal(review.validation.blocked, 1);
+    assert.ok(review.commands[0].blockers.includes('SEND_TIME_NOT_FUTURE'));
+    assert.equal(api.approveFinalReview(draft, review, 12_345), null);
+
+    const noTimingCandidate = { ...trainCandidate, travelDurations: {} };
+    draft = api.createDraft({ ...base, candidates: [noTimingCandidate] });
+    draft = api.setRole(draft, draft.operation.slots[0].id, 'nt2');
+    const missingTiming = api.buildFinalReview(draft);
+    assert.equal(missingTiming.validation.state, 'BLOCKED');
+    assert.equal(missingTiming.validation.timingAvailable, false);
+    assert.ok(missingTiming.commands.every(command => command.blockers.includes('TRAVEL_DURATION_UNAVAILABLE:axe')));
+    assert.ok(missingTiming.commands.every(command => command.blockers.includes('TIMING_UNAVAILABLE')));
+});
+
+test('approved Final Review snapshot is concrete, frozen, minimal, and revision-bound', () => {
+    let draft = activeDraft(api.createDraft({ ...base, analysisId: 'analysis-raw' }));
+    const slotId = draft.operation.slots[0].id;
+    draft = api.confirmComposition(api.setCustomQuantity(draft, slotId, 'spear', 10), slotId);
+    const review = api.buildFinalReview(draft, { unitOrder: units });
+    const snapshot = api.approveFinalReview(draft, review, 12_345);
+    assert.equal(snapshot.snapshotKind, 'tactical-approved-operation');
+    assert.equal(snapshot.version, 1);
+    assert.equal(snapshot.approvedAt, 12_345);
+    assert.deepEqual(JSON.parse(JSON.stringify(snapshot.commands)), JSON.parse(JSON.stringify(review.commands)));
+    assert.deepEqual(JSON.parse(JSON.stringify(snapshot.totals)), JSON.parse(JSON.stringify(review.totals)));
+    assert.deepEqual(JSON.parse(JSON.stringify(snapshot.counts)), JSON.parse(JSON.stringify(review.counts)));
+    assert.equal(Object.isFrozen(snapshot), true);
+    assert.equal(Object.isFrozen(snapshot.commands[0].composition.quantities), true);
+    for (const key of ['candidates', 'ownHome', 'analysisId', 'draftKey']) assert.equal(Object.hasOwn(snapshot, key), false);
+    assert.equal(api.approveFinalReview({ ...draft, operation: { ...draft.operation, revision: draft.operation.revision + 1 } }, review, 12_345), null);
+    assert.equal(api.approveFinalReview(draft, { ...review, validation: { ...review.validation, valid: false } }, 12_345), null);
+});
 test('approval is a review marker with zero side effects', () => {
     const draft = activeDraft(api.createDraft(base));
     const edited = api.setCustomQuantity(draft, draft.operation.slots[0].id, 'spear', 1);

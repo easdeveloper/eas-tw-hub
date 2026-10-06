@@ -119,3 +119,11 @@ The contextual OPERAÇÃO action shares Arrival's existing info_village mount an
 Slot-local rerenders capture the affected data-slot-id row's relative viewport position and the actual scrollable ancestor positions. Immediately after rendering, the same row is found and scroll offsets are corrected synchronously, including nested scrollers. No timers are added. Filters and new analysis do not invoke anchor restoration.
 
 Phase 4 literal question marks in NT presentation strings were source corruption, not domain data. Those strings now use JavaScript Unicode escapes to produce Portuguese text and em dashes consistently through the local builder. NT distribution/timing logic is unchanged.
+
+## Phase 5 — Final Operation Review
+
+The Desk's `Aprovar revisão` action derives `EAS.TacticalOperationController.buildFinalReview(draft, {unitOrder})` from `validateDraft()` before opening a separate read-only view. The review contains concrete planner missions sorted by `sendAtMs`, including each generated NT child, train parent/index metadata, per-command blockers, operation totals/counts, and evidence-backed validation dimensions. Zero troop quantities are omitted from command compositions. The view exposes only return-to-edit and approval actions.
+
+`approveFinalReview(draft, review, approvedAt?)` returns a deeply frozen `{snapshotKind: 'tactical-approved-operation', version: 1, ...}` snapshot containing reviewed target/timing, concrete commands, totals, counts and validation. Approval re-derives and compares the review and requires matching operation ID/revision; edits through the Desk advance the revision, so a returned-and-edited draft needs a new review. The snapshot intentionally excludes candidates and raw analysis data. It stays in memory only: this phase does not create Scheduler missions, prepare Rally Point commands, send, or start timers.
+
+Validation: `node --test tests/tactical-operation-controller.test.cjs` and the `tactical-operation-planner.test.html` / `tactical-operation-ux.test.html` browser fixtures cover derivation, NT expansion, blocked approval, stale review rejection, read-only controls, return preservation, and target-page metadata handoff.

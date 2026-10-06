@@ -178,6 +178,79 @@
             filter: draft.filter
         };
     };
-    const api = Object.freeze({ createDraft, materializeFull, useCustomComposition, setCustomQuantity, setRole, setArrivalOffset, setFilter, confirmComposition, approveReview, addSlot, validateDraft, cloneDraft });
+    const freeze = value => {
+        if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
+        return value;
+    };
+    // Canonical content comparison, independent of object identity and key insertion order.
+    const canonical = value => {
+        if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+        if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
+        if (typeof value === 'number' && !Number.isFinite(value)) return `number:${String(value)}`;
+        return JSON.stringify(value) ?? 'undefined';
+    };
+    const buildFinalReview = (draft, { unitOrder = [] } = {}) => {
+        const plan = validateDraft({ ...draft, filter: 'ALL' });
+        const commands = plan.missions.map(mission => copy(mission)).sort((a, b) =>
+            (a.sendAtMs ?? Infinity) - (b.sendAtMs ?? Infinity) || (a.slotId < b.slotId ? -1 : a.slotId > b.slotId ? 1 : 0));
+        const totals = {}, blockers = [...plan.blockers];
+        for (const command of commands) {
+            // Keep invalid evidence visible on blocked commands; only genuine zeroes are omitted.
+            command.composition.quantities = Object.fromEntries(Object.entries(command.composition.quantities || {}).filter(([, count]) => count !== 0));
+            if (![command.sendAtMs, command.desiredArrivalMs, command.travelTimeMs].every(integer) || command.travelTimeMs <= 0) {
+                command.blockers = [...new Set([...command.blockers, 'TIMING_UNAVAILABLE'])]; command.validationStatus = 'blocked';
+            }
+            for (const [unit, count] of Object.entries(command.composition.quantities)) {
+                if (!integer(count) || count < 0 || totals[unit] === null) { totals[unit] = null; blockers.push('TOTALS_UNAVAILABLE'); continue; }
+                const total = (Object.hasOwn(totals, unit) ? totals[unit] : 0) + count;
+                Object.defineProperty(totals, unit, { value: integer(total) ? total : null, enumerable: true, writable: true, configurable: true });
+                if (!integer(total)) blockers.push('TOTALS_UNAVAILABLE');
+            }
+            blockers.push(...command.blockers);
+        }
+        if (!commands.length) blockers.push('NO_COMMANDS');
+        const counts = {
+            villages: new Set(commands.map(c => c.source.id)).size,
+            attacks: commands.filter(c => !c.trainIndex && c.commandType === 'attack').length,
+            supports: commands.filter(c => !c.trainIndex && c.commandType === 'support').length,
+            trains: new Set(commands.filter(c => c.trainIndex).map(c => c.parentSlotId)).size,
+            nobleCommands: commands.filter(c => c.trainIndex).length, commands: commands.length
+        };
+        const ready = commands.filter(c => c.validationStatus === 'ready').length;
+        const candidateFor = command => {
+            const matches = (draft.operation.candidates || []).filter(candidate => String(candidate.source?.id) === String(command.source?.id));
+            return matches.length === 1 ? matches[0] : null;
+        };
+        const troopEvidenceValid = commands.length > 0 && commands.every(command => {
+            const candidate = candidateFor(command);
+            return candidate?.evidence?.trusted === true && candidate.evidence.complete === true && candidate.evidence.fresh === true &&
+                Object.entries(command.composition.quantities || {}).every(([unit, count]) => count === 0 ||
+                    integer(count) && count > 0 && integer(candidate.ownHome?.[unit]) && candidate.ownHome[unit] >= count);
+        });
+        const usedSourceIds = new Set(commands.map(command => String(command.source?.id)));
+        const usedBalances = plan.balances.filter(balance => usedSourceIds.has(String(balance.sourceId)));
+        const noOverAllocation = usedSourceIds.size > 0 && usedBalances.length === usedSourceIds.size &&
+            usedBalances.every(balance => !balance.unknown && Object.values(balance.overAllocated).every(amount => amount === 0));
+        const timingAvailable = commands.length > 0 && commands.every(command =>
+            [command.sendAtMs, command.desiredArrivalMs, command.travelTimeMs].every(integer) && command.travelTimeMs > 0);
+        const valid = plan.valid && commands.length > 0 && ready === commands.length && blockers.length === 0 &&
+            troopEvidenceValid && noOverAllocation && timingAvailable;
+        return freeze({ reviewKind: 'tactical-final-review', version: 1, operationId: draft.operation.id, revision: draft.operation.revision,
+            target: copy(draft.operation.target), centralArrivalMs: draft.operation.centralArrivalMs,
+            commands, totals, counts, unitOrder: [...new Set([...unitOrder, ...Object.keys(totals).sort()])],
+            validation: { valid, state: valid ? 'READY' : 'BLOCKED', ready, blocked: commands.length - ready, blockers: [...new Set(blockers)],
+                compositionsConfirmed: commands.length > 0 && commands.every(c => c.composition.confirmed === true),
+                troopEvidenceValid, noOverAllocation, timingAvailable } });
+    };
+    const approveFinalReview = (draft, review, approvedAt = Date.now()) => {
+        if (!draft?.operation || !review?.validation?.valid || !integer(approvedAt) ||
+            review.operationId !== draft.operation.id || review.revision !== draft.operation.revision) return null;
+        const current = buildFinalReview(draft, { unitOrder: review.unitOrder });
+        if (canonical(current) !== canonical(review)) return null;
+        return freeze({ snapshotKind: 'tactical-approved-operation', version: 1, approvedAt,
+            operationId: review.operationId, revision: review.revision, target: copy(review.target), centralArrivalMs: review.centralArrivalMs,
+            commands: copy(review.commands), totals: copy(review.totals), counts: copy(review.counts), validation: copy(review.validation), unitOrder: copy(review.unitOrder) });
+    };
+    const api = Object.freeze({ buildFinalReview, approveFinalReview, createDraft, materializeFull, useCustomComposition, setCustomQuantity, setRole, setArrivalOffset, setFilter, confirmComposition, approveReview, addSlot, validateDraft, cloneDraft });
     EAS.TacticalOperationController = api;
 })();

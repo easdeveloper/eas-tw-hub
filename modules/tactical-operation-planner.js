@@ -82,6 +82,32 @@
         return { ...draft, analysis };
     };
 
+    const openFinalReview = root => {
+        const controller = EAS.TacticalOperationController;
+        const review = controller.buildFinalReview(state.draft, { unitOrder: EAS.Data?.Troops?.getUnits?.() || [] });
+        state.finalReview = review; state.approvedSnapshot = null;
+        const container = root.parentElement, scrollTop = container.scrollTop;
+        const view = document.createElement('section'); view.dataset.finalReview = '';
+        const commandLabel = c => c.trainIndex ? `NT${c.trainIndex}/${c.trainSize}` : c.commandType === 'support' ? 'SUPPORT' : 'ATTACK';
+        view.innerHTML = `<h2>OPERA\u00c7\u00c3O \u2014 ${escapeHtml(review.target.name || review.target.coord)}</h2>
+            <p>Alvo: ${escapeHtml(review.target.coord)}<br>Jogador: ${escapeHtml(review.target.playerName || 'N\u00e3o comprovado')}<br>Chegada-base: ${formatCalendarTimestamp(review.centralArrivalMs, true)}</p>
+            <strong data-final-state>${review.validation.valid ? 'PRONTA' : 'BLOQUEADA'}</strong>
+            <p>Aldeias utilizadas: ${review.counts.villages}<br>Ataques simples: ${review.counts.attacks}<br>Apoios: ${review.counts.supports}<br>Trens de Nobre: ${review.counts.trains}<br>Comandos de Nobre: ${review.counts.nobleCommands}<br>TOTAL DE COMANDOS: ${review.counts.commands}</p>
+            <div class="tactical-operation-table-wrap"><table class="eas-table"><thead><tr><th># / Tipo</th><th>Origem</th><th>Tropas</th><th>Envio / Dura\u00e7\u00e3o / Chegada</th><th>Estado</th></tr></thead><tbody>${review.commands.map((c, i) => `<tr data-final-command="${escapeHtml(c.slotId)}"><td>${i + 1} \u2014 ${commandLabel(c)}${c.trainIndex ? `<br><small>Trem: ${escapeHtml(c.parentSlotId)}</small>` : ''}</td><td>${escapeHtml(c.source.name || '')}<br>${escapeHtml(c.source.coord)}</td><td>${escapeHtml(unitText(c.composition.quantities))}</td><td>${formatCalendarTimestamp(c.sendAtMs, true)}<br>${formatDuration(c.travelTimeMs)}<br>${formatCalendarTimestamp(c.desiredArrivalMs, true)}</td><td>${c.validationStatus.toUpperCase()}<br>${escapeHtml(c.blockers.join(', '))}</td></tr>`).join('')}</tbody></table></div>
+            <h3>Totais de tropas</h3><p>${review.unitOrder.filter(unit => Object.hasOwn(review.totals, unit) && review.totals[unit] !== 0).map(unit => `${escapeHtml(UNIT_LABELS[unit] || unit)}: ${review.totals[unit] ?? 'Indispon\u00edvel'}`).join(' | ')}</p>
+            <h3>VALIDA\u00c7\u00c3O</h3><p>${review.validation.ready}/${review.counts.commands} comandos READY<br>Composi\u00e7\u00f5es confirmadas: ${review.validation.compositionsConfirmed ? 'Sim' : 'N\u00e3o'}<br>Evid\u00eancia de tropas v\u00e1lida: ${review.validation.troopEvidenceValid ? 'Sim' : 'N\u00e3o comprovada'}<br>Saldo conhecido sem sobrealoca\u00e7\u00e3o: ${review.validation.noOverAllocation ? 'Sim' : 'N\u00e3o comprovado'}<br>Timing dispon\u00edvel: ${review.validation.timingAvailable ? 'Sim' : 'N\u00e3o'}<br>${escapeHtml(review.validation.blockers.join(', ') || 'Nenhum blocker')}</p>
+            <button type="button" data-final-back>\u2190 Voltar e editar</button><button type="button" data-final-approve ${review.validation.valid ? '' : 'disabled'}>Aprovar opera\u00e7\u00e3o</button><p data-final-status>Somente revis\u00e3o. Nenhum comando ser\u00e1 criado.</p>`;
+        root.hidden = true; root.style.display = 'none'; container.append(view);
+        view.querySelector('[data-final-back]').onclick = () => {
+            state.finalReview = null; state.approvedSnapshot = null; view.remove(); root.hidden = false; root.style.display = ''; container.scrollTop = scrollTop;
+        };
+        view.querySelector('[data-final-approve]').onclick = () => {
+            const snapshot = controller.approveFinalReview(state.draft, review);
+            state.approvedSnapshot = snapshot;
+            view.querySelector('[data-final-status]').textContent = snapshot ? 'Opera\u00e7\u00e3o aprovada em mem\u00f3ria. Nenhum comando criado.' : 'Revis\u00e3o desatualizada ou bloqueada. Volte e gere uma nova revis\u00e3o.';
+            view.querySelector('[data-final-approve]').disabled = true;
+        };
+    };
     const render = (root, draft, validation, anchorId = null) => {
         const findRow = () => [...root.querySelectorAll('[data-slot-id]')].find(row => row.dataset.slotId === anchorId);
         const row = anchorId ? findRow() : null;
@@ -122,7 +148,7 @@
             return `<tr data-slot-id="${escapeHtml(slot.id)}" class="${mission?.validationStatus === 'blocked' ? 'eas-table-row--error' : ''}">
                 <td><strong>${escapeHtml(displayName)}</strong><br><small>${escapeHtml(villageCoord || 'Coordenada não disponível')} · ${evidence}</small><br><small>ID: ${escapeHtml(slot.source.id)}</small></td>
                 <td><select data-role="${escapeHtml(slot.id)}"><option value="unused" ${slot.role === 'unused' ? 'selected' : ''}>Não selecionar</option><option value="attack" ${slot.role === 'attack' ? 'selected' : ''}>Ataque</option><option value="support" ${slot.role === 'support' ? 'selected' : ''}>Apoio</option>${[2, 3, 4, 5].map(n => `<option value="nt${n}" ${slot.role === `nt${n}` ? 'selected' : ''}>NT(${n})</option>`).join('')}</select><small>${selectedLabel}</small></td>
-                <td>${train ? trainReview : active ? `<strong>${slot.composition.requestedMode === 'full' ? 'FULL' : 'CUSTOM'}</strong><br><small>${escapeHtml(quantities)}</small>${slot.composition.requestedMode === 'custom' ? `<div>${state.customOpenIds.has(slot.id) ? `${quantityEditors}<button type="button" data-custom-close="${escapeHtml(slot.id)}">Fechar editor</button>` : `<button type="button" data-custom="${escapeHtml(slot.id)}">Editar CUSTOM</button>`}</div>` : ''}` : `<small>Ofensivas: ${offensiveCount == null ? 'não verificadas' : offensiveCount} · Defensivas: ${defensiveCount == null ? 'não verificadas' : defensiveCount} · Nobres: ${nobleCount == null ? 'não verificado' : nobleCount}</small>`}</td>
+                <td>${train ? trainReview : active ? `<strong>${slot.composition.requestedMode === 'full' ? 'FULL' : 'CUSTOM'}</strong><br><small>${escapeHtml(quantities)}</small>${slot.composition.requestedMode === 'custom' ? `<div>${state.customOpenIds.has(slot.id) ? `${quantityEditors}<button type="button" data-custom-close="${escapeHtml(slot.id)}">Concluir</button>` : `<button type="button" data-custom="${escapeHtml(slot.id)}">Editar CUSTOM</button>`}</div>` : ''}` : `<small>Ofensivas: ${offensiveCount == null ? 'não verificadas' : offensiveCount} · Defensivas: ${defensiveCount == null ? 'não verificadas' : defensiveCount} · Nobres: ${nobleCount == null ? 'não verificado' : nobleCount}</small>`}</td>
                 <td>${active ? `<label class="tactical-operation-offset">Deslocamento da chegada (ms)<input type="number" step="1" value="${Number(slot.arrivalOffsetMs) || 0}" data-offset="${escapeHtml(slot.id)}"></label>` : '-'}</td>
                 <td>${active ? `<strong>Envio</strong><br>${formatCalendarTimestamp(mission?.sendAtMs)}<br><small>Duração</small><br>${formatDuration(mission?.travelTimeMs)}<br><small>Chegada</small><br>${formatCalendarTimestamp(mission?.desiredArrivalMs, true)}` : '-'}</td>
                 <td><span class="eas-status eas-status--${!active ? 'info' : mission?.validationStatus === 'ready' ? 'success' : 'error'}">${commandState}</span>${active ? `<br><small>${escapeHtml((mission?.blockers || []).join(', '))}</small>` : ''}</td>
@@ -172,12 +198,6 @@
             setStatus('Composição confirmada. A revisão permanece somente em memória.', 'info');
             render(root, state.draft, state.validation, button.dataset.confirm);
         }));
-        root.querySelectorAll('[data-approve]').forEach(button => button.addEventListener('click', () => {
-            state.draft = EAS.TacticalOperationController.approveReview(state.draft);
-            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-            setStatus(state.draft.reviewState === 'approved' ? 'Revisão aprovada — nenhum comando foi criado.' : 'Aprovação bloqueada por validação inválida.', state.draft.reviewState === 'approved' ? 'info' : 'error');
-            render(root, state.draft, state.validation);
-        }));
         root.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
             root.querySelectorAll('[data-filter]').forEach(item => item.classList.toggle('eas-button--active', item === button));
             state.draft = EAS.TacticalOperationController.setFilter(state.draft, button.dataset.filter);
@@ -186,13 +206,8 @@
         });
         const review = root.querySelector('[data-op-review]');
         if (review) {
-            review.disabled = !validation.valid || validation.selectedCount === 0;
-            review.onclick = () => {
-                state.draft = EAS.TacticalOperationController.approveReview(state.draft);
-                state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-                setStatus(state.draft.reviewState === 'approved' ? 'Revisão aprovada — nenhum comando foi criado.' : 'Aprovação bloqueada por validação inválida.', state.draft.reviewState === 'approved' ? 'info' : 'error');
-                render(root, state.draft, state.validation);
-            };
+            review.disabled = validation.selectedCount === 0;
+            review.onclick = () => openFinalReview(root);
         }
         const balanceRoot = root.querySelector('[data-op-balances]');
         balanceRoot.innerHTML = validation.balances.map(balance => {
