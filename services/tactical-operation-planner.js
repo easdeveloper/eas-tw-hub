@@ -135,7 +135,9 @@
         if (!operation.slots.length) blockers.push('NO_SLOTS');
         if (new Set(operation.slots.map(slot => slot.id)).size !== operation.slots.length) blockers.push('DUPLICATE_SLOT_ID');
         if (operation.ntTemplate && operation.ntTemplate !== 'NT4') blockers.push('UNSUPPORTED_NT_TEMPLATE');
-        if (operation.ntTemplate === 'NT4' && (operation.slots.filter(slot => slot.role === 'noble').length !== 4 || operation.slotPolicy?.nt4Confirmed !== true)) blockers.push('NT4_POLICY_PENDING');
+        const nobleSlots = operation.slots.filter(slot => slot.role === 'noble');
+        const nt4PolicyPending = operation.ntTemplate === 'NT4' && nobleSlots.length > 0 &&
+            (nobleSlots.length !== 4 || operation.slotPolicy?.nt4Confirmed !== true);
         const balances = aggregateTroops(operation.slots, candidates);
         const missions = operation.slots.map(slot => {
             const issues = [...blockers], warnings = [];
@@ -158,6 +160,7 @@
             if (!timing.available) issues.push('TIMING_UNAVAILABLE');
             else if (integer(serverNowMs) && timing.sendAtMs <= serverNowMs) issues.push('SEND_TIME_NOT_FUTURE');
             if (operation.ntTemplate === 'NT4' && slot.role === 'noble' && slot.composition.quantities?.snob !== 1) issues.push('NT4_NOBLE_COMPOSITION_PENDING');
+            if (nt4PolicyPending && slot.role === 'noble') issues.push('NT4_POLICY_PENDING');
             const night = evaluateNightBonus(timing.available ? ((timing.desiredArrivalMs % DAY) + DAY) % DAY : null, operation.nightBonus);
             if (night.state !== 'outside') warnings.push({ code: 'NIGHT_BONUS_' + night.state.toUpperCase(), ...night });
             for (const conflict of externalConflicts) if (conflict && (conflict.slotId === slot.id || conflict.sourceId === slot.source.id)) warnings.push({ code: 'EXTERNAL_CONFLICT', evidence: copy(conflict) });
@@ -169,7 +172,7 @@
                 ...timing, validationStatus: issues.length ? 'blocked' : 'ready', blockers: [...new Set(issues)], warnings };
         });
         missions.sort((a, b) => (a.sendAtMs ?? Infinity) - (b.sendAtMs ?? Infinity) || String(a.slotId).localeCompare(String(b.slotId)));
-        return { operation, balances, missions, valid: blockers.length === 0 && missions.every(mission => mission.validationStatus === 'ready'), blockers: [...new Set([...blockers, ...missions.flatMap(mission => mission.blockers)])] };
+        return { operation, balances, missions, valid: blockers.length === 0 && !nt4PolicyPending && missions.every(mission => mission.validationStatus === 'ready'), blockers: [...new Set([...blockers, ...(nt4PolicyPending ? ['NT4_POLICY_PENDING'] : []), ...missions.flatMap(mission => mission.blockers)])] };
     };
     EAS.TacticalOperationPlanner = Object.freeze({ normalizeOperation, normalizeSlot, normalizeComposition, normalizeCandidate,
         validateComposition, resolveTravelDuration, calculateTiming, evaluateNightBonus, aggregateTroops, validatePlan });

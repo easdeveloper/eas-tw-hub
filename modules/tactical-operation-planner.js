@@ -1,0 +1,261 @@
+// Dedicated review-only operation desk. No Scheduler, Rally Point, send, timer or execution runtime.
+(() => {
+    'use strict';
+    EAS.Modules = EAS.Modules || {};
+    EAS.Modules.TacticalOperationPlanner = EAS.Modules.TacticalOperationPlanner || {};
+
+    const UNIT_LABELS = { spear: 'Lanceiro', sword: 'Espadachim', archer: 'Arqueiro', spy: 'Explorador', heavy: 'Pesada', light: 'Leve', axe: 'Machado', ram: 'Aríete', catapult: 'Catapulta', snob: 'Nobre' };
+    const OFFENSIVE_UNITS = ['axe', 'light', 'marcher', 'ram', 'catapult'];
+    const DEFENSIVE_UNITS = ['spear', 'sword', 'archer', 'heavy'];
+    const safeInteger = value => Number.isSafeInteger(Number(value)) ? Number(value) : null;
+    const parseCustomQuantityInput = input => {
+        if (!input || input.validity?.badInput) return NaN;
+        if (typeof input.value !== 'string') return NaN;
+        if (input.value.trim() === '') return 0;
+        const quantity = Number(input.value);
+        return Number.isFinite(quantity) ? quantity : NaN;
+    };
+    const calendarMilliseconds = value => value && [value.year, value.month, value.day, value.hours, value.minutes, value.seconds, value.milliseconds].every(Number.isInteger)
+        ? Date.UTC(value.year, value.month - 1, value.day, value.hours, value.minutes, value.seconds, value.milliseconds) : null;
+    const pad2 = value => String(value).padStart(2, '0');
+    const formatCalendarTimestamp = (value, includeMilliseconds = false) => {
+        if (!Number.isSafeInteger(value)) return '-';
+        const date = new Date(value);
+        const formatted = `${pad2(date.getUTCDate())}/${pad2(date.getUTCMonth() + 1)}/${date.getUTCFullYear()} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())}`;
+        return includeMilliseconds ? `${formatted}.${String(date.getUTCMilliseconds()).padStart(3, '0')}` : formatted;
+    };
+    const formatDuration = value => {
+        if (!Number.isSafeInteger(value) || value < 0) return '-';
+        const totalSeconds = Math.floor(value / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return `${String(hours).padStart(2, '0')}:${pad2(minutes)}:${pad2(seconds)}`;
+    };
+    const unitText = units => Object.entries(units).filter(([, count]) => Number(count) > 0).map(([unit, count]) => `${count} ${UNIT_LABELS[unit] || unit}`).join(', ') || '-';
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
+
+    let state = { draft: null, analysis: null, status: '', error: null, active: false, customOpenIds: new Set() };
+    const clearStatus = () => { state.status = ''; state.error = null; };
+    const setStatus = (message, type = 'info') => { state.status = message; state.error = type === 'error'; };
+    const emptyValidation = blockers => ({ valid: false, blockers: blockers || [], balances: [], missions: [], executionArtifact: null });
+
+    const adaptAnalysisResult = (analysis, centralArrivalMs, serverNowMs) => {
+        if (!analysis || !Array.isArray(analysis.candidates)) throw new Error('ANALYSIS_RESULT_INVALID: lista de candidatos ausente');
+        return { ...analysis, centralArrivalMs, serverNowMs };
+    };
+
+    const createOperation = analysis => {
+        const candidates = analysis?.candidates || [];
+        const input = {
+            id: `tactical-operation-${Date.now()}`,
+            revision: 1,
+            world: analysis?.world || null,
+            playerId: analysis?.target?.playerId || null,
+            target: analysis?.target || {},
+            nightBonus: analysis?.nightBonus || null,
+            centralArrivalMs: analysis?.centralArrivalMs ?? null,
+            ntTemplate: analysis?.ntTemplate || null,
+            slotPolicy: analysis?.slotPolicy || {},
+            reviewState: 'unreviewed',
+            slots: [],
+            serverNowMs: analysis?.serverNowMs ?? null,
+            analysisId: analysis?.analysisId || null,
+            candidates
+        };
+        return EAS.TacticalOperationController.createDraft(input);
+    };
+
+    const buildDraft = analysis => {
+        const draft = createOperation(analysis);
+        const prepared = draft.operation.candidates || [];
+        prepared.forEach((candidate, index) => {
+            const slot = draft.operation.slots[index];
+            const quantities = {};
+            const source = candidate.source || {};
+            slot.source = { id: source.id, coord: source.coord || null, name: source.name || null };
+            slot.arrivalOffsetMs = 0;
+            slot.role = 'unused';
+            slot.composition = { requestedMode: 'custom', quantities, confirmed: false, evidence: { mode: 'custom', source: source.id, materializedBy: 'draft' }, limitingUnits: [] };
+            slot.status = 'candidate';
+        });
+        return { ...draft, analysis };
+    };
+
+    const render = (root, draft, validation) => {
+        if (!Array.isArray(validation?.balances)) throw new Error('REVIEW_BALANCES_UNAVAILABLE');
+        const visibleIds = new Set(validation.visibleSlotIds || []);
+        const visible = draft.operation.slots.filter(slot => visibleIds.has(slot.id));
+        root.querySelector('[data-op-status]').textContent = state.status;
+        root.querySelector('[data-op-status]').className = `eas-status eas-status--${state.error ? 'error' : 'info'}`;
+        root.querySelector('[data-op-target]').textContent = `${draft.operation.target.name || 'Destino'} · ${draft.operation.target.coord || 'Coordenada ausente'} · revisão ${draft.operation.revision}`;
+        root.querySelector('[data-op-summary]').textContent = `${validation.analyzedCount} analisadas · ${validation.selectedCount} planejadas · ${validation.blockedCount} bloqueadas${draft.reviewState === 'approved' ? ' · revisão aprovada' : ''}`;
+        const table = root.querySelector('[data-op-table]');
+        table.innerHTML = visible.length ? visible.map(slot => {
+            const mission = validation.missions.find(item => item.slotId === slot.id);
+            const quantities = unitText(slot.composition.quantities);
+            const candidate = draft.operation.candidates.find(item => String(item.source.id) === String(slot.source.id));
+            const balance = validation.balances.find(item => String(item.sourceId) === String(slot.source.id));
+            const quantityEditors = state.customOpenIds.has(slot.id) ? Object.keys(candidate?.ownHome || {}).map(unit => `<label class="tactical-operation-unit">${escapeHtml(UNIT_LABELS[unit] || unit)}<input type="number" min="0" step="1" value="${Number(slot.composition.quantities?.[unit]) || 0}" data-quantity="${escapeHtml(slot.id)}" data-unit="${escapeHtml(unit)}"></label>`).join('') : '';
+            const village = EAS.Villages?.getById?.(Number(slot.source.id));
+            const villageName = slot.source.name || village?.name || null;
+            const villageCoord = slot.source.coord || village?.coordinate || null;
+            const displayName = villageName || villageCoord || `Aldeia sem identidade (${slot.source.id})`;
+            const trustedTroops = candidate?.evidence?.trusted && candidate?.evidence?.complete && candidate?.evidence?.fresh;
+            const offensiveCount = trustedTroops ? OFFENSIVE_UNITS.reduce((sum, unit) => sum + (Number.isSafeInteger(candidate.ownHome?.[unit]) ? candidate.ownHome[unit] : 0), 0) : null;
+            const defensiveCount = trustedTroops ? DEFENSIVE_UNITS.reduce((sum, unit) => sum + (Number.isSafeInteger(candidate.ownHome?.[unit]) ? candidate.ownHome[unit] : 0), 0) : null;
+            const nobleCount = trustedTroops && Number.isSafeInteger(candidate?.ownHome?.snob) ? candidate.ownHome.snob : null;
+            const evidence = candidate?.evidence?.trusted ? 'Tropas verificadas' : 'Tropas não verificadas';
+            const active = slot.role !== 'unused';
+            const selectedLabel = slot.role === 'unused' ? 'Não selecionada' : ({ attack: 'Ataque', support: 'Apoio', noble_train_manual: 'Nobre manual' }[slot.role] || slot.role);
+            const commandState = !active ? 'Não selecionada' : mission?.validationStatus === 'ready' ? 'Pronta' : 'Bloqueada';
+            return `<tr data-slot-id="${escapeHtml(slot.id)}" class="${mission?.validationStatus === 'blocked' ? 'eas-table-row--error' : ''}">
+                <td><strong>${escapeHtml(displayName)}</strong><br><small>${escapeHtml(villageCoord || 'Coordenada não disponível')} · ${evidence}</small><br><small>ID: ${escapeHtml(slot.source.id)}</small></td>
+                <td><select data-role="${escapeHtml(slot.id)}"><option value="unused" ${slot.role === 'unused' ? 'selected' : ''}>Não selecionar</option><option value="attack" ${slot.role === 'attack' ? 'selected' : ''}>Ataque</option><option value="support" ${slot.role === 'support' ? 'selected' : ''}>Apoio</option><option value="noble_train_manual" ${slot.role === 'noble_train_manual' ? 'selected' : ''}>Nobre manual</option></select><small>${selectedLabel}</small></td>
+                <td>${active ? `<strong>${slot.composition.requestedMode === 'full' ? 'FULL' : 'CUSTOM'}</strong><br><small>${escapeHtml(quantities)}</small>${slot.composition.requestedMode === 'custom' ? `<div>${state.customOpenIds.has(slot.id) ? `${quantityEditors}<button type="button" data-custom-close="${escapeHtml(slot.id)}">Fechar editor</button>` : `<button type="button" data-custom="${escapeHtml(slot.id)}">Editar CUSTOM</button>`}</div>` : ''}` : `<small>Ofensivas: ${offensiveCount == null ? 'não verificadas' : offensiveCount} · Defensivas: ${defensiveCount == null ? 'não verificadas' : defensiveCount} · Nobres: ${nobleCount == null ? 'não verificado' : nobleCount}</small>`}</td>
+                <td>${active ? `<label class="tactical-operation-offset">Deslocamento da chegada (ms)<input type="number" min="0" step="1" value="${Number(slot.arrivalOffsetMs) || 0}" data-offset="${escapeHtml(slot.id)}"></label>` : '-'}</td>
+                <td>${active ? `<strong>Envio</strong><br>${formatCalendarTimestamp(mission?.sendAtMs)}<br><small>Duração</small><br>${formatDuration(mission?.travelTimeMs)}<br><small>Chegada</small><br>${formatCalendarTimestamp(mission?.desiredArrivalMs, true)}` : '-'}</td>
+                <td><span class="eas-status eas-status--${!active ? 'info' : mission?.validationStatus === 'ready' ? 'success' : 'error'}">${commandState}</span>${active ? `<br><small>${escapeHtml((mission?.blockers || []).join(', '))}</small>` : ''}</td>
+                <td>${active ? `<button type="button" data-materialize="${escapeHtml(slot.id)}">Materializar FULL</button>${slot.composition.requestedMode === 'full' ? `<button type="button" data-custom="${escapeHtml(slot.id)}">Usar CUSTOM</button>` : ''}<button type="button" data-confirm="${escapeHtml(slot.id)}" ${slot.composition.confirmed ? 'disabled' : ''}>Confirmar</button>` : 'Selecione um tipo de comando'}</td>
+            </tr>`;
+        }).join('') : '<tr><td colspan="7">Nenhum slot visible. Alterar o filtro.</td></tr>';
+        root.querySelectorAll('[data-quantity]').forEach(input => input.addEventListener('change', () => {
+            state.draft = EAS.TacticalOperationController.setCustomQuantity(state.draft, input.dataset.quantity, input.dataset.unit, parseCustomQuantityInput(input));
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-role]').forEach(select => select.addEventListener('change', () => {
+            state.draft = EAS.TacticalOperationController.setRole(state.draft, select.dataset.role, select.value);
+            if (select.value === 'unused') state.customOpenIds.delete(select.dataset.role);
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-offset]').forEach(input => input.addEventListener('change', () => {
+            state.draft = EAS.TacticalOperationController.setArrivalOffset(state.draft, input.dataset.offset, safeInteger(input.value));
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-materialize]').forEach(button => button.addEventListener('click', () => {
+            const slot = state.draft.operation.slots.find(item => item.id === button.dataset.materialize);
+            const candidate = state.draft.operation.candidates.find(item => String(item.source.id) === String(slot.source.id));
+            const quantities = Object.fromEntries(Object.entries(candidate?.ownHome || {}).filter(([, amount]) => Number.isSafeInteger(amount) && amount > 0));
+            state.draft = EAS.TacticalOperationController.materializeFull(state.draft, button.dataset.materialize, quantities);
+            state.customOpenIds.delete(button.dataset.materialize);
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            setStatus('FULL materializado. Confirme a composição antes da revisão.', 'info');
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-custom]').forEach(button => button.addEventListener('click', () => {
+            state.draft = EAS.TacticalOperationController.useCustomComposition(state.draft, button.dataset.custom);
+            state.customOpenIds.add(button.dataset.custom);
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            setStatus('Modo CUSTOM selecionado. Edite quantidades e confirme a composição.', 'info');
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-custom-close]').forEach(button => button.addEventListener('click', () => {
+            state.customOpenIds.delete(button.dataset.customClose);
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', () => {
+            state.draft = EAS.TacticalOperationController.confirmComposition(state.draft, button.dataset.confirm);
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            setStatus('Composição confirmada. A revisão permanece somente em memória.', 'info');
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-approve]').forEach(button => button.addEventListener('click', () => {
+            state.draft = EAS.TacticalOperationController.approveReview(state.draft);
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            setStatus(state.draft.reviewState === 'approved' ? 'Revisão aprovada — nenhum comando foi criado.' : 'Aprovação bloqueada por validação inválida.', state.draft.reviewState === 'approved' ? 'info' : 'error');
+            render(root, state.draft, state.validation);
+        }));
+        root.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
+            root.querySelectorAll('[data-filter]').forEach(item => item.classList.toggle('eas-button--active', item === button));
+            state.draft = EAS.TacticalOperationController.setFilter(state.draft, button.dataset.filter);
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            render(root, state.draft, state.validation);
+        });
+        const addNoble = root.querySelector('[data-op-add-noble]');
+        if (addNoble) addNoble.onclick = () => {
+            const sourceId = root.querySelector('[data-op-manual-source]')?.value;
+            const index = state.draft.operation.slots.filter(slot => slot.role === 'noble').length;
+            state.draft = EAS.TacticalOperationController.addManualNobleSlot(state.draft, sourceId, index, 0, { snob: 1 });
+            state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+            setStatus('Nobre manual adicionado. NT4 permanece bloqueado até política explicitamente revisada.', 'error');
+            render(root, state.draft, state.validation);
+        };
+        const review = root.querySelector('[data-op-review]');
+        if (review) {
+            review.disabled = !validation.valid || validation.selectedCount === 0;
+            review.onclick = () => {
+                state.draft = EAS.TacticalOperationController.approveReview(state.draft);
+                state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+                setStatus(state.draft.reviewState === 'approved' ? 'Revisão aprovada — nenhum comando foi criado.' : 'Aprovação bloqueada por validação inválida.', state.draft.reviewState === 'approved' ? 'info' : 'error');
+                render(root, state.draft, state.validation);
+            };
+        }
+        const balanceRoot = root.querySelector('[data-op-balances]');
+        balanceRoot.innerHTML = validation.balances.map(balance => {
+            const candidate = draft.operation.candidates.find(item => String(item.source.id) === String(balance.sourceId));
+            const village = EAS.Villages?.getById?.(Number(balance.sourceId));
+            const name = candidate?.source?.name || village?.name || null;
+            const coord = candidate?.source?.coord || village?.coordinate || null;
+            const identity = name || coord || 'Aldeia sem identidade disponível';
+            const evidence = balance.unknown ? 'Evidência não verificada' : 'Derivado';
+            return `<div class="tactical-operation-balance"><strong>${escapeHtml(identity)}</strong><span>${escapeHtml(coord || 'Coordenada não disponível')}</span><small>ID: ${escapeHtml(balance.sourceId)}</small><span>${evidence}</span><span>Disponível: ${escapeHtml(unitText(balance.available || {}))}</span><span>Alocado: ${escapeHtml(unitText(balance.allocated || {}))}</span><span>Restante: ${escapeHtml(unitText(balance.remaining || {}))}</span><span>Excedido: ${escapeHtml(unitText(balance.overAllocated || {}))}</span></div>`;
+        }).join('') || '<small>Sem saldos derivados.</small>';
+    };
+
+    const open = async () => {
+        const win = EAS.UI.createWindow({ id: 'eas-tactical-operation-planner', title: '🗺️ Operação Tática — Revisão', width: 1120, className: 'tactical-operation-planner-window' });
+        win.body.innerHTML = '<div class="tactical-operation-planner"></div>';
+        const root = win.body.querySelector('.tactical-operation-planner');
+        root.innerHTML = `<div class="tactical-operation-header"><div><h2>Operação Tática</h2><p data-op-target>Analise uma alvo antes de revisar.</p></div><button type="button" data-op-close>Fechar</button></div>
+            <div class="tactical-operation-controls"><label>Alvo<input data-op-target-input placeholder="484|527" value=""></label><label>Nome do jogador<input data-op-player-input placeholder="chargboy"></label><label>Data do servidor<input data-op-date placeholder="DD/MM/AAAA"></label><label>Hora do servidor<input data-op-time placeholder="HH:MM:SS.mmm"></label><button type="button" data-op-analyze>Analisar alvo</button></div>
+            <div class="tactical-operation-filters"><button type="button" data-filter="ALL" class="eas-button--active">Todos</button><button type="button" data-filter="OFFENSIVE">Ofensivas</button><button type="button" data-filter="DEFENSIVE">Defensivas</button><button type="button" data-filter="HAS_NOBLE">Com nobre</button><button type="button" data-filter="SELECTED">Selecionadas</button></div>
+            <div class="tactical-operation-nt"><label>Origem para nobre manual<select data-op-manual-source></select></label><button type="button" data-op-add-noble>Adicionar nobre manual</button><span>Política NT4 não confirmada</span></div>
+            <div class="tactical-operation-summary"><strong data-op-summary>Sem análise</strong><span data-op-status class="eas-status eas-status--info">A execução não é iniciada.</span></div>
+            <div class="tactical-operation-review"><button type="button" data-op-review disabled>Aprovar revisão</button></div>
+            <div class="tactical-operation-table-wrap"><table class="eas-table"><thead><tr><th>Origem</th><th>Função</th><th>Composição / evidência</th><th>Deslocamento</th><th>Envio / duração</th><th>Estado</th><th>Ações</th></tr></thead><tbody data-op-table></tbody></table></div>
+            <details class="tactical-operation-balances"><summary>Saldos derivados por aldeia</summary><div class="tactical-operation-balance-list" data-op-balances></div></details>
+            <div class="tactical-operation-notice"><strong>Segurança</strong><p>Somente revisão e planejamento em memória. Nenhum comando, scheduler, Rally Point, timer ou envio é criado.</p></div>`;
+        root.querySelector('[data-op-close]').addEventListener('click', () => win.close());
+        root.querySelector('[data-op-manual-source]').innerHTML = '<option value="">Selecione uma origem após análise</option>';
+        root.querySelector('[data-op-add-noble]').disabled = true;
+        root.querySelector('[data-op-manual-source]').addEventListener('change', event => {
+            root.querySelector('[data-op-add-noble]').disabled = !event.target.value || !state.draft;
+        });
+        root.querySelector('[data-op-analyze]').addEventListener('click', async () => {
+            const target = root.querySelector('[data-op-target-input]').value.trim();
+            const playerName = root.querySelector('[data-op-player-input]').value.trim();
+            const arrival = EAS.Utils.createServerDateTime(root.querySelector('[data-op-date]').value, root.querySelector('[data-op-time]').value);
+            const centralArrivalMs = calendarMilliseconds(arrival);
+            if (!target || centralArrivalMs == null) { setStatus('Informe alvo, data e hora válidas no calendário do servidor.', 'error'); render(root, createOperation({}), emptyValidation(['INPUT_MISSING'])); return; }
+            state.active = true;
+            state.customOpenIds = new Set();
+            try {
+                setStatus('Analisando alvo e evidências read-only…');
+                render(root, createOperation({ candidates: [] }), emptyValidation([]));
+                const analysis = await EAS.TacticalOperationData.analyzeTarget({ target: { coord: target, playerName } });
+                const serverNow = EAS.World.getServerDateTime?.();
+                const viewModel = adaptAnalysisResult(analysis, centralArrivalMs, serverNow?.available ? calendarMilliseconds(serverNow) : null);
+                state.analysis = viewModel; state.draft = buildDraft(viewModel);
+                root.querySelector('[data-op-manual-source]').innerHTML = '<option value="">Selecione uma origem</option>' + viewModel.candidates.map(candidate => `<option value="${escapeHtml(candidate.source.id)}">${escapeHtml(candidate.source.name || candidate.source.coord)}</option>`).join('');
+                root.querySelector('[data-op-add-noble]').disabled = true;
+                state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
+                setStatus(!Number.isSafeInteger(viewModel.serverNowMs) ? 'Relógio do servidor indisponível. Revisão bloqueada.' : viewModel.partial ? 'Análise parcial concluída. Evidências pendentes foram preservadas.' : 'Análise concluída. Revise os slots sem executar operações.', !Number.isSafeInteger(viewModel.serverNowMs) ? 'error' : viewModel.partial ? 'info' : 'success');
+                render(root, state.draft, state.validation);
+            } catch (error) {
+                state.draft = null;
+                state.validation = null;
+                setStatus(`A análise não pôde ser exibida: ${error?.message || 'erro inesperado.'}`, 'error');
+                render(root, createOperation({ candidates: [] }), emptyValidation(['ANALYSIS_FAILED']));
+            } finally { state.active = false; root.dispatchEvent(new CustomEvent('tactical-operation-analysis-finished')); }
+        });
+        root.querySelector('[data-op-target]').textContent = 'Sem análise ainda. O botão acima inicia a coleta read-only.';
+        return win;
+    };
+
+    EAS.Modules.TacticalOperationPlanner.open = open;
+    EAS.Modules.TacticalOperationPlanner.getState = () => ({ ...state, draft: state.draft ? EAS.TacticalOperationController.cloneDraft(state.draft) : null });
+    EAS.Modules.TacticalOperationPlanner.formatting = Object.freeze({ formatCalendarTimestamp, formatDuration, parseCustomQuantityInput });
+})();

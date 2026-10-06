@@ -455,6 +455,7 @@
             await loadScript('core/game-data.js');
             await loadScript('services/arrival-planner.js');
             await loadScript('services/tactical-operation-planner.js');
+            await loadScript('services/tactical-operation-controller.js');
             await loadScript('services/tactical-operation-data.js');
             await loadScript('services/market-execution-ui.js');
             await loadScript('services/farm-assistant-adapter.js');

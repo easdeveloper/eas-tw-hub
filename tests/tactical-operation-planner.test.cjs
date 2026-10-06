@@ -71,10 +71,16 @@ test('FULL needs concrete confirmed composition; full does not resolve live troo
     assert.equal(plan([s]).valid, true);
 });
 test('invalid quantities and empty compositions are rejected without correction', () => {
-    for (const quantities of [{ spear: -1 }, { spear: 1.5 }, { spear: '1' }, { spear: 0 }, {}]) {
+    for (const quantities of [{ spear: -1 }, { spear: 1.5 }, { spear: '1' }, { spear: NaN }, { spear: Number.MAX_SAFE_INTEGER + 1 }, { spear: 0 }, {}]) {
         assert.equal(api.validateComposition(composition(quantities), candidate()).valid, false);
     }
-    assert.equal(api.validateComposition(composition({ spear: 101 }), candidate()).valid, false);
+    const zerosAndPositive = api.validateComposition(composition({ spear: 0, ram: 1 }), candidate());
+    assert.equal(zerosAndPositive.valid, true);
+    assert.equal(zerosAndPositive.blockers.includes('INVALID_QUANTITY'), false);
+    const excessive = api.validateComposition(composition({ spear: 101 }), candidate());
+    assert.equal(excessive.valid, false);
+    assert.equal(excessive.blockers.includes('INSUFFICIENT_TROOPS:spear'), true);
+    assert.equal(excessive.blockers.includes('INVALID_QUANTITY'), false);
     assert.equal(plan([slot('a', 'attack', 0, { spear: 1, unused: 0 })]).valid, true);
 });
 test('normal night window and explicit boundary semantics', () => {

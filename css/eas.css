@@ -378,6 +378,37 @@
     color: #5d3c12;
 }
 
+.tactical-operation-planner-window { max-width: calc(100vw - 24px); }
+.tactical-operation-planner { display: grid; gap: 12px; }
+.tactical-operation-header, .tactical-operation-summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tactical-operation-header h2 { margin: 0; font-size: 18px; }
+.tactical-operation-header p { margin: 3px 0 0; }
+.tactical-operation-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 8px; align-items: end; }
+.tactical-operation-controls label { display: grid; gap: 4px; font-size: 12px; }
+.tactical-operation-controls input { box-sizing: border-box; width: 100%; }
+.tactical-operation-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.tactical-operation-nt { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid #d2c6a8; }
+.tactical-operation-nt label { display: grid; gap: 4px; font-size: 11px; }
+.tactical-operation-nt span { color: #8b2b1e; font-size: 11px; }
+.tactical-operation-table-wrap { max-height: 460px; overflow: auto; }
+.tactical-operation-table-wrap table { min-width: 900px; }
+.tactical-operation-table-wrap select, .tactical-operation-table-wrap input[type="number"] { box-sizing: border-box; max-width: 130px; }
+.tactical-operation-offset { display: grid; gap: 3px; min-width: 120px; font-size: 10px; }
+.tactical-operation-unit { display: inline-grid; gap: 2px; margin: 3px; font-size: 10px; }
+.tactical-operation-unit input { width: 76px; }
+.tactical-operation-balances { border-top: 1px solid #d2c6a8; padding-top: 8px; }
+.tactical-operation-balances summary { cursor: pointer; font-weight: 600; }
+.tactical-operation-balance-list { display: grid; gap: 4px; max-height: 260px; overflow: auto; margin-top: 8px; }
+.tactical-operation-balance { display: flex; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid #d2c6a8; padding: 5px 0; font-size: 10px; }
+.tactical-operation-balance strong { min-width: 140px; }
+.tactical-operation-notice { border: 1px solid #8b754a; border-radius: 4px; padding: 10px; background: #fff8e6; }
+.tactical-operation-notice p { margin: 4px 0 0; }
+@media (max-width: 760px) {
+    .tactical-operation-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tactical-operation-controls button { grid-column: 1 / -1; }
+    .tactical-operation-table-wrap { max-height: 55vh; }
+}
+
 .eas-table-wrapper {
     width: 100%;
     overflow-x: auto;

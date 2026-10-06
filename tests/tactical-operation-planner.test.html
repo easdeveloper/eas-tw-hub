@@ -1,0 +1,152 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>PASS</title></head><body>
+<pre id="result">running</pre>
+<script>
+window.onerror = (message, source, line, column, error) => { document.getElementById('result').textContent = `ERROR ${message}\n${error?.stack || ''}`; document.title = 'FAIL'; };
+const forbidden = new Proxy({}, { get() { throw new Error('Execution boundary accessed'); } });
+const candidate = { source: { id: '1', coord: '500|500', name: 'Source' }, ownHome: { spear: 100, ram: 20 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { spear: { durationMs: 1000, trusted: true }, ram: { durationMs: 3000, trusted: true } }, eligibility: 'eligible', blockingReasons: [], warnings: [] };
+const candidateTwo = { ...candidate, source: { id: '2', coord: '499|500', name: 'Second Source' }, ownHome: { ...candidate.ownHome } };
+const realUnits = ['spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob', 'militia'];
+const realCandidate = { source: { id: '75186', coord: '510|491', name: 'Source 75186' }, ownHome: Object.fromEntries(realUnits.map(unit => [unit, unit === 'heavy' ? 200 : 0])), evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { heavy: { durationMs: 102347000, trusted: true } }, eligibility: 'eligible', blockingReasons: [], warnings: [] };
+let failAnalysis = false, analysisCalls = 0;
+window.EAS = { Modules: {}, MissionScheduler: forbidden, ScheduledMissionExecution: forbidden, FakesExecution: forbidden, SupportExecution: forbidden, Runtime: forbidden,
+  TacticalOperationData: { analyzeTarget: async () => { analysisCalls += 1; if (failAnalysis) throw new Error('fixture analysis failure'); return { status: 'complete', partial: false, reason: null, failureStage: null, errorCode: null, errorMessage: null, target: { villageId: '9', coord: '501|501', name: 'Target', playerId: '7' }, sourcesDiscovered: 3, candidates: [candidate, candidateTwo, realCandidate], startedAt: 1, finishedAt: 2, summary: { completeTroops: 3, blockedTroops: 0, mapInfoSuccess: 3, mapInfoFailed: 0, mapInfoPending: 0 } }; } },
+  World: { getServerDateTime: () => ({ available: true, year: 2026, month: 10, day: 5, hours: 0, minutes: 0, seconds: 0, milliseconds: 0 }) },
+  Utils: { createServerDateTime: (date, time) => { const d = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(date); const t = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(time); return d && t ? { year: +d[3], month: +d[2], day: +d[1], hours: +t[1], minutes: +t[2], seconds: +t[3], milliseconds: +(t[4] || '0') } : null; } },
+  UI: { createWindow: ({ id, title, width }) => { document.getElementById(id)?.remove(); const element = document.createElement('section'); element.id = id; element.innerHTML = `<h1>${title}</h1><div class="eas-window__body"></div>`; document.body.append(element); return { element, body: element.querySelector('.eas-window__body'), close: () => element.remove() }; } } };
+window.__executionApiReads = 0;
+</script>
+<script src="../services/tactical-operation-planner.js"></script>
+<script src="../services/tactical-operation-controller.js"></script>
+<script src="../modules/tactical-operation-planner.js"></script>
+<script>
+(async () => {
+  const failures = []; let assertions = 0;
+  const check = (condition, label) => { assertions += 1; if (!condition) failures.push(label); };
+  const module = EAS.Modules.TacticalOperationPlanner;
+  const formatting = module.formatting;
+  const parseQuantity = formatting.parseCustomQuantityInput;
+  check(parseQuantity({ value: '' }) === 0, 'blank CUSTOM field adapts to numeric zero');
+  check(parseQuantity({ value: '0' }) === 0, 'explicit zero remains numeric zero');
+  check(parseQuantity({ value: '159' }) === 159, 'positive integer string parses numerically');
+  check(parseQuantity({ value: '-1' }) === -1, 'negative value remains negative for validation');
+  check(parseQuantity({ value: '1.5' }) === 1.5, 'decimal remains fractional for validation');
+  check(Number.isNaN(parseQuantity({ value: 'bad', validity: { badInput: true } })), 'malformed number input remains invalid');
+  check(formatting.formatDuration(102347000) === '28:25:47', 'duration hours do not wrap at 24');
+  check(formatting.formatCalendarTimestamp(Date.UTC(2026, 9, 6, 3, 35, 13)) === '06/10/2026 03:35:13', 'cross-day send display preserves server-calendar date');
+  check(formatting.formatCalendarTimestamp(Date.UTC(2026, 9, 7, 8, 1, 0, 7), true) === '07/10/2026 08:01:00.007', 'arrival display retains milliseconds');
+  check(formatting.formatCalendarTimestamp(null) === '-' && formatting.formatDuration(null) === '-', 'unavailable timing displays dash');
+  check(formatting.formatCalendarTimestamp(1791257713000) === '06/10/2026 03:35:13', 'display does not apply browser timezone conversion');
+  const win = await module.open();
+  const root = win.body.querySelector('.tactical-operation-planner');
+  root.querySelector('[data-op-target-input]').value = '501|501';
+  root.querySelector('[data-op-date]').value = '06/10/2026';
+  root.querySelector('[data-op-time]').value = '08:00:00.000';
+  const analysisFinished = new Promise(resolve => root.addEventListener('tactical-operation-analysis-finished', resolve, { once: true }));
+  root.querySelector('[data-op-analyze]').click();
+  await analysisFinished;
+  check(analysisCalls === 1, 'Phase 2 analyzeTarget contract invoked');
+  check(root.querySelectorAll('[data-op-table] tr').length === 3, 'all candidates displayed');
+  check(root.textContent.includes('Tropas verificadas'), 'evidence displayed');
+  check(module.getState().draft.operation.slots.every(slot => slot.role === 'unused'), 'new candidates start UNUSED');
+  check(root.querySelector('[data-op-summary]').textContent.includes('3 analisadas · 0 planejadas · 0 bloqueadas'), 'summary separates analysis, selection and blocked commands');
+  check(root.querySelectorAll('[data-materialize]').length === 0, 'unselected candidates expose no composition actions');
+  check(root.querySelector('[data-op-table]').textContent.includes('Source') && root.querySelector('[data-op-table]').textContent.includes('500|500'), 'candidate identity uses name and coordinate');
+  check(root.querySelectorAll('[data-quantity]').length === 0, 'CUSTOM editor collapsed by default');
+  check(root.querySelector('[data-op-balances]').textContent.includes('Source'), 'balance identity uses candidate name');
+  check(root.querySelector('[data-op-balances]').textContent.includes('500|500'), 'balance identity includes coordinate');
+  check(root.querySelector('[data-op-balances]').textContent.includes('ID: 1'), 'internal ID is secondary');
+  check(root.querySelector('[data-op-balances]').textContent.includes('Alocado: -'), 'unused source has no allocation');
+  root.querySelector('[data-filter="ALL"]').click();
+  let realRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.querySelector('td')?.textContent.includes('510|491'));
+  realRow.querySelector('[data-role]').value = 'support';
+  realRow.querySelector('[data-role]').dispatchEvent(new Event('change', { bubbles: true }));
+  realRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.querySelector('td')?.textContent.includes('510|491'));
+  realRow.querySelector('[data-custom]').click();
+  for (const unit of realUnits) {
+    const input = [...root.querySelectorAll('[data-quantity]')].find(item => item.dataset.unit === unit);
+    input.value = unit === 'heavy' ? '159' : unit === 'spear' || unit === 'sword' ? '' : '0';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  const realSlotId = module.getState().draft.operation.slots.find(slot => slot.source.id === '75186').id;
+  const heavyInput = [...root.querySelectorAll('[data-quantity]')].find(item => item.dataset.unit === 'heavy');
+  heavyInput.value = '';
+  heavyInput.dispatchEvent(new Event('change', { bubbles: true }));
+  check(module.getState().draft.operation.slots.find(slot => slot.id === realSlotId).composition.quantities.heavy === 0, 'clearing populated CUSTOM value stores zero');
+  const heavyInputAfterClear = [...root.querySelectorAll('[data-quantity]')].find(item => item.dataset.unit === 'heavy');
+  heavyInputAfterClear.value = '159';
+  heavyInputAfterClear.dispatchEvent(new Event('change', { bubbles: true }));
+  const beforeConfirm = module.getState().draft.operation.slots.find(slot => slot.id === realSlotId).composition;
+  check(beforeConfirm.requestedMode === 'custom', 'real composition mode remains CUSTOM');
+  check(beforeConfirm.confirmed === false, 'real CUSTOM remains unconfirmed before action');
+  check(JSON.stringify(Object.keys(beforeConfirm.quantities)) === JSON.stringify(realUnits), 'real CUSTOM contains configured canonical unit keys');
+  check(realUnits.every(unit => typeof beforeConfirm.quantities[unit] === 'number' && Number.isSafeInteger(beforeConfirm.quantities[unit])), 'all stored real CUSTOM quantities are safe integers');
+  check(beforeConfirm.quantities.heavy === 159 && realUnits.filter(unit => unit !== 'heavy').every(unit => beforeConfirm.quantities[unit] === 0), 'real CUSTOM stores only 159 heavy and zero otherwise');
+  check(!Object.values(beforeConfirm.quantities).some(value => value === null), 'real CUSTOM contains no null quantity values');
+  const beforeConfirmValidation = EAS.TacticalOperationPlanner.validateComposition(beforeConfirm, realCandidate);
+  check(beforeConfirmValidation.blockers.includes('COMPOSITION_UNCONFIRMED') && !beforeConfirmValidation.blockers.includes('INVALID_QUANTITY'), 'planner separates valid quantities from confirmation');
+  realRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.dataset.slotId === realSlotId);
+  realRow.querySelector(`[data-confirm="${realSlotId}"]`).click();
+  const confirmedSlot = module.getState().draft.operation.slots.find(slot => slot.id === realSlotId);
+  const normalized = EAS.TacticalOperationPlanner.normalizeComposition(confirmedSlot.composition);
+  check(normalized.confirmed === true && normalized.requestedMode === 'custom', 'confirmed normalized composition preserves mode and confirmation');
+  check(realUnits.every(unit => typeof normalized.quantities[unit] === 'number' && Number.isSafeInteger(normalized.quantities[unit])), 'normalization preserves all numeric quantity types');
+  const realMission = EAS.TacticalOperationController.validateDraft(module.getState().draft).missions.find(mission => mission.slotId === realSlotId);
+  check(!realMission.blockers.includes('INVALID_QUANTITY'), 'real-shaped heavy-only CUSTOM has no quantity blocker');
+  check(realMission.travelTimeMs === 102347000 && realMission.validationStatus === 'ready', 'confirmed heavy-only CUSTOM derives duration and timing');
+  check(module.getState().draft.operation.slots.find(slot => slot.id === realSlotId).composition.quantities.heavy === 159, 'heavy value survives UI confirmation');
+  check(realMission.blockers.length === 0, `confirmed real-shape mission blockers: ${JSON.stringify(realMission.blockers)}`);
+  realRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.dataset.slotId === realSlotId);
+  realRow.querySelector('[data-custom-close]').click();
+  const roleSelect = root.querySelector(`[data-role="${realSlotId}"]`);
+  roleSelect.value = 'unused';
+  roleSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  root.querySelector('[data-filter="OFFENSIVE"]').click();
+  check(module.getState().draft.operation.slots.every(slot => slot.role === 'unused'), 'evidence filters do not mutate roles');
+  root.querySelector('[data-filter="ALL"]').click();
+  root.querySelector('[data-role]').value = 'attack';
+  root.querySelector('[data-role]').dispatchEvent(new Event('change', { bubbles: true }));
+  check(module.getState().draft.operation.slots[0].role === 'attack', 'explicit role selection activates candidate');
+  root.querySelector('[data-role]').value = 'unused';
+  root.querySelector('[data-role]').dispatchEvent(new Event('change', { bubbles: true }));
+  check(module.getState().draft.operation.slots[0].role === 'unused', 'role can return to UNUSED');
+  root.querySelector('[data-role]').value = 'attack';
+  root.querySelector('[data-role]').dispatchEvent(new Event('change', { bubbles: true }));
+  root.querySelector('[data-materialize]').click();
+  check(root.querySelectorAll('[data-quantity]').length === 0, 'FULL does not open CUSTOM editor');
+  root.querySelector('[data-custom]').click();
+  check(root.querySelectorAll('[data-quantity]').length === 2, 'CUSTOM editor expands explicitly');
+  root.querySelector('[data-confirm]').click();
+  root.querySelector('[data-quantity]').value = '10';
+  root.querySelector('[data-quantity]').dispatchEvent(new Event('change', { bubbles: true }));
+  check(root.querySelector('[data-confirm]').disabled === false, 'custom edit requires re-confirmation');
+  root.querySelector('[data-confirm]').click();
+  check(root.querySelector('[data-op-review]').disabled === false, 'valid review can be approved');
+  root.querySelector('[data-filter="SELECTED"]').click();
+  check(root.querySelectorAll('[data-op-table] tr').length === 1, 'SELECTED filter includes active commands only');
+  check(root.querySelector('[data-op-summary]').textContent.includes('3 analisadas · 1 planejadas'), 'filter does not alter semantic counts');
+  root.querySelector('[data-op-manual-source]').value = '1';
+  root.querySelector('[data-op-manual-source]').dispatchEvent(new Event('change', { bubbles: true }));
+  root.querySelector('[data-op-add-noble]').click();
+  check(module.getState().draft.operation.slotPolicy.nt4Confirmed === false, 'manual noble leaves NT4 policy pending');
+  check(module.getState().draft.operation.slots.some(slot => slot.role === 'noble_train_manual'), 'manual noble remains a review slot');
+  root.querySelector('[data-filter="ALL"]').click();
+  check(root.querySelectorAll('[data-op-table] tr').length === 4, 'ALL filter shows three candidates and one manual noble slot');
+  const attackRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.querySelector('[data-role]')?.value === 'attack');
+  const nobleRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.querySelector('[data-role]')?.value === 'noble_train_manual');
+  check(!attackRow?.textContent.includes('NT4_POLICY_PENDING'), 'attack row does not inherit noble policy blocker');
+  check(nobleRow?.textContent.includes('NT4_POLICY_PENDING'), 'manual noble row shows its policy blocker');
+  check(module.getState().draft.operation.slots.filter(slot => slot.role === 'noble_train_manual').length === 1, 'one click creates one manual noble slot');
+  check(root.querySelector('[data-op-review]').disabled, 'NT4 pending policy cannot be approved');
+  check(EAS.TacticalOperationController.validateDraft(module.getState().draft).executionArtifact === null, 'no execution artifact');
+  failAnalysis = true;
+  const failedAnalysisFinished = new Promise(resolve => root.addEventListener('tactical-operation-analysis-finished', resolve, { once: true }));
+  root.querySelector('[data-op-analyze]').click();
+  await failedAnalysisFinished;
+  check(!module.getState().active, 'unexpected analysis failure clears loading state');
+  check(root.querySelector('[data-op-status]').textContent.includes('fixture analysis failure'), 'unexpected analysis failure is readable');
+  check(!root.querySelector('[data-op-status]').textContent.includes('Analisando'), 'error state replaces analyzing state');
+  document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
+  document.title = failures.length ? 'FAIL' : 'PASS';
+})().catch(error => { document.getElementById('result').textContent = `ERROR ${error?.stack || error}`; document.title = 'FAIL'; });
+</script></body></html>

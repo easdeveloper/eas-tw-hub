@@ -77,7 +77,15 @@ console.log(JSON.stringify(await EAS.TacticalOperationData.diagnoseTarget({targe
 
 Paste the result back. Check target identity, sources discovered, complete/blocked troops, mapInfo success/failed/pending and per-source evidence. This does not schedule, prepare, authorize or send commands. Night bonus remains user-supplied metadata; no discovery or hardcoding is performed.
 
-Phase 3 still needs composition/review UI and reviewed NT policy. Phase 2 does not resolve FULL, distribute escorts or create missions.
+## Phase 3 — review-only operation desk
+
+`services/tactical-operation-controller.js` owns immutable in-memory draft revisions and delegates authoritative checks to Phase 1. The dedicated `modules/tactical-operation-planner.js` desk starts Phase 2 analysis only after an explicit user action. It displays eligible and blocked sources, troop evidence, per-unit durations, user-selected roles, server-calendar arrival input, derived allocation balances, and send-time ordering.
+
+FULL is materialized only after a user action from that source's trusted `ownHome` snapshot. CUSTOM is a separate explicit mode; quantity edits clear confirmation, and the user must confirm the composition again. Edits advance the operation revision and clear prior approval. Filters affect display only; validation and approval always cover every slot. Approval is a review marker only and produces no Scheduler mission, runtime state or execution artifact.
+
+NT4 remains fail-closed. A user may add a manual noble slot tied to an analyzed source, but policy acknowledgement, spacing, escort distribution, siege placement and remainder handling are not implemented. The operation remains blocked until a separately reviewed NT policy is defined. No Rally Point, command submission, execution runtime or timers are used by Phase 3.
+
+Arrival and server-now inputs are normalized as UTC arithmetic over explicit server-calendar components, not browser-local timestamps. A missing server clock blocks validation. Night-bonus discovery remains outside this phase; unknown night metadata remains a warning and never changes timing.
 
 ### BR143 target identity patch
 

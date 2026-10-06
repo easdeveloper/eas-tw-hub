@@ -290,7 +290,8 @@
             'market-balance': 'MarketBalance',
             'market-target-supply': 'MarketTargetSupply',
             'scheduled-missions': 'ScheduledMissions',
-            'incoming-monitor': 'IncomingMonitor'
+            'incoming-monitor': 'IncomingMonitor',
+            'tactical-operation-planner': 'TacticalOperationPlanner'
         };
         const moduleName = moduleNames[moduleId];
 
@@ -352,7 +353,8 @@
                 {id:'support',icon:'🛡️',title:'Planejador de Apoios',description:'Distribua e programe apoios entre aldeias.',status:'Disponível'},
                 {id:'mass-farm',icon:'🌾',title:'Farm em Massa',description:'Execute o Modelo A nas aldeias selecionadas de um grupo.',status:'Beta'},
                 {id:'fakes',icon:'🎭',title:'Gerenciador de Fakes',description:'Crie e analise operações de fake.',status:'Disponível'},
-                {id:'mass-snipe',icon:'🎯',title:'Mass Snipe',description:'Calcule snips com horários e countdown em milissegundos.',status:'Disponível'} ] },
+                {id:'mass-snipe',icon:'🎯',title:'Mass Snipe',description:'Calcule snips com horários e countdown em milissegundos.',status:'Disponível'},
+                {id:'tactical-operation-planner',icon:'🗺️',title:'Operação Tática',description:'Revise planos read-only, FULL e CUSTOM sem enviar comandos.',status:'Beta'} ] },
             { icon:'🏪', title:'Mercado', description:'Economia e distribuição de recursos.', tools:[
                 {id:'minting',icon:'🪙',title:'Cunhagem',description:'Cunhe moedas por aldeia no grupo selecionado.',status:'Beta'},
                 {id:'market-smart-offers',icon:'🔄',title:'Ofertas Inteligentes',description:'Equilibre os recursos de cada aldeia por ofertas.',status:'Disponível'},
@@ -528,7 +530,7 @@
             return;
         }
 
-        if (module.id === 'incoming-monitor' || module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id === 'minting' || module.id.startsWith('market-')) {
+        if (module.id === 'incoming-monitor' || module.id === 'attack' || module.id === 'fakes' || module.id === 'support' || module.id === 'scheduled-missions' || module.id === 'troop-counter' || module.id === 'mass-farm' || module.id === 'mass-snipe' || module.id === 'minting' || module.id === 'tactical-operation-planner' || module.id.startsWith('market-')) {
             EAS.UI.loadModule(module.id)
                 .then((loadedModule) => {
                     const opened = loadedModule.open();
