@@ -312,6 +312,16 @@
         return freeze(unit);
     };
 
+    const advanceConfirmationReady = (input, evidence) => {
+        const unit = copy(input);
+        if (unit.state !== 'READY_TO_SEND' || unit.finalCheckEvidence?.fromPreparedForm !== true || unit.kind !== SINGLE ||
+            unit.confirmationIntent?.status !== 'NAVIGATING' || unit.attemptId || unit.outgoingBaseline || unit.finalAuthorization) block(unit, 'CONFIRMATION_STATE_INELIGIBLE');
+        if (unit.state === 'BLOCKED') return freeze(unit);
+        if (evidence?.valid !== true || evidence.submitControlCount !== 1 || evidence.navigationId !== unit.confirmationIntent.navigationId) block(unit, 'CONFIRMATION_EVIDENCE_INVALID');
+        if (unit.state !== 'BLOCKED') { unit.state = 'CONFIRMATION_READY'; unit.confirmationIntent = { ...unit.confirmationIntent, status: 'CONFIRMED' }; unit.confirmationEvidence = copy(evidence); }
+        return freeze(unit);
+    };
+
     const normalizeNativeRow = row => ({
         sourceId: identity(row.sourceId), sourceCoord: row.sourceCoord || null, targetCoord: row.targetCoord || null,
         commandType: row.commandType || null, composition: nonzeroComposition(row.composition || {})
@@ -613,12 +623,18 @@
         if (!form) return { valid: false, blocker: 'CONFIRMATION_FORM_MISSING' };
         const text = String(form.innerText || form.textContent || '');
         const contains = value => value && new RegExp(`(^|\\D)${value.replace('|', '\\|')}(?=$|\\D)`).test(text);
-        if (!contains(unit.source?.coord)) return { valid: false, blocker: 'SOURCE_IDENTITY_UNVERIFIED' };
         if (!contains(unit.target?.coord)) return { valid: false, blocker: 'TARGET_IDENTITY_MISMATCH' };
         const buttons = [...form.querySelectorAll('button, input[type="submit"]')].filter(button =>
             button.id === 'troop_confirm_submit' || /enviar (ataque|apoio)/i.test(String(button.textContent || button.value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')));
         if (buttons.length !== 1) return { valid: false, blocker: 'CONFIRMATION_SUBMIT_CONTROL_AMBIGUOUS' };
         const submitLabel = String(buttons[0].textContent || buttons[0].value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        if (!buttons[0].form || buttons[0].form !== form) return { valid: false, blocker: 'CONFIRMATION_SUBMIT_FORM_MISMATCH' };
+        const sourceInputs = [...form.querySelectorAll('input[name="source_village"]')];
+        if (sourceInputs.length !== 1) return { valid: false, blocker: 'SOURCE_IDENTITY_UNVERIFIED' };
+        const formSourceId = identity(sourceInputs[0].value);
+        if (!/^[1-9]\d*$/.test(formSourceId) || formSourceId !== identity(unit.source?.id)) return { valid: false, blocker: 'SOURCE_IDENTITY_MISMATCH' };
+        const game = targetWindow?.game_data?.village;
+        if (game?.x != null && game?.y != null && `${game.x}|${game.y}` !== unit.source?.coord) return { valid: false, blocker: 'SOURCE_IDENTITY_MISMATCH' };
         const displayedType = /enviar apoio/i.test(submitLabel) ? 'support' : /enviar ataque/i.test(submitLabel) ? 'attack' : null;
         if (!displayedType) return { valid: false, blocker: 'COMMAND_TYPE_UNVERIFIED' };
         if (displayedType !== unit.commandType) return { valid: false, blocker: 'COMMAND_TYPE_MISMATCH' };
@@ -859,6 +875,108 @@
             return { valid: true, unit: saved };
         }).finally(() => runs.delete(key));
     };
+    const CONFIRMATION_START_MS = 50000, CONFIRMATION_END_MS = 10000, CONFIRMATION_TOLERANCE_MS = 1000;
+    const COMMAND_CONTROL = { support: '#target_support, input[name="support"], button[name="support"]', attack: '#target_attack, input[name="attack"], button[name="attack"]' };
+    const parseNativeDuration = doc => {
+        const values = new Set();
+        for (const row of doc?.querySelectorAll?.('tr') || []) {
+            const text = String(row.textContent || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+            const match = /^\s*duracao\s*:?\s*(\d+):(\d{2}):(\d{2})\s*$/i.exec(text);
+            if (match) values.add((Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])) * 1000);
+        }
+        return values.size === 1 ? { available: true, durationMs: [...values][0] } : { available: false, reason: values.size ? 'CONFIRMATION_DURATION_AMBIGUOUS' : 'CONFIRMATION_DURATION_UNAVAILABLE' };
+    };
+    const confirmationRuns = new WeakMap();
+    const failConfirmation = (executionId, executionUnitId, unit, reason) => {
+        const current = lookup(executionId, executionUnitId);
+        if (current?.state === 'READY_TO_SEND') { const blocked = copy(current); block(blocked, reason); updateStoredUnit(executionId, executionUnitId, blocked); }
+        executionLog('TACTICAL_CONFIRMATION_BLOCKED', unit, { reason });
+        return { valid: false, blocker: reason };
+    };
+    // Rally Point -> native confirmation. Clicks only Ataque/Apoio (never the final submit); no attempt/baseline/authorization is created.
+    const openConfirmationFromPrepared = (executionId, executionUnitId, targetWindow = window) => {
+        const runs = confirmationRuns.get(targetWindow) || new Set();
+        confirmationRuns.set(targetWindow, runs);
+        const key = `open|${executionId}|${executionUnitId}`;
+        if (runs.has(key)) return { valid: false, blocker: 'CONFIRMATION_OPEN_ALREADY_RUNNING' };
+        runs.add(key);
+        try {
+            const unit = lookup(executionId, executionUnitId);
+            if (!unit || unit.state !== 'READY_TO_SEND' || unit.finalCheckEvidence?.fromPreparedForm !== true || unit.kind !== SINGLE || unit.confirmationIntent ||
+                unit.attemptId || unit.outgoingBaseline || unit.finalAuthorization || !preparationAuthorizationValid(unit)) return { valid: false, blocker: 'CONFIRMATION_STATE_INELIGIBLE' };
+            const fail = reason => failConfirmation(executionId, executionUnitId, unit, reason);
+            const timing = readAuthoritativeNowMs(targetWindow);
+            if (!timing.available) return fail(timing.reason);
+            const due = dueState(unit, timing.nowMs, CONFIRMATION_START_MS, CONFIRMATION_END_MS, 'CONFIRMATION_WINDOW_MISSED');
+            if (due.notDue) return { valid: false, blocker: 'CONFIRMATION_NOT_DUE' };
+            if (!due.valid) return fail(due.blocker);
+            if (wasConsumed(unit, targetWindow.localStorage)) return fail('PREVIOUS_ATTEMPT_OR_UNCERTAIN_SEND');
+            const formBlocker = verifyPreparedForm(unit, targetWindow);
+            if (formBlocker) return fail(formBlocker);
+            const form = targetWindow.EAS.Place.getCommandForm(targetWindow.document);
+            const controls = [...form.querySelectorAll(COMMAND_CONTROL[unit.commandType] || '')];
+            if (controls.length !== 1 || controls[0].disabled) return fail('RALLY_POINT_COMMAND_CONTROL_UNAVAILABLE');
+            const navigationId = unit.rallyPreparation.navigationId;
+            const intent = { status: 'NAVIGATING', navigationId, tabName: unit.rallyPreparation.tabName, startedAtMs: timing.nowMs,
+                deadlineAtMs: Math.min(timing.nowMs + 20000, unit.executionSendAtMs - FINAL_CHECK_END_MS), commandType: unit.commandType,
+                source: { id: String(unit.source.id), coord: unit.source.coord }, target: { coord: unit.target.coord },
+                composition: nonzeroComposition(unit.approvedCommand.composition.quantities) };
+            try { targetWindow.sessionStorage.setItem('eas_tactical_preparation_context', JSON.stringify({
+                executionId, executionUnitId, operationId: unit.operationId, revision: unit.revision })); } catch { return fail('PREPARATION_CONTEXT_STORAGE_FAILED'); }
+            if (!updateStoredUnit(executionId, executionUnitId, { ...copy(unit), confirmationIntent: intent })) return fail('PERSISTED_STATE_TRANSITION_REJECTED');
+            executionLog('TACTICAL_CONFIRMATION_NAVIGATION_STARTED', unit, { navigationId, deadlineAtMs: intent.deadlineAtMs });
+            try { controls[0].click(); } catch { return fail('CONFIRMATION_NAVIGATION_FAILED'); }
+            return { valid: true, navigationStarted: true, finalSubmitClicked: false };
+        } finally { runs.delete(key); }
+    };
+    // Runs on the native confirmation page. Read-only: never clicks the final submit.
+    const captureConfirmation = (executionId, executionUnitId, targetWindow = window) => {
+        const runs = confirmationRuns.get(targetWindow) || new Set();
+        confirmationRuns.set(targetWindow, runs);
+        const key = `capture|${executionId}|${executionUnitId}`;
+        if (runs.has(key)) return { valid: false, blocker: 'CONFIRMATION_CAPTURE_ALREADY_RUNNING' };
+        runs.add(key);
+        try {
+            const unit = lookup(executionId, executionUnitId);
+            if (!unit || unit.state !== 'READY_TO_SEND' || unit.finalCheckEvidence?.fromPreparedForm !== true || unit.kind !== SINGLE || unit.confirmationIntent?.status !== 'NAVIGATING' ||
+                unit.attemptId || unit.outgoingBaseline || unit.finalAuthorization || !preparationAuthorizationValid(unit)) return { valid: false, blocker: 'CONFIRMATION_STATE_INELIGIBLE' };
+            const fail = reason => failConfirmation(executionId, executionUnitId, unit, reason);
+            const intent = unit.confirmationIntent;
+            const page = new URL(targetWindow.location.href);
+            if (page.searchParams.get('screen') !== 'place' || page.searchParams.get('try') !== 'confirm') return { valid: false, blocker: 'NOT_CONFIRMATION_PAGE' };
+            let context = null;
+            try { context = JSON.parse(targetWindow.sessionStorage.getItem('eas_tactical_preparation_context') || 'null'); } catch {}
+            if (targetWindow.name !== intent.tabName || context?.executionUnitId !== executionUnitId || context?.executionId !== executionId ||
+                context?.operationId !== unit.operationId || context?.revision !== unit.revision) return fail('CONFIRMATION_CONTEXT_INVALID');
+            const timing = readAuthoritativeNowMs(targetWindow);
+            if (!timing.available) return fail(timing.reason);
+            if (timing.nowMs > intent.deadlineAtMs) return fail(timing.nowMs > unit.executionSendAtMs - FINAL_CHECK_END_MS ? 'CONFIRMATION_WINDOW_MISSED' : 'CONFIRMATION_NAVIGATION_TIMEOUT');
+            const session = readSessionEvidence(targetWindow, unit);
+            if (!session.accountValid) return fail(session.accountReason);
+            if (!session.sessionAvailable) return fail(session.antiBotPresent ? 'ANTI_BOT_PRESENT' : 'SESSION_UNAVAILABLE_OR_UNTRUSTED');
+            if (!trustedSource(unit)) return fail('APPROVED_SOURCE_IDENTITY_UNPROVEN');
+            if (wasConsumed(unit, targetWindow.localStorage)) return fail('PREVIOUS_ATTEMPT_OR_UNCERTAIN_SEND');
+            const read = readSingleConfirmation(targetWindow.document, unit, targetWindow);
+            if (!read.valid) return fail(read.blocker);
+            const duration = parseNativeDuration(targetWindow.document);
+            if (!duration.available) return fail(duration.reason);
+            const command = unit.approvedCommand;
+            const durationDeltaMs = duration.durationMs - command.travelTimeMs;
+            if (Math.abs(durationDeltaMs) > CONFIRMATION_TOLERANCE_MS) return fail('CONFIRMATION_DURATION_MISMATCH');
+            const predictedArrivalMs = unit.executionSendAtMs + duration.durationMs;
+            if (Math.abs(predictedArrivalMs - command.desiredArrivalMs) > CONFIRMATION_TOLERANCE_MS) return fail('CONFIRMATION_ARRIVAL_MISMATCH');
+            const evidence = { valid: true, capturedAtMs: timing.nowMs, navigationId: intent.navigationId, commandType: unit.commandType,
+                source: { id: String(unit.source.id), coord: unit.source.coord }, target: { coord: unit.target.coord }, composition: read.composition,
+                nativeDurationMs: duration.durationMs, expectedTravelTimeMs: command.travelTimeMs, durationDeltaMs, predictedArrivalMs,
+                desiredArrivalMs: command.desiredArrivalMs, submitControlCount: 1 };
+            const next = advanceConfirmationReady(unit, evidence);
+            if (next.state !== 'CONFIRMATION_READY') return fail(next.blockers[next.blockers.length - 1]);
+            const saved = updateStoredUnit(executionId, executionUnitId, next);
+            if (!saved) return fail('PERSISTED_STATE_TRANSITION_REJECTED');
+            executionLog('TACTICAL_CONFIRMATION_READY', saved, { nativeDurationMs: duration.durationMs, durationDeltaMs });
+            return { valid: true, unit: saved, finalSubmitClicked: false };
+        } finally { runs.delete(key); }
+    };
     const navigationWindows = new WeakMap();
     const navigationFailure = (unit, reason, options = {}) => {
         const next = { ...copy(unit), rallyPreparation: { ...copy(unit.rallyPreparation || {}), status: 'FAILED', reason } };
@@ -1091,7 +1209,7 @@
             const syncButton = action('Sincronizar relógio e validar final', syncAndFinal);
             syncButton.hidden = true;
         } else {
-            status.textContent = `${unit.state}${unit.blockers?.length ? ` · ${unit.blockers.join(', ')}` : ''}${unit.state === 'READY_TO_SEND' ? (unit.finalCheckEvidence?.fromPreparedForm === true ? ` · PREPARADO, NÃO ENVIADO · ${unit.commandType} · ${Object.entries(unit.finalCheckEvidence.composition || {}).map(([name, count]) => `${name} ${count}`).join(', ')} · READY_TO_SEND não autoriza envio.` : ' · escolha DRY RUN ou Autorizar envio real.') : ''}`;
+            status.textContent = `${unit.state}${unit.blockers?.length ? ` · ${unit.blockers.join(', ')}` : ''}${unit.state === 'READY_TO_SEND' ? (unit.finalCheckEvidence?.fromPreparedForm === true ? ` · RALLY_PREPARED · confirmação nativa pendente · PREPARADO, NÃO ENVIADO · ${unit.commandType} · ${Object.entries(unit.finalCheckEvidence.composition || {}).map(([name, count]) => `${name} ${count}`).join(', ')} · READY_TO_SEND não autoriza envio.` : ' · escolha DRY RUN ou Autorizar envio real.') : ''}`;
         }
         if (unit.state === 'PREPARE_5M' && url.searchParams.get('try') === 'confirm') action('Sincronizar relógio e validar final', syncAndFinal);
         finalActions();
@@ -1214,6 +1332,28 @@
                         const handle = navigationWindows.get(targetWindow)?.get(unit.rallyPreparation?.navigationId);
                         const reason = handle?.closed === true ? 'PREPARATION_TAB_CLOSED' : remaining <= FINAL_CHECK_END_MS ? 'FINAL_CHECK_WINDOW_MISSED' : null;
                         if (reason) { const blocked = copy(unit); block(blocked, reason); updateStoredUnit(execution.executionId, unit.executionUnitId, blocked); }
+                    }
+                } else if (unit.state === 'READY_TO_SEND' && unit.finalCheckEvidence?.fromPreparedForm === true && unit.kind === SINGLE) {
+                    const remaining = Number.isFinite(now) ? unit.executionSendAtMs - now : null;
+                    const page = new URL(targetWindow.location.href);
+                    const onConfirm = page.searchParams.get('screen') === 'place' && page.searchParams.get('try') === 'confirm';
+                    const ownTab = page.searchParams.get('eas_tactical_execution_id') === execution.executionId &&
+                        page.searchParams.get('eas_tactical_unit_id') === unit.executionUnitId && !onConfirm;
+                    const intent = unit.confirmationIntent;
+                    if (intent) {
+                        const decision = remaining === null ? 'CLOCK_UNAVAILABLE' : onConfirm && targetWindow.name === intent.tabName ? 'CONFIRMATION_CAPTURE_DUE' : now > intent.deadlineAtMs ? 'CONFIRMATION_NAVIGATION_TIMEOUT' : 'CONFIRMATION_NAVIGATING';
+                        recordTickDiagnostic(targetWindow, unit, now, decision);
+                        if (decision === 'CONFIRMATION_CAPTURE_DUE') captureConfirmation(execution.executionId, unit.executionUnitId, targetWindow);
+                        else if (decision === 'CONFIRMATION_NAVIGATION_TIMEOUT') { const blocked = copy(unit); block(blocked, decision); updateStoredUnit(execution.executionId, unit.executionUnitId, blocked); }
+                    } else {
+                        const decision = remaining === null ? 'CLOCK_UNAVAILABLE' : remaining > CONFIRMATION_START_MS ? 'WAIT_CONFIRMATION' : ownTab ? 'CONFIRMATION_DUE' : 'CONFIRMATION_NOT_PREPARED_TAB';
+                        recordTickDiagnostic(targetWindow, unit, now, decision);
+                        if (decision === 'CONFIRMATION_DUE') openConfirmationFromPrepared(execution.executionId, unit.executionUnitId, targetWindow);
+                        else if (decision === 'CONFIRMATION_NOT_PREPARED_TAB') {
+                            const handle = navigationWindows.get(targetWindow)?.get(unit.rallyPreparation?.navigationId);
+                            const reason = handle?.closed === true ? 'PREPARATION_TAB_CLOSED' : remaining <= CONFIRMATION_END_MS ? 'CONFIRMATION_WINDOW_MISSED' : null;
+                            if (reason) { const blocked = copy(unit); block(blocked, reason); updateStoredUnit(execution.executionId, unit.executionUnitId, blocked); }
+                        }
                     }
                 }
             }
@@ -1445,14 +1585,15 @@
             PREPARED: new Set(['SYNC_2M', 'BLOCKED', 'CANCELLED']),
             PREPARE_5M: new Set(['PREPARE_5M', 'SYNC_2M', 'BLOCKED', 'CANCELLED']),
             SYNC_2M: new Set(['SYNC_2M', 'READY_TO_SEND', 'BLOCKED', 'CANCELLED']),
-            READY_TO_SEND: new Set(['READY_TO_SEND', 'SUBMITTING', 'UNCERTAIN', 'BLOCKED', 'CANCELLED']),
+            READY_TO_SEND: new Set(['READY_TO_SEND', 'CONFIRMATION_READY', 'SUBMITTING', 'UNCERTAIN', 'BLOCKED', 'CANCELLED']),
+            CONFIRMATION_READY: new Set(['BLOCKED', 'CANCELLED']),
             SUBMITTING: new Set(['SUBMITTING', 'RECONCILING', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN']),
             RECONCILING: new Set(['RECONCILING', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN']),
             UNCERTAIN: new Set(['UNCERTAIN', 'SENT', 'COMPLETED', 'FAILED'])
         };
         if (!transitions[previous.state]?.has(nextUnit?.state)) return null;
         if (previous.state === nextUnit.state && ['PRECHECK_10M', 'PREPARE_5M', 'SYNC_2M', 'READY_TO_SEND'].includes(previous.state)) {
-            const strip = value => { const result = copy(value); for (const key of ['attemptId', 'outgoingBaseline', 'finalAuthorization', 'rallyPreparation']) delete result[key]; return result; };
+            const strip = value => { const result = copy(value); for (const key of ['attemptId', 'outgoingBaseline', 'finalAuthorization', 'rallyPreparation', 'confirmationIntent']) delete result[key]; return result; };
             if (!same(strip(previous), strip(nextUnit))) return null;
             if (previous.attemptId && (previous.attemptId !== nextUnit.attemptId || !same(previous.outgoingBaseline, nextUnit.outgoingBaseline))) return null;
         }
@@ -1462,8 +1603,9 @@
         const derivationEvidence = { PRECHECK_10M: nextUnit?.precheckEvidence, PREPARE_5M: nextUnit?.preparationEvidence, SYNC_2M: nextUnit?.syncEvidence }[nextUnit?.state];
         if (derive && previous.state !== nextUnit.state && !same(derive(previous, derivationEvidence), nextUnit)) return null;
         if (nextUnit?.state === 'READY_TO_SEND' && previous.state !== 'READY_TO_SEND' && !same(advanceFinalCheck(previous, nextUnit.finalCheckEvidence), nextUnit)) return null;
+        if (nextUnit?.state === 'CONFIRMATION_READY' && !same(advanceConfirmationReady(previous, nextUnit.confirmationEvidence), nextUnit)) return null;
         execution.units[unitIndex] = copy(nextUnit);
-        execution.state = execution.units.every(unit => unit.state === 'COMPLETED') ? 'COMPLETED' : execution.units.every(unit => ['PREPARED', 'READY_TO_SEND', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN', 'CANCELLED', 'BLOCKED'].includes(unit.state))
+        execution.state = execution.units.every(unit => unit.state === 'COMPLETED') ? 'COMPLETED' : execution.units.every(unit => ['PREPARED', 'READY_TO_SEND', 'CONFIRMATION_READY', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN', 'CANCELLED', 'BLOCKED'].includes(unit.state))
             ? 'REVIEW_REQUIRED' : 'PREFLIGHT';
         executions[executionIndex] = execution;
         root.executions[scope] = executions;
@@ -1556,7 +1698,7 @@
         deriveExecutionUnits, mapTrainTiming, authorizePreparation,
         advancePrecheck10m, advancePrepare5m, evaluateClockSamples, advanceSync2m, advanceFinalCheck,
         reconcileNativeNobleRows, readNativeRows, parseNativeConfirmation, createNativeTrainRows, compareOutgoing,
-        readSessionEvidence, rallyPageIdentity, applyApprovedComposition, openPreparedConfirmation, readSingleConfirmation,
+        readSessionEvidence, rallyPageIdentity, applyApprovedComposition, openPreparedConfirmation, readSingleConfirmation, openConfirmationFromPrepared, captureConfirmation, parseNativeDuration, advanceConfirmationReady,
         buildRallyPointUrl, describeClockFrame, openRallyPoint, prepareRallyPoint, synchronizePrepared, finalizePrepared, collectClockSamples, initializePreparationPage, initializeSchedulerHooks, readTickDiagnostics, TICK_DIAGNOSTICS_KEY,
         runStoredPrecheck, preparationAuthorizationValid, preparationDiagnostic, createStore, list, listActive, enqueue, updateStoredUnit, authorizeStoredUnit, cancelStoredUnit, reconcileStoredOutcome
     });

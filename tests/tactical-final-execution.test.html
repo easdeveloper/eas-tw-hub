@@ -1,5 +1,5 @@
 ﻿<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
-<form id="command-confirm-form"><p>Origem (500|500) Destino (484|527)</p><span data-unit="axe" data-count="1">1</span><button id="troop_confirm_submit" type="submit">Enviar ataque</button></form>
+<form id="command-confirm-form"><p>Destino (484|527)</p><input type="hidden" name="source_village" value="10"><span data-unit="axe" data-count="1">1</span><button id="troop_confirm_submit" type="submit">Enviar ataque</button></form>
 <script>
 let now=950000, clicks=0; const pending=[];
 window.EAS={Selectors:{},Adapters:{},World:{getWorldName:()=> 'tactical-browser',getPlayer:()=>({id:1})},Utils:{parseCoordinate:c=>({coordinate:c})},MassSnipeExecution:{getCurrentServerTimeMs:()=>now}};

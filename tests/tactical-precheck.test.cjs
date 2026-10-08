@@ -134,13 +134,13 @@ test('tick-driven popup block is persisted once, not retried, and controller rel
  const api2=f.w.EAS.TacticalOperationSchedulerAdapter;api2.initializeSchedulerHooks(f.w);f.now(SEND-280000);await f.listeners.get('eas:scheduler-tick')();
  assert.equal(opens,1);assert.equal(f.tabs.length,0);assert.equal(f.read().finalAuthorization,undefined);
 });
-function preparedFixture({tab=true}={}){
+function preparedFixture({tab=true,support=false}={}){
  const f=tickFixture(),root=JSON.parse(f.values.get(f.api.STORAGE_KEY)),u=root.executions['br143:7'][0].units[0];
  const nav='navigation-prepared',name=`eas-tactical-preparation-${nav}`;
- u.state='PREPARED';u.rallyPreparation={status:'PREPARED',navigationId:nav,tabName:name,executionId:f.eid,executionUnitId:f.uid,evidence:{}};
+ if(support){u.commandType='support';u.approvedCommand.commandType='support';}u.state='PREPARED';u.rallyPreparation={status:'PREPARED',navigationId:nav,tabName:name,executionId:f.eid,executionUnitId:f.uid,evidence:{}};
  u.nextCheckpoint='SYNC_2M';u.nextCheckpointAtMs=SEND-120000;f.values.set(f.api.STORAGE_KEY,JSON.stringify(root));
  const st={target:true},inputs={axe:{value:'5930'},light:{value:'3117'},spear:{value:''}};let clicks=0,submits=0;
- const attackBtn={disabled:false,clicks:0,click(){clicks++;}},form={querySelectorAll:s=>{if(s.includes('#target_attack'))return st.noAttack?[]:st.twoAttack?[attackBtn,{}]:[attackBtn];if(s.includes('#target_support'))return [];const n=/name="(\w+)"/.exec(s)?.[1];return inputs[n]?[inputs[n]]:[];},submit(){submits++;}};
+ const attackBtn={disabled:false,clicks:0,click(){clicks++;}},form={querySelectorAll:s=>{if(s.includes('#target_attack'))return support||st.noAttack?[]:st.twoAttack?[attackBtn,{}]:[attackBtn];if(s.includes('#target_support'))return support?[attackBtn]:[];const n=/name="(\w+)"/.exec(s)?.[1];return inputs[n]?[inputs[n]]:[];},submit(){submits++;}};
  f.w.EAS.Place={...f.w.EAS.Place,getCommandForm:()=>form,readCommandTarget:()=>({}),readTargetReadiness:c=>({targetReady:st.target,expectedTarget:c,resolvedCoordinate:st.target?c:null,reason:!st.target?'TARGET_RESOLUTION_UNAVAILABLE':null})};
  f.w.EAS.World.getServerDateTime=()=>({available:true});f.w.Timing={getCurrentServerTime:()=>f.clockNow()};
  f.w.setTimeout=fn=>setTimeout(fn,0);f.w.game_data.units=['spear','axe','light'];
@@ -205,7 +205,7 @@ test('normal SYNC_2M -> FINAL_CHECK -> READY_TO_SEND with evidence; no auth, att
  const u=f.read();assert.equal(u.state,'READY_TO_SEND',JSON.stringify(u.blockers));assert.equal(u.nextCheckpoint,null);
  const e=u.finalCheckEvidence;assert.equal(e.fromPreparedForm,true);assert.equal(JSON.stringify(e.composition),JSON.stringify({axe:5930,light:3117}));assert.equal(e.commandType,'attack');
  assert.equal(e.target.coord,'507|471');assert.equal(e.source.id,'10');assert.equal(e.clockSource,'Timing.getCurrentServerTime+World.getServerDateTime');assert.ok(e.sampleCount>=3);assert.ok(e.offsetDriftMs<=500);
- noSendOrAuth(f);const snap=JSON.stringify(f.read());await f.tick(SEND-30000);await f.tick(SEND-10000);assert.equal(JSON.stringify(f.read()),snap);
+ noSendOrAuth(f);const snap=JSON.stringify(f.read());await f.tick(SEND-55000);await f.tick(SEND-50001);assert.equal(JSON.stringify(f.read()),snap);
  assert.equal(f.api.authorizeFinalSubmit(f.eid,f.uid,f.w),null,'READY_TO_SEND from prepared form is not an authorization');assert.equal(f.read().finalAuthorization,undefined);
  assert.equal((await f.api.armFinalExecution(f.eid,f.uid,f.w,{dryRun:true})).armed,false);noSendOrAuth(f);
 });
@@ -268,7 +268,7 @@ test('popup blocked and expired navigation report NAVIGATION_FAILED, never succe
 test('wrong account/session is NAVIGATION_BLOCKED; prepared, ready and cancelled units never open another tab',async()=>{
  const w=tickFixture();w.w.game_data.player.id=8;await w.open();assert.equal(attempts(w).at(-1).outcome,'NAVIGATION_BLOCKED');assert.equal(w.tabs.length,0);
  const p=await syncedFixture();const before=JSON.stringify(p.read());
- for(const t of [SEND-100000,SEND-50000,SEND-30000])await p.tick(t);
+ for(const t of [SEND-100000,SEND-50000,SEND-55000])await p.tick(t);
  assert.equal(p.read().state,'READY_TO_SEND');
  const r=await p.api.openRallyPoint(p.read(),p.w,{automatic:true});assert.equal(r.valid,false);assert.equal(r.alreadyPrepared,true);
  assert.equal(p.read().state,'READY_TO_SEND');assert.notEqual(before,'');noNav(p);
@@ -284,4 +284,53 @@ test('clock frame: server wall clock as UTC; -3h offset with small skew is consi
  const drift=api.evaluateClockSamples(mk(-10796438,900).map(s=>({...s,measuredAt:s.serverNowMs})),mk(-10796438,900)[2].serverNowMs);assert.equal(drift.blocker,'CLOCK_SAMPLE_OUTLIER');
  const wrongLocal=api.evaluateClockSamples(mk(2*86400000).map(s=>({...s,measuredAt:s.serverNowMs})),mk(2*86400000)[0].serverNowMs);assert.equal(wrongLocal.blocker,'CLOCK_OFFSET_IMPLAUSIBLE');
  assert.equal(api.evaluateClockSamples([],1).blocker,'CLOCK_SAMPLES_INSUFFICIENT');
+});
+function confirmFixture(opts){return syncedFixture(opts).then(async f=>{
+ await f.tick(SEND-60000);assert.equal(f.read().state,'READY_TO_SEND',JSON.stringify(f.read().blockers));
+ const store={};f.w.sessionStorage={getItem:k=>store[k]??null,setItem:(k,v)=>{store[k]=v;}};
+ const c={src:[{value:'10'}],finalClicks:0,rows:[{textContent:'Dura\u00e7\u00e3o: 0:00:10'}],inputs:[{name:'axe',value:'5930'},{name:'light',value:'3117'}],text:'Destino 507|471',label:opts?.support?'Enviar apoio':'Enviar ataque',buttons:1};
+ let theForm=null;const buttons=()=>Array.from({length:c.buttons},()=>({id:'troop_confirm_submit',textContent:c.label,get form(){return theForm;},click(){c.finalClicks++;}}));
+ const form=()=>theForm={innerText:c.text,querySelectorAll:s=>s.includes('button')?buttons():s==='input[name]'?c.inputs:s==='input[name="source_village"]'?c.src:[]};
+ c.open=async(at=SEND-50000)=>{await f.tick(at);};
+ c.go=()=>{f.w.location.href=`https://br143.tribalwars.com.br/game.php?village=10&screen=place&try=confirm`;f.w.document.querySelector=s=>s.includes('command-confirm-form')?form():null;f.w.document.querySelectorAll=s=>s==='tr'?c.rows:[];};
+ return Object.assign(f,{c});});}
+const noFinal=f=>{noNav(f);assert.equal(f.c.finalClicks,0);assert.equal(f.submits(),0);assert.ok(f.clicks()<=1);assert.equal(f.api.authorizeFinalSubmit(f.eid,f.uid,f.w),null);};
+for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'}: READY_TO_SEND -> native control click -> confirmation page -> CONFIRMATION_READY; no final click`,async()=>{
+ const f=await confirmFixture({support});await f.c.open(SEND-55000);assert.equal(f.clicks(),0,'not before T-50s');
+ await f.c.open();assert.equal(f.clicks(),1);const i=f.read().confirmationIntent;assert.equal(i.status,'NAVIGATING');assert.equal(f.read().state,'READY_TO_SEND');
+ await f.c.open(SEND-49000);await f.c.open(SEND-48000);assert.equal(f.clicks(),1,'never re-click');
+ f.c.go();await f.tick(SEND-45000);const u=f.read();assert.equal(u.state,'CONFIRMATION_READY',JSON.stringify(u.blockers));
+ const e=u.confirmationEvidence;assert.equal(e.nativeDurationMs,10000);assert.equal(e.commandType,support?'support':'attack');assert.equal(e.submitControlCount,1);assert.equal(e.predictedArrivalMs,SEND+10000);assert.equal(e.target.coord,'507|471');
+ await f.tick(SEND-30000);assert.equal(f.read().state,'CONFIRMATION_READY');noFinal(f);
+});
+test('reload on the confirmation page recovers from storage; reload on Rally Point after intent never re-clicks',async()=>{
+ const f=await confirmFixture();await f.c.open();assert.equal(f.clicks(),1);
+ delete f.w.EAS.TacticalOperationSchedulerAdapter;f.listeners.clear();vm.runInContext(f.code,f.ctx);f.w.EAS.TacticalOperationSchedulerAdapter.initializeSchedulerHooks(f.w);
+ await f.tick(SEND-45000);assert.equal(f.clicks(),1);assert.equal(f.read().state,'READY_TO_SEND');
+ f.c.go();await f.tick(SEND-44000);assert.equal(f.read().state,'CONFIRMATION_READY');noFinal(f);
+});
+for(const [reason,mut] of [
+ ['SOURCE_IDENTITY_UNVERIFIED',c=>c.src=[]],['SOURCE_IDENTITY_UNVERIFIED',c=>c.src=[{value:'10'},{value:'10'}]],['SOURCE_IDENTITY_MISMATCH',c=>c.src=[{value:'11'}]],['SOURCE_IDENTITY_MISMATCH',c=>c.src=[{value:'x'}]],['TARGET_IDENTITY_MISMATCH',c=>c.text='Origem 516|458 Destino 500|500'],
+ ['APPROVED_COMPOSITION_MISMATCH',c=>c.inputs[0].value='5929'],['CONFIRMATION_DURATION_MISMATCH',c=>c.rows[0].textContent='Dura\u00e7\u00e3o: 0:00:20'],
+ ['CONFIRMATION_DURATION_UNAVAILABLE',c=>c.rows=[]],['COMMAND_TYPE_MISMATCH',c=>c.label='Enviar apoio'],
+ ['CONFIRMATION_SUBMIT_CONTROL_AMBIGUOUS',c=>c.buttons=0],['CONFIRMATION_SUBMIT_CONTROL_AMBIGUOUS',c=>c.buttons=2]])
+ test(`confirmation divergence blocks fail-closed: ${reason}`,async()=>{
+  const f=await confirmFixture();await f.c.open();mut(f.c);f.c.go();await f.tick(SEND-45000);
+  assert.equal(f.read().state,'BLOCKED');assert.ok(f.read().blockers.includes(reason),String(f.read().blockers));noFinal(f);
+ });
+for(const [reason,mut] of [['WORLD_IDENTITY_MISMATCH',w=>w.game_data.world='br144'],['PLAYER_IDENTITY_MISMATCH',w=>w.game_data.player={id:8}],['SOURCE_IDENTITY_MISMATCH',w=>w.game_data.village.id=11]])
+ test(`confirmation page wrong account/world/village blocks: ${reason}`,async()=>{
+  const f=await confirmFixture();await f.c.open();f.c.go();mut(f.w);const r=f.api.captureConfirmation(f.eid,f.uid,f.w);
+  assert.equal(r.valid,false);assert.equal(f.read().state,'BLOCKED');assert.ok(f.read().blockers.includes(reason),String(f.read().blockers));noFinal(f);
+ });
+test('duplicate tab, cancelled, legacy READY_TO_SEND, timeout, missed window, no clock: nothing is clicked or authorized',async()=>{
+ const dup=await confirmFixture();await dup.c.open();dup.c.go();dup.w.name='other-tab';assert.equal(dup.api.captureConfirmation(dup.eid,dup.uid,dup.w).valid,false);
+ assert.equal(dup.read().state,'BLOCKED');assert.ok(dup.read().blockers.includes('CONFIRMATION_CONTEXT_INVALID'));noFinal(dup);
+ const cancelled=await confirmFixture();cancelled.api.cancelStoredUnit(cancelled.eid,cancelled.uid);await cancelled.c.open();assert.equal(cancelled.read().state,'CANCELLED');assert.equal(cancelled.clicks(),0);noFinal(cancelled);
+ const legacy=await confirmFixture();const root=JSON.parse(legacy.values.get(legacy.api.STORAGE_KEY));delete root.executions['br143:7'][0].units[0].finalCheckEvidence.fromPreparedForm;legacy.values.set(legacy.api.STORAGE_KEY,JSON.stringify(root));
+ await legacy.c.open();assert.equal(legacy.clicks(),0);assert.equal(legacy.read().state,'READY_TO_SEND');assert.equal(legacy.read().confirmationIntent,undefined);assert.equal(legacy.api.authorizeFinalSubmit(legacy.eid,legacy.uid,legacy.w),null);
+ const slow=await confirmFixture();await slow.c.open();slow.c.go();await slow.tick(SEND-25000);assert.equal(slow.read().state,'BLOCKED');assert.ok(slow.read().blockers.includes('CONFIRMATION_NAVIGATION_TIMEOUT'));noFinal(slow);
+ const late=await confirmFixture();await late.c.open(SEND-9000);assert.equal(late.read().state,'BLOCKED');assert.ok(late.read().blockers.includes('CONFIRMATION_WINDOW_MISSED'));assert.equal(late.clicks(),0);noFinal(late);
+ const away=await confirmFixture();away.w.location.href='https://br143.tribalwars.com.br/game.php?screen=info_village&village=999';await away.c.open();assert.equal(away.clicks(),0);noFinal(away);
+ const noClock=await confirmFixture();noClock.w.EAS.MassSnipeExecution.getCurrentServerTimeMs=undefined;await noClock.tick(SEND-50000).catch(()=>{});assert.equal(noClock.clicks(),0);assert.equal(noClock.read().confirmationIntent,undefined);noFinal(noClock);
 });

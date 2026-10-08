@@ -9,7 +9,7 @@ function harness(type = 'attack', beforeIds = []) {
     const storage = { getItem: k => values.get(k) ?? null, setItem: (k,v) => values.set(k,v) };
     const button = { id: 'troop_confirm_submit', textContent: type === 'attack' ? 'Enviar ataque' : 'Enviar apoio', isConnected: true,
         getClientRects: () => [1], addEventListener() {}, removeEventListener() {}, click: () => { clicks++; } };
-    const form = { addEventListener() {}, removeEventListener() {}, textContent: 'Origem (500|500) Destino (484|527)', querySelectorAll: selector => selector.startsWith('button') ? [button] : selector === '[data-unit]' ? [{ dataset: {unit:'axe',count:'1'} }] : [] };
+    const form = { addEventListener() {}, removeEventListener() {}, textContent: 'Destino (484|527)', querySelectorAll: selector => selector.startsWith('button') ? [button] : selector === 'input[name="source_village"]' ? [{ value: '10' }] : selector === '[data-unit]' ? [{ dataset: {unit:'axe',count:'1'} }] : [] };
     button.form = form;
     const document = { readyState: 'complete', querySelector: selector => selector.startsWith('#command-confirm-form') ? form : selector.startsWith('#bot_check') && bot ? {} : null,
         querySelectorAll: selector => selector === '#troop_confirm_submit' ? [button] : [] };
