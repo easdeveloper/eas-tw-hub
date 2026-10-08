@@ -35,7 +35,7 @@
     const unitText = units => Object.entries(units).filter(([, count]) => Number(count) > 0).map(([unit, count]) => `${count} ${UNIT_LABELS[unit] || unit}`).join(', ') || '-';
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
-    let state = { draft: null, analysis: null, status: '', error: null, active: false, customOpenIds: new Set() };
+    let state = { draft: null, analysis: null, status: '', error: null, active: false, customOpenIds: new Set(), pendingDraft: null, currentDraftId: null, currentDraftName: '' };
     const clearStatus = () => { state.status = ''; state.error = null; };
     const setStatus = (message, type = 'info') => { state.status = message; state.error = type === 'error'; };
     const emptyValidation = blockers => ({ valid: false, blockers: blockers || [], balances: [], missions: [], executionArtifact: null });
@@ -106,6 +106,27 @@
             state.approvedSnapshot = snapshot;
             view.querySelector('[data-final-status]').textContent = snapshot ? 'Opera\u00e7\u00e3o aprovada em mem\u00f3ria. Nenhum comando criado.' : 'Revis\u00e3o desatualizada ou bloqueada. Volte e gere uma nova revis\u00e3o.';
             view.querySelector('[data-final-approve]').disabled = true;
+            if (snapshot) {
+                const queueButton = document.createElement('button');
+                queueButton.type = 'button';
+                queueButton.dataset.finalQueue = '';
+                queueButton.textContent = 'Adicionar à preparação';
+                queueButton.onclick = async () => {
+                    try {
+                        if (!EAS.TacticalOperationSchedulerAdapter) await window.EASLoader.loadScript('services/tactical-operation-scheduler-adapter.js');
+                        const result = EAS.TacticalOperationSchedulerAdapter.enqueue(snapshot);
+                        EAS.TacticalOperationSchedulerAdapter.initializeSchedulerHooks(window);
+                        queueButton.disabled = true;
+                        queueButton.textContent = result.created || result.duplicate ? 'Preparação adicionada' : 'Preparação não adicionada';
+                        view.querySelector('[data-final-status]').textContent = result.created || result.duplicate
+                            ? 'Snapshot aprovado adicionado ao Tactical Scheduler. Autorize a preparação por execução; nenhum envio foi habilitado.'
+                            : `Falha ao adicionar preparação: ${result.blockers.join(', ')}`;
+                    } catch (error) {
+                        view.querySelector('[data-final-status]').textContent = `Falha ao adicionar preparação: ${error?.message || 'erro inesperado'}`;
+                    }
+                };
+                view.querySelector('[data-final-approve]').after(queueButton);
+            }
         };
     };
     const render = (root, draft, validation, anchorId = null) => {
@@ -122,6 +143,8 @@
         root.querySelector('[data-op-status]').className = `eas-status eas-status--${state.error ? 'error' : 'info'}`;
         root.querySelector('[data-op-target]').textContent = `${draft.operation.target.name || 'Destino'} · ${draft.operation.target.coord || 'Coordenada ausente'} · revisão ${draft.operation.revision}`;
         root.querySelector('[data-op-summary]').textContent = `${validation.analyzedCount} analisadas · ${validation.selectedCount} planejadas · ${validation.blockedCount} bloqueadas${draft.reviewState === 'approved' ? ' · revisão aprovada' : ''}`;
+        const draftSave = root.querySelector('[data-draft-save]');
+        if (draftSave) draftSave.disabled = !state.draft;
         const table = root.querySelector('[data-op-table]');
         table.innerHTML = visible.length ? visible.map(slot => {
             const train = EAS.TacticalOperationPlanner.nobleTrainSize(slot.role);
@@ -228,11 +251,13 @@
     };
 
     const open = async ({ target: targetContext = null } = {}) => {
-        const win = EAS.UI.createWindow({ id: 'eas-tactical-operation-planner', title: '🗺️ Operação Tática — Revisão', width: 1120, className: 'tactical-operation-planner-window' });
+        if (!EAS.TacticalOperationDrafts) await window.EASLoader.loadScript('services/tactical-operation-drafts.js');
+        const win = EAS.UI.createWindow({ id: 'eas-tactical-operation-planner', title: '🗺️ Operação Tática — Revisão', width: 1120, className: 'tactical-operation-planner-window', viewportRoot: true });
         win.body.innerHTML = '<div class="tactical-operation-planner"></div>';
         const root = win.body.querySelector('.tactical-operation-planner');
         root.innerHTML = `<div class="tactical-operation-header"><div><h2>Operação Tática</h2><p data-op-target>Analise uma alvo antes de revisar.</p></div><button type="button" data-op-close>Fechar</button></div>
             <div class="tactical-operation-controls"><label>Alvo<input data-op-target-input placeholder="484|527" value=""></label><label>Nome do jogador<input data-op-player-input placeholder="chargboy"></label><label>Data do servidor<input data-op-date placeholder="DD/MM/AAAA"></label><label>Hora do servidor<input data-op-time placeholder="HH:MM:SS.mmm"></label><button type="button" data-op-analyze>Analisar alvo</button></div>
+            <div class="tactical-operation-drafts" data-op-drafts><label>Nome do rascunho<input data-draft-name maxlength="80" placeholder="Operação" value=""></label><button type="button" data-draft-save disabled>Salvar rascunho</button><label>Rascunhos salvos<select data-draft-select><option value="">Selecione</option></select></label><button type="button" data-draft-load disabled>Carregar rascunho</button><button type="button" data-draft-delete disabled>Excluir rascunho</button><span data-draft-status></span></div>
             <div class="tactical-operation-filters"><button type="button" data-filter="ALL" class="eas-button--active">Todos</button><button type="button" data-filter="OFFENSIVE">Ofensivas</button><button type="button" data-filter="DEFENSIVE">Defensivas</button><button type="button" data-filter="HAS_NOBLE">Com nobre</button><button type="button" data-filter="SELECTED">Selecionadas</button></div>
             <div class="tactical-operation-summary"><strong data-op-summary>Sem análise</strong><span data-op-status class="eas-status eas-status--info">A execução não é iniciada.</span></div>
             <div class="tactical-operation-review"><button type="button" data-op-review disabled>Aprovar revisão</button></div>
@@ -243,6 +268,63 @@
             root.querySelector('[data-op-target-input]').value = targetContext.coord;
             root.querySelector('[data-op-player-input]').value = targetContext.playerName || '';
         }
+        const draftSelect = root.querySelector('[data-draft-select]'), draftStatus = root.querySelector('[data-draft-status]');
+        const refreshDraftList = selectedId => {
+            const records = EAS.TacticalOperationDrafts.list();
+            draftSelect.replaceChildren(new Option('Selecione', ''));
+            for (const record of records) draftSelect.add(new Option(`${record.name} · ${formatCalendarTimestamp(record.savedAt)}`, record.draftId));
+            draftSelect.value = records.some(record => record.draftId === selectedId) ? selectedId : '';
+            root.querySelector('[data-draft-load]').disabled = !draftSelect.value;
+            root.querySelector('[data-draft-delete]').disabled = !draftSelect.value;
+            root.querySelector('[data-draft-save]').disabled = !state.draft;
+        };
+        const setArrivalInputs = timestamp => {
+            if (!Number.isSafeInteger(timestamp)) return;
+            const date = new Date(timestamp), pad = value => String(value).padStart(2, '0');
+            root.querySelector('[data-op-date]').value = `${pad(date.getUTCDate())}/${pad(date.getUTCMonth() + 1)}/${date.getUTCFullYear()}`;
+            root.querySelector('[data-op-time]').value = `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${String(date.getUTCMilliseconds()).padStart(3, '0')}`;
+        };
+        root.querySelector('[data-draft-save]').onclick = () => {
+            if (!state.draft) return;
+            const name = root.querySelector('[data-draft-name]').value.trim() || state.draft.operation.target.name || state.draft.operation.target.coord;
+            const result = EAS.TacticalOperationDrafts.save(state.draft, { name, draftId: state.currentDraftId });
+            if (!result.saved) { draftStatus.textContent = `Rascunho não salvo: ${result.reason}`; return; }
+            state.currentDraftId = result.draft.draftId; state.currentDraftName = result.draft.name;
+            root.querySelector('[data-draft-name]').value = state.currentDraftName;
+            draftStatus.textContent = 'Rascunho salvo. Nenhuma evidência ou aprovação foi persistida.';
+            refreshDraftList(state.currentDraftId);
+        };
+        root.querySelector('[data-draft-load]').onclick = () => {
+            const record = EAS.TacticalOperationDrafts.list().find(item => item.draftId === draftSelect.value);
+            if (!record) return;
+            state.pendingDraft = record; state.draft = null; state.analysis = null; state.validation = null;
+            state.finalReview = null; state.approvedSnapshot = null;
+            state.currentDraftId = record.draftId; state.currentDraftName = record.name;
+            root.querySelector('[data-draft-name]').value = record.name;
+            root.querySelector('[data-op-target-input]').value = record.target.coord || '';
+            root.querySelector('[data-op-player-input]').value = record.target.playerName || '';
+            setArrivalInputs(record.centralArrivalMs);
+            root.querySelector('[data-op-summary]').textContent = `${record.slots.length} aldeias selecionadas · análise necessária`;
+            root.querySelector('[data-op-table]').innerHTML = '<tr><td colspan="7">Rascunho carregado. Análise e evidências atuais são obrigatórias antes da revisão.</td></tr>';
+            root.querySelector('[data-op-balances]').replaceChildren();
+            root.querySelector('[data-op-review]').disabled = true;
+            setStatus('Rascunho carregado sem evidências. Confira data/hora e analise novamente para validar as tropas atuais.');
+            draftStatus.textContent = 'Configuração carregada; nenhuma revisão ou autorização reutilizada.';
+            root.querySelector('[data-draft-save]').disabled = true;
+        };
+        root.querySelector('[data-draft-delete]').onclick = () => {
+            const selectedId = draftSelect.value;
+            if (!selectedId || !EAS.TacticalOperationDrafts.remove(selectedId)) return;
+            if (state.currentDraftId === selectedId) { state.currentDraftId = null; state.currentDraftName = ''; }
+            if (state.pendingDraft?.draftId === selectedId) state.pendingDraft = null;
+            draftStatus.textContent = 'Rascunho excluído.';
+            refreshDraftList();
+        };
+        draftSelect.onchange = () => {
+            root.querySelector('[data-draft-load]').disabled = !draftSelect.value;
+            root.querySelector('[data-draft-delete]').disabled = !draftSelect.value;
+        };
+        refreshDraftList(state.currentDraftId);
         root.querySelector('[data-op-close]').addEventListener('click', () => win.close());
         root.querySelector('[data-op-analyze]').addEventListener('click', async () => {
             const target = root.querySelector('[data-op-target-input]').value.trim();
@@ -255,13 +337,29 @@
             try {
                 setStatus('Analisando alvo e evidências read-only…');
                 render(root, createOperation({ candidates: [] }), emptyValidation([]));
-                const analysis = await EAS.TacticalOperationData.analyzeTarget({ target: { coord: target, playerName, ...(target === targetContext?.coord ? { villageId: targetContext.villageId, ...(playerName === targetContext.playerName && targetContext.playerId != null ? { playerId: targetContext.playerId } : {}) } : {}) } });
+                const savedTarget = state.pendingDraft?.target;
+                const matchingContext = target === targetContext?.coord ? targetContext
+                    : target === savedTarget?.coord ? savedTarget : null;
+                const analysis = await EAS.TacticalOperationData.analyzeTarget({ target: { coord: target, playerName,
+                    ...(matchingContext ? { villageId: matchingContext.villageId, ...(matchingContext.playerId != null ? { playerId: matchingContext.playerId } : {}) } : {}) } });
                 const serverNow = EAS.World.getServerDateTime?.();
                 const viewModel = adaptAnalysisResult(analysis, centralArrivalMs, serverNow?.available ? calendarMilliseconds(serverNow) : null);
                 state.analysis = viewModel; state.draft = buildDraft(viewModel);
+                const loadedDraft = state.pendingDraft;
+                if (loadedDraft) {
+                    const restored = EAS.TacticalOperationController.restoreEditableConfiguration(state.draft, loadedDraft);
+                    state.draft = restored.draft;
+                    state.currentDraftId = loadedDraft.draftId;
+                    state.currentDraftName = restored.name || loadedDraft.name;
+                    state.pendingDraft = null;
+                    root.querySelector('[data-draft-name]').value = state.currentDraftName;
+                    if (!restored.restored) setStatus(`Rascunho não aplicado: ${restored.reason}. Configure novamente a partir da análise atual.`, 'error');
+                    else setStatus('Rascunho reconstruído sobre a análise atual. Confirme composições e gere uma nova Final Review.');
+                }
                 state.validation = EAS.TacticalOperationController.validateDraft(state.draft);
-                setStatus(!Number.isSafeInteger(viewModel.serverNowMs) ? 'Relógio do servidor indisponível. Revisão bloqueada.' : viewModel.partial ? 'Análise parcial concluída. Evidências pendentes foram preservadas.' : 'Análise concluída. Revise os slots sem executar operações.', !Number.isSafeInteger(viewModel.serverNowMs) ? 'error' : viewModel.partial ? 'info' : 'success');
+                if (!loadedDraft) setStatus(!Number.isSafeInteger(viewModel.serverNowMs) ? 'Relógio do servidor indisponível. Revisão bloqueada.' : viewModel.partial ? 'Análise parcial concluída. Evidências pendentes foram preservadas.' : 'Análise concluída. Revise os slots sem executar operações.', !Number.isSafeInteger(viewModel.serverNowMs) ? 'error' : viewModel.partial ? 'info' : 'success');
                 render(root, state.draft, state.validation);
+                refreshDraftList(state.currentDraftId);
             } catch (error) {
                 state.draft = null;
                 state.validation = null;

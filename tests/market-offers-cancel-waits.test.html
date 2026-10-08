@@ -15,9 +15,9 @@
  equal(timers.size,1,'stabilization timeout owned');controller.abort();equal(await promise,'PREPARATION_CANCELLED','stabilization wait aborted');equal(timers.size,0,'stabilization timeout removed');equal(document.querySelector('[name=multi]').value,'1','no field change after cancellation');
  const context={version:3,executionId:'legacy-stop',state:'paused',paused:true,pauseReason:'USER_STOP',createdAt:100,pausedAt:200,batchAuthorization:{authorizedAt:100},queue:[{status:'verification-required',attempt:{attemptId:'keep',beforeSnapshot:{matchingQuantity:4}}}]};
  localStorage.setItem(api.STORAGE_KEY,JSON.stringify(context));const migrated=api.read();equal([migrated.state,migrated.paused,migrated.finishedAt,migrated.batchAuthorization.revokedAt],['cancelled',false,200,200],'old USER_STOP normalized once');
- equal(api.batchDurationMs(migrated,999999),100,'legacy stop duration frozen');equal(api.getArchivedBatch('legacy-stop').queue[0].attempt,context.queue[0].attempt,'legacy uncertain evidence archived');
+ equal(api.batchDurationMs(migrated,999999),100,'legacy stop duration frozen');equal(api.getArchivedBatch('legacy-stop').items[0].attemptId,context.queue[0].attempt.attemptId,'legacy uncertain evidence archived');
  const stale={...migrated};api.save(migrated);equal(api.save(stale),false,'old async revision cannot overwrite terminal record');
- api.remove('test');equal(api.getArchivedBatch('legacy-stop').queue[0].attempt,context.queue[0].attempt,'clearing cannot erase archived uncertainty');
+ api.remove('test');equal(api.getArchivedBatch('legacy-stop').items[0].attemptId,context.queue[0].attempt.attemptId,'clearing cannot erase archived uncertainty');
  document.querySelector('#result').textContent=failures.length?'FAIL\n'+failures.join('\n'):'PASS '+assertions+' assertions';document.title=failures.length?'FAIL':'PASS';
 })().catch(error=>{document.querySelector('#result').textContent='FAIL '+error.stack;document.title='FAIL';});
 </script>

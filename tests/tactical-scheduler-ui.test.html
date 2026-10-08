@@ -1,0 +1,124 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+let now = Date.now(), clockAnchor = now, clockOffset = 0, missionCreates = 0, legacyInitializes = 0, openedUrl = null, submitClicks = 0;
+const setServerNow = value => { now = value; clockAnchor = Date.now(); clockOffset = now - clockAnchor; };
+window.game_data = { world: 'br-test', player: { id: 7 }, village: { id: 10, x: 500, y: 500 } };
+window.Timing = { getCurrentServerTime: () => Date.now() + clockOffset };
+window.EAS = {
+  Modules: {},
+  World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }), getServerNowTimestamp: () => now + (Date.now() - clockAnchor), getServerDateTime: () => ({ available: true }) },
+  Utils: { formatDateTime: value => String(value), parseCoordinate: value => { const match = /^(\d{1,3})\|(\d{1,3})$/.exec(String(value || '')); return match ? { coordinate: `${Number(match[1])}|${Number(match[2])}` } : null; }, escapeHtml: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) },
+  MassSnipeExecution: { getCurrentServerTimeMs: () => now + (Date.now() - clockAnchor) },
+  Place: {
+    buildPlaceUrl: id => { const url = new URL(location.href); url.search = ''; url.searchParams.set('screen', 'place'); url.searchParams.set('village', id); return url; },
+    getCommandForm: doc => doc.querySelector('#command-data-form, #command-confirm-form'),
+    getTargetInput: doc => doc.querySelector('input[name="input"]'), inspectTargetInputs: doc => { const input = doc.querySelector('input[name="input"]'); return { input, blocker: input ? null : 'TARGET_INPUT_NOT_FOUND', candidates: [] }; },
+    fillCommandTarget: (coord, targetWindow) => { const field = targetWindow.document.querySelector('input[name="input"]'); if (!field) return false; field.value = coord; return true; },
+    readCommandTarget: targetWindow => ({ actualTarget: targetWindow.document.querySelector('input[name="input"]')?.value || null })
+  },
+  MissionScheduler: {
+    initialize: () => { legacyInitializes += 1; }, load: () => ({ missions: [], settings: {}, logs: [] }),
+    getServerNow: () => new Date(now), sortMissions: values => values, detectMissionConflicts: () => [],
+    getVisualStatus: () => 'waiting', formatRemaining: () => '-', createMission: () => { missionCreates += 1; throw new Error('Legacy Scheduler mission creation forbidden'); }
+  },
+  ScheduledMissionExecution: { openAndPrepare: () => { throw new Error('Legacy execution forbidden'); }, initialize: () => { throw new Error('Legacy execution forbidden'); } },
+  UI: {
+    createWindow: () => { const body = document.createElement('div'); document.body.append(body); return { body, close: () => body.remove() }; },
+    createButton: ({ text, onClick }) => { const button = document.createElement('button'); button.textContent = text; button.onclick = onClick; return button; },
+    openMainWindow: () => {}
+  }
+};
+window.EASLoader = { loadScript: async () => {} };
+Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name, callback) => Promise.resolve().then(callback) } }); // headless virtual time cannot grant real Web Locks deterministically
+window.open = url => { openedUrl = String(url); return { focus() {} }; };
+</script>
+<script src="../services/place.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script src="../modules/scheduled-missions.js"></script>
+<script>
+(async () => {
+  const failures = []; let assertions = 0;
+  const check = (value, message) => { assertions += 1; if (!value) failures.push(message); };
+  if (document.readyState === 'loading') await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+  localStorage.removeItem(EAS.TacticalOperationSchedulerAdapter.STORAGE_KEY);
+  const source = { id: '10', coord: '500|500', name: 'Source' }, target = { coord: '484|527' };
+  const approvedCommand = { slotId: 'attack-1', parentSlotId: 'attack-1', trainIndex: null, trainSize: null, commandType: 'attack', validationStatus: 'ready', blockers: [], source, target,
+    composition: { quantities: { axe: 10 } }, sendAtMs: now + 500000, desiredArrivalMs: now + 510000, travelTimeMs: 10000 };
+  const snapshot = { snapshotKind: 'tactical-approved-operation', version: 1, operationId: 'operation-1', revision: 1,
+    target: { name: 'FANTASMA', coord: target.coord }, centralArrivalMs: approvedCommand.desiredArrivalMs,
+    validation: { valid: true }, commands: [approvedCommand] };
+  const queued = EAS.TacticalOperationSchedulerAdapter.enqueue(snapshot, { createdAt: 12 });
+    const supportCommand = { ...approvedCommand, slotId: 'support-1', parentSlotId: 'support-1', commandType: 'support',
+      composition: { quantities: { spear: 20 } } };
+    const supportQueued = EAS.TacticalOperationSchedulerAdapter.enqueue({ ...snapshot, operationId: 'operation-support', commands: [supportCommand] }, { createdAt: 14 });
+  const nt4 = Array.from({ length: 4 }, (_, index) => {
+    const trainIndex = index + 1, desiredArrivalMs = approvedCommand.sendAtMs + 10000 + index * 100;
+    const travelTimeMs = 10000 + index * 100;
+    return { ...approvedCommand, slotId: `nt4:${trainIndex}`, parentSlotId: 'nt4', trainIndex, trainSize: 4,
+      desiredArrivalMs, travelTimeMs, sendAtMs: approvedCommand.sendAtMs,
+      composition: { quantities: { snob: 1, axe: 1500, light: 700, ...(trainIndex === 1 ? { ram: 300, catapult: 50, knight: 1 } : {}) } } };
+  });
+  const ntQueued = EAS.TacticalOperationSchedulerAdapter.enqueue({ ...snapshot, operationId: 'operation-nt4', commands: nt4 }, { createdAt: 13 });
+  const mixedQueued = EAS.TacticalOperationSchedulerAdapter.enqueue({ ...snapshot, operationId: 'operation-mixed', commands: [approvedCommand, supportCommand, ...nt4] }, { createdAt: 15 });
+  check(ntQueued.created && ntQueued.execution.units[0].kind === 'native-noble-train', 'NT4 remains one native Scheduler execution unit');
+  check(mixedQueued.created && mixedQueued.execution.units.length === 3, 'mixed approved operation retains three independent execution units');
+    check(supportQueued.created && supportQueued.execution.units[0].kind === 'single-command', 'SUPPORT remains a single-command Scheduler unit');
+  const win = await EAS.Modules.ScheduledMissions.open();
+  const tactical = win.body.querySelector('section');
+  check(win.body.textContent.includes('Preparação de operações aprovadas'), 'Scheduler exposes a separate Tactical preparation section');
+  check(win.body.textContent.includes('ATTACK · envio simples'), 'ordinary self-parented ATTACK is rendered as a simple command');
+    check(win.body.textContent.includes('SUPPORT · envio simples'), 'ordinary self-parented SUPPORT is rendered as a simple command');
+  check(!/NT\(0\)|NTnull\/null/.test(win.body.textContent), 'simple commands never render NT zero or null child labels');
+  check(win.body.textContent.includes('NT(4) · um envio nativo'), 'NT4 is labeled as one native submit group');
+  check(['NT1/4', 'NT2/4', 'NT3/4', 'NT4/4'].every(label => win.body.textContent.includes(label)), 'NT4 UI retains all four approved child labels');
+  check(win.body.textContent.includes('4 comando(s)'), 'native train UI shows four expected outgoing commands');
+  const operationGroup = win.body.querySelector('[data-tactical-operation-group="operation-mixed:1"]');
+  check(Boolean(operationGroup) && operationGroup.querySelectorAll('.scheduled-mission-card').length === 3, 'units from one operation share one collapsible parent');
+  check(operationGroup.querySelector('summary').textContent.includes('OPERAÇÃO — FANTASMA') && operationGroup.querySelector('summary').textContent.includes('1 aldeia · 6 comandos'), 'operation parent shows name, village count, and command count');
+  check(win.body.querySelectorAll('[data-tactical-operation-group]').length === 4, 'distinct approved operations remain separate parents');
+  check(win.body.textContent.includes('500|500 → 484|527'), 'execution unit shows approved source, target, and timing');
+  check(EAS.MissionScheduler.load().missions.length === 0, 'Tactical queue is not stored as a legacy Scheduler mission');
+  check(win.body.textContent.includes('Autorizar preparação'), 'preparation requires a separate explicit authorization');
+  win.body.querySelector('[data-tactical-authorize]').click();
+  check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].preparationAuthorization.authorizationKind === 'tactical-preflight-only', 'authorization is scoped to preflight only');
+  check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].preparationAuthorization.executionUnitId === queued.execution.units[0].executionUnitId, 'authorization is scoped to exactly one execution unit');
+  win.body.querySelector('[data-tactical-precheck]').click();
+  check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].state === 'PRECHECK_10M', 'T-10 session and source/target precheck advances lifecycle');
+  setServerNow(approvedCommand.sendAtMs - 200000);
+  win.body.querySelector('[data-tactical-open]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  check(openedUrl && openedUrl.includes('screen=place') && openedUrl.includes('village=10'), 'T-5 opens the approved source Rally Point');
+  check(openedUrl.includes('eas_tactical_execution_id=') && openedUrl.includes('eas_tactical_unit_id='), 'Rally Point tab is bound to its exact execution unit');
+  check(missionCreates === 0 && legacyInitializes === 1, 'preflight creates no Scheduler missions and starts no legacy execution');
+  EAS.FakesExecution = { readOutgoingCommands: () => ({ available: true, commands: [] }) };
+  const activeUnit = EAS.TacticalOperationSchedulerAdapter.list()[0].units[0];
+  history.replaceState({}, '', openedUrl);
+  window.name = activeUnit.rallyPreparation.tabName;
+  const rallyForm = document.createElement('form'); rallyForm.id = 'command-data-form';
+  rallyForm.innerHTML = '<div id="place_target"><input name="input"><div class="village-item"><span class="village-name">Village (484|527)</span></div></div><input name="axe" data-all-count="20"><button id="target_attack" type="button">Atacar</button>';
+  document.body.append(rallyForm); let firstStepClicks = 0; rallyForm.querySelector('#target_attack').onclick = () => { firstStepClicks += 1; };
+  check(EAS.TacticalOperationSchedulerAdapter.initializePreparationPage(window), 'approved execution unit binds to its Rally Point tab');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const prepPanel = document.getElementById('eas-tactical-preparation-panel');
+  check(rallyForm.querySelector('[name="axe"]').value === '10', 'Rally Point receives exact approved troop quantity automatically');
+  check(![...prepPanel.querySelectorAll('button')].some(button => button.textContent.includes('confirma')), 'preparation exposes no confirmation action');
+  check(firstStepClicks === 0 && submitClicks === 0, 'prepared form does not click any command/submit control');
+  const prepared = EAS.TacticalOperationSchedulerAdapter.list()[0].units[0];
+  check(prepared.state === 'PREPARED' && !prepared.attemptId && !prepared.finalAuthorization && !prepared.outgoingBaseline, 'preparation is persisted and stops before any sending infrastructure');
+  check(EAS.MissionScheduler.load().missions.length === 0 && missionCreates === 0, 'preparation creates no legacy mission');
+  check(win.body.querySelectorAll('details.tactical-operation-group').length === 4, 'exactly one header per operation, including after observer/rerender');
+  check([...win.body.querySelectorAll('details.tactical-operation-group')].every(group => group.querySelector('[data-tactical-unit]') && !group.querySelector('details.tactical-operation-group')), 'no empty or nested operation headers');
+  check(EAS.TacticalOperationSchedulerAdapter.list()[0].units.length === 1, 'single ATTACK is one stored unit, not two');
+  let cancellations = 0;
+  while (win.body.querySelector('[data-tactical-cancel]') && cancellations < 10) {
+    win.body.querySelector('[data-tactical-cancel]').click(); cancellations += 1;
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  check(cancellations === 6 && EAS.TacticalOperationSchedulerAdapter.listActive().length === 0, 'cancelling simple and NT units removes all active agenda items');
+  check(EAS.TacticalOperationSchedulerAdapter.list().flatMap(execution => execution.units).length === 6 &&
+    EAS.TacticalOperationSchedulerAdapter.list().flatMap(execution => execution.units).every(unit => unit.state === 'CANCELLED'), 'cancelled groups survive reload storage without independent NT children');
+  check(win.body.querySelectorAll('[data-tactical-operation-group]').length === 0, 'empty cancelled operation parents disappear after rerender');
+  document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
+  document.title = failures.length ? 'FAIL' : 'PASS';
+})().catch(error => { document.getElementById('result').textContent = `ERROR ${error?.stack || error}`; document.title = 'FAIL'; });
+</script>

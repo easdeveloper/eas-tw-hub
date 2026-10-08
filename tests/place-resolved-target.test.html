@@ -12,7 +12,7 @@
  setup(card.replace('511|443','604|379'));assert(!read().targetReady,'B: stale blocked');assert(read().candidateCoordinates[0]==='604|379','stale diagnostic');
  setup('');assert(!read().targetReady,'C: input alone blocked');
  await Promise.resolve();form.innerHTML=card;assert(read().targetReady,'D: late card ready');
- setup();form.querySelector('#place_target').insertAdjacentHTML('afterbegin','<div class="village-item"><span class="village-name">Old (604|379)</span></div>');assert(read().targetReady,'E: select matching card');
+ setup();form.querySelector('#place_target').insertAdjacentHTML('afterbegin','<div class="village-item"><span class="village-name">Old (604|379)</span></div>');assert(!read().targetReady && read().reason==='TARGET_RESOLUTION_AMBIGUOUS','E: multiple visible native cards block');
  setup(card.replace('511|443',' 511 | 443 '));assert(read().targetReady,'F: formatting normalized');
  setup('');outside.innerHTML='<div class="village-item"><span class="village-name">Other (511|443)</span></div>';assert(!read().targetReady,'outside canonical container blocked');
  setup();form.querySelector('.village-item').hidden=true;assert(!read().targetReady,'hidden card blocked');

@@ -1,0 +1,248 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<style>.hidden{display:none}</style>
+<div id="fixture"></div>
+<script>
+let clock = 0;
+window.game_data = { world: 'br143', player: { id: 7 }, village: { id: 2065, x: 516, y: 458 }, units: ['spear', 'sword', 'axe', 'light', 'ram', 'snob'] };
+window.EAS = {
+  Modules: {},
+  World: { getWorldName: () => 'br143', getPlayer: () => ({ id: 7 }), getServerNowTimestamp: () => clock },
+  Utils: { parseCoordinate: value => { const match = /^(\d{1,3})\|(\d{1,3})$/.exec(String(value || '')); return match ? { coordinate: `${Number(match[1])}|${Number(match[2])}` } : null; } },
+  MassSnipeExecution: { getCurrentServerTimeMs: () => clock },
+  Logger: { info: (module, event, data) => { window.__logs.push({ event, data }); } }
+};
+window.__logs = [];
+</script>
+<script>window.onerror=(m,s,l)=>{document.getElementById('result').textContent='ERR '+m+' '+s+':'+l;};</script>
+<script src="../services/place.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>
+window.addEventListener('load', async () => {
+  const failures = [];let assertions = 0;const check = (value, message) => { assertions++; if (!value) failures.push(message); };
+  const api = EAS.TacticalOperationSchedulerAdapter, SEND = 1791336429000, CHECK = SEND - 600000;
+  const counts = { attack: 0, support: 0, submit: 0 };
+  const unitRow = (name, available) => `<td><input id="unit_input_${name}" class="unitsInput" name="${name}" type="text" tabindex="1" value="" data-all-count="${available}"></td>`;
+  const targetField = `<input type="text" class="target-input-field target-input-autocomplete ui-autocomplete-input" name="input" placeholder="123|456" autocomplete="off" tabindex="9">`;
+  const render = ({ extraTarget = '', extraTroop = '', hiddenTarget = false } = {}) => {
+    counts.attack = counts.support = counts.submit = 0;
+    document.getElementById('fixture').innerHTML = `
+      <form id="command-data-form" action="/game.php?village=2065&amp;screen=place" method="post">
+        <input type="hidden" name="source_village" value="2065">
+        <table class="vis"><tr>${[['spear', 100], ['sword', 100], ['axe', 6000], ['light', 3200], ['ram', 10], ['snob', 4]].map(([n, a]) => unitRow(n, a)).join('')}${extraTroop}</tr></table>
+        <table id="place_target"><tr><td>Destino:</td><td>
+          <input type="radio" name="target_type" value="coord" checked> Coordenada
+          <input type="radio" name="target_type" value="name"> Nome
+          ${hiddenTarget ? `<span class="hidden">${targetField}</span>` : targetField}${extraTarget}
+        </td></tr></table>
+        <input type="submit" id="target_attack" name="attack" class="btn attack" value="Ataque">
+        <input type="submit" id="target_support" name="support" class="btn support" value="Apoio">
+      </form>`;
+    const form = document.getElementById('command-data-form');
+    form.addEventListener('submit', event => { counts.submit++; event.preventDefault(); });
+    for (const id of ['target_attack', 'target_support']) document.getElementById(id).addEventListener('click', event => { counts[id === 'target_attack' ? 'attack' : 'support']++; event.preventDefault(); });
+  };
+  const prepare = () => {
+    localStorage.removeItem(api.STORAGE_KEY);
+    history.replaceState(null, '', `${location.pathname}?village=2065&screen=place`);
+    const cmd = { slotId: '2065-26', parentSlotId: '2065-26', source: { id: '2065', coord: '516|458' }, target: { coord: '507|471' }, commandType: 'attack',
+      composition: { quantities: { axe: 5930, light: 3117 } }, sendAtMs: SEND, desiredArrivalMs: SEND + 10000, travelTimeMs: 10000, validationStatus: 'ready', blockers: [] };
+    const queued = api.enqueue({ snapshotKind: 'tactical-approved-operation', version: 1, operationId: 'tactical-operation-br143', revision: 1, target: cmd.target, validation: { valid: true }, commands: [cmd] }, { createdAt: 1 });
+    const eid = queued.execution.executionId, uid = queued.execution.units[0].executionUnitId;
+    api.authorizeStoredUnit(eid, uid, { authorizedAt: CHECK });
+    clock = CHECK;
+    const precheck = api.runStoredPrecheck(eid, uid, window);
+    clock = SEND - 300000 + 1000;
+    return { unit: api.list()[0].units[0], precheck };
+  };
+  const field = name => document.querySelector(`#command-data-form input[name="${name}"]`);
+  const noSend = () => counts.attack === 0 && counts.support === 0 && counts.submit === 0;
+
+  const installResolver = (shownCoord) => {
+    const input = document.querySelector('#command-data-form input[name="input"]');
+    input.addEventListener('change', () => {
+      input.value = ''; input.style.display = 'none';
+      const item = document.createElement('div'); item.className = 'village-item';
+      item.innerHTML = `<span class="village-name">Aldeia de bárbaros (${shownCoord})</span>`;
+      document.getElementById('place_target').append(item);
+    });
+  };
+  {
+    render();installResolver('507|471');const { unit, precheck } = prepare();
+    check(precheck.accepted && unit.state === 'PRECHECK_10M', 'fixture reaches PRECHECK_10M ' + precheck.reason);
+    check(typeof EAS.Place.getTargetInput === 'function' && typeof EAS.Place.inspectTargetInputs === 'function', 'Place exports target resolvers');
+    const result = await api.applyApprovedComposition(unit, window);
+    check(result.valid === true, `real BR143 DOM applies (${result.blocker || ''} ${result.detail || ''})`);
+    check(field('input').value === '' && EAS.Place.readTargetReadiness('507|471').targetReady, 'native widget consumed target and resolved exact card');
+    check(field('axe').value === '5930' && field('light').value === '3117', 'approved composition filled exactly');
+    check(['spear', 'sword', 'ram', 'snob'].every(name => field(name).value === ''), 'zero units remain empty');
+    check(JSON.stringify(result.composition) === JSON.stringify({ axe: 5930, light: 3117 }), 'returned composition exact');
+    check(noSend(), 'no Attack/Support click and no submit');
+    check(!api.list()[0].units[0].finalAuthorization && !api.list()[0].units[0].attemptId, 'no final authorization or attempt');
+    const diagnostic = window.__logs.find(entry => entry.event === 'TACTICAL_TARGET_INPUT_DIAGNOSTIC')?.data;
+    check(diagnostic?.candidates?.length === 1 && diagnostic.candidates[0].accepted && diagnostic.blocker === null, 'diagnostic lists accepted candidate');
+    check(!String(JSON.stringify(diagnostic)).includes('token'), 'diagnostic has no tokens');
+  }
+  for (const [label, options, expectedDetail] of [
+    ['two enabled target inputs', { extraTarget: '<input type="text" class="target-input-field" name="input" placeholder="123|456">' }, 'TARGET_INPUT_AMBIGUOUS'],
+    ['only hidden target input', { hiddenTarget: true }, 'TARGET_INPUT_NOT_FOUND']
+  ]) {
+    window.__logs.length = 0;render(options);const { unit } = prepare();
+    const result = await api.applyApprovedComposition(unit, window);
+    check(result.valid === false && result.blocker === 'TARGET_INPUT_UNAVAILABLE' && result.detail === expectedDetail, `${label} blocks`);
+    check(field('axe').value === '' && field('light').value === '', `${label}: no troops filled`);
+    check([...document.querySelectorAll('input[name="input"]')].every(input => input.value === ''), `${label}: no target filled`);
+    check(noSend(), `${label}: no send`);
+    check(window.__logs.some(entry => entry.event === 'TACTICAL_TARGET_INPUT_DIAGNOSTIC' && entry.data.candidates.some(candidate => !candidate.accepted || options.extraTarget)), `${label}: diagnostic`);
+  }
+  {
+    render({ extraTroop: unitRow('axe', 6000) });const { unit } = prepare();
+    const result = await api.applyApprovedComposition(unit, window);
+    check(result.valid === false && result.blocker === 'TROOP_INPUT_AMBIGUOUS:axe', 'duplicate troop input blocks');
+    check(field('input').value === '' && noSend(), 'duplicate troop: nothing filled or sent');
+  }
+  {
+    window.__logs.length = 0;render();installResolver('507|471');const { unit } = prepare();
+    const result = await api.applyApprovedComposition(unit, window);
+    check(result.valid === true, `widget clears input after resolving card: accepted (${result.blocker || ''})`);
+    check(field('axe').value === '5930' && field('light').value === '3117' && field('spear').value === '', 'resolved-card: composition filled');
+    check(noSend(), 'resolved-card: no send');
+    const again = await api.applyApprovedComposition(unit, window);
+    check(again.valid === true, 'already resolved card (hidden input) is idempotent');
+  }
+  {
+    window.__logs.length = 0;render();installResolver('500|500');const { unit } = prepare();
+    const result = await api.applyApprovedComposition(unit, window);
+    const diag = window.__logs.find(entry => entry.event === 'TACTICAL_TARGET_IDENTITY_DIAGNOSTIC')?.data;
+    check(result.valid === false && result.blocker === 'TARGET_IDENTITY_MISMATCH', 'wrong resolved card blocks');
+    check(diag?.expectedTarget === '507|471' && diag.resolvedCoordinate === '500|500' && diag.reason && diag.expectedTargetVillageId === null, 'mismatch diagnostic has safe identity data');
+    check(field('axe').value === '' && noSend(), 'wrong card: no troops, no send');
+  }
+  {
+    window.__logs.length = 0;render();
+    document.querySelector('#command-data-form input[name="input"]').addEventListener('change', event => { event.target.value = ''; });
+    const { unit } = prepare();
+    const result = await api.applyApprovedComposition(unit, window, { timeoutMs: 200, intervalMs: 20 });
+    check(result.valid === false && result.blocker === 'TARGET_IDENTITY_MISMATCH' && result.targetIdentityDiagnostic?.reason, 'cleared input without resolved card blocks with diagnostic');
+    check(field('axe').value === '' && noSend(), 'cleared input: no troops, no send');
+  }
+  const installAsyncResolver = (shownCoord, delayMs) => {
+    const input = document.querySelector('#command-data-form input[name="input"]');
+    input.addEventListener('change', () => { input.value = ''; input.style.display = 'none'; setTimeout(() => {
+      const item = document.createElement('div'); item.className = 'village-item';
+      item.innerHTML = `<span class="village-name">Aldeia de bárbaros (${shownCoord})</span>`;
+      document.getElementById('place_target').append(item);
+    }, delayMs); });
+  };
+  {
+    window.__logs.length = 0;render();installAsyncResolver('507|471', 300);const { unit } = prepare();
+    const result = await api.applyApprovedComposition(unit, window, { timeoutMs: 3000, intervalMs: 20 });
+    check(result.valid === true, `async native resolution is awaited (${result.blocker || ''})`);
+    check(field('axe').value === '5930' && field('light').value === '3117' && field('spear').value === '', 'async: composition filled after identity proof');
+    check(noSend(), 'async: no send');
+  }
+  {
+    render();installAsyncResolver('507|471', 60000);const { unit } = prepare();
+    const started = Date.now();
+    const result = await api.applyApprovedComposition(unit, window, { timeoutMs: 200, intervalMs: 20 });
+    check(result.valid === false && result.blocker === 'TARGET_IDENTITY_MISMATCH' && result.targetIdentityDiagnostic?.timedOut === true, 'resolution timeout fails closed');
+    check(Date.now() - started < 2000 && field('axe').value === '' && noSend(), 'timeout is bounded, no troops, no send');
+    const diag = result.targetIdentityDiagnostic;
+    check(diag.expectedTarget === '507|471' && diag.resolvedContainerFound === true && Array.isArray(diag.candidates) && diag.reason, 'timeout diagnostic is complete');
+  }
+  {
+    render();installAsyncResolver('500|500', 50);const { unit } = prepare();
+    const started = Date.now();
+    const result = await api.applyApprovedComposition(unit, window, { timeoutMs: 5000, intervalMs: 20 });
+    check(result.valid === false && result.targetIdentityDiagnostic?.timedOut === false && result.targetIdentityDiagnostic.reason === 'TARGET_RESOLUTION_MISMATCH', 'conflicting card fails immediately');
+    check(Date.now() - started < 2000 && field('axe').value === '' && noSend(), 'conflict: fast, no troops, no send');
+    check(result.targetIdentityDiagnostic.candidates[0].selector && result.targetIdentityDiagnostic.candidates[0].text.includes('500|500'), 'candidate text/selector exposed');
+  }
+  {
+    render();installAsyncResolver('507|471', 100);const { unit } = prepare();
+    const executionId = unit.executionId, unitId = unit.executionUnitId;
+    history.replaceState(null, '', `${location.pathname}?village=2065&screen=place&eas_tactical_execution_id=${encodeURIComponent(executionId)}&eas_tactical_unit_id=${encodeURIComponent(unitId)}`);
+    window.Timing = { getCurrentServerTime: () => clock };
+    check(api.initializePreparationPage(window), 'preparation panel mounts');
+    await new Promise(resolve => setTimeout(resolve, 700));
+    check(field('axe').value === '5930' && field('light').value === '3117' && field('input').value === '', 'T-5 panel auto-applies target and composition without a click');
+    check(noSend(), 'auto T-5: no Attack/Support click or submit');
+    const stored = api.list()[0].units[0];
+    check(stored.state === 'PREPARED' && !stored.finalAuthorization && !stored.attemptId, 'auto T-5: no final authorization/attempt, PREPARED persisted');
+    check(document.querySelector('#eas-tactical-preparation-panel')?.textContent.includes('Composição exata aplicada'), 'panel reports applied composition');
+  }
+  {
+    render(); const { unit } = prepare();
+    field('input').value = ''; field('input').hidden = true;
+    document.getElementById('place_target').insertAdjacentHTML('beforeend', '<div class="village-item"><span class="village-name">Village (507|471)</span></div>');
+    document.getElementById('command-data-form').insertAdjacentHTML('beforeend', '<input type="hidden" name="x" value="0"><input type="hidden" name="y" value="0">');
+    check(EAS.Place.readCommandTarget(window).actualTarget === '0|0', 'fixture retains stale hidden native payload');
+    const result = await api.applyApprovedComposition(unit, window);
+    check(result.valid && result.targetIdentityDiagnostic.evidenceSource === '#place_target .village-item .village-name', 'canonical Place card wins over consumed hidden payload (old Tactical veto regression)');
+    check(noSend(), 'stale payload proof never sends');
+  }
+  for (const variant of ['ambiguous-same', 'ambiguous-different', 'busy', 'hidden', 'wrong-input']) {
+    render(); const { unit } = prepare(); const container = document.getElementById('place_target');
+    field('input').value = variant === 'wrong-input' ? '500|500' : ''; field('input').hidden = true;
+    container.insertAdjacentHTML('beforeend', '<div class="village-item"><span class="village-name">Village (507|471)</span></div>');
+    if (variant.startsWith('ambiguous')) container.insertAdjacentHTML('beforeend', `<div class="village-item"><span class="village-name">Village (${variant === 'ambiguous-same' ? '507|471' : '500|500'})</span></div>`);
+    if (variant === 'busy') container.setAttribute('aria-busy', 'true');
+    if (variant === 'hidden') container.querySelector('.village-item').hidden = true;
+    if (variant === 'wrong-input') field('input').hidden = false;
+    check(!EAS.Place.readTargetReadiness('507|471').targetReady, variant + ': central Place fails closed');
+    if (variant !== 'wrong-input') {
+      const result = await api.applyApprovedComposition(unit, window, { timeoutMs: 50, intervalMs: 10 });
+      check(!result.valid && field('axe').value === '' && noSend(), variant + ': no troop write or send');
+    }
+  }
+  {
+    render(); const { unit } = prepare(); field('input').value = '507|471';
+    const result = await api.applyApprovedComposition(unit, window, { timeoutMs: 50, intervalMs: 10 });
+    check(!result.valid && field('axe').value === '' && noSend(), 'typed coordinate alone is never readiness');
+  }
+  for (const variant of ['late','wrong-source','missing-positive','missing-authorization','bot']) {
+    render(); installResolver('507|471'); const { unit } = prepare();
+    if (variant === 'late') clock = SEND - 120000;
+    if (variant === 'wrong-source') game_data.village.id = 9;
+    if (variant === 'missing-positive') field('light').remove();
+    if (variant === 'bot') document.body.insertAdjacentHTML('beforeend','<div id="bot_check"></div>');
+    const result = await api.applyApprovedComposition(variant === 'missing-authorization' ? {...unit, preparationAuthorization:null} : unit, window);
+    check(!result.valid && field('axe').value === '' && noSend(), variant + ': no partial troop write or send');
+    game_data.village.id = 2065; document.getElementById('bot_check')?.remove();
+  }
+  {
+    render(); installAsyncResolver('507|471',50); const { unit } = prepare();
+    const first = api.prepareRallyPoint(unit.executionId, unit.executionUnitId, window);
+    check(first === api.prepareRallyPoint(unit.executionId, unit.executionUnitId, window), 'concurrent preparation shares exact Promise');
+    api.cancelStoredUnit(unit.executionId,unit.executionUnitId);
+    const result = await first;
+    check(!result.valid && field('axe').value === '' && api.list()[0].units[0].state === 'CANCELLED', 'cancel before pending work prevents all writes');
+  }
+  {
+    render(); const { unit } = prepare();
+    history.replaceState(null, '', `${location.pathname}?village=2065&screen=place`);
+    check(!api.initializePreparationPage(window), 'reload without explicit IDs does nothing');
+    history.replaceState(null, '', `${location.pathname}?village=2065&screen=place&eas_tactical_execution_id=missing&eas_tactical_unit_id=missing`);
+    check(!api.initializePreparationPage(window), 'invalid execution IDs do nothing');
+    check(field('axe').value === '' && noSend(), 'missing/invalid context never prepares');
+  }
+  {
+    render(); installAsyncResolver('507|471',100); const { unit } = prepare();
+    const running = api.prepareRallyPoint(unit.executionId, unit.executionUnitId, window);
+    await new Promise(resolve => setTimeout(resolve,20));
+    api.cancelStoredUnit(unit.executionId,unit.executionUnitId);
+    const result = await running;
+    check(!result.valid && field('axe').value === '' && api.list()[0].units[0].state === 'CANCELLED', 'cancellation during native resolution cannot write troops or overwrite cancellation');
+  }
+  {
+    render(); const { unit } = prepare();
+    const root = api.createStore(localStorage).read();
+    root.executions['br143:7'][0].units[0].preparationAuthorization = null;
+    api.createStore(localStorage).write(root);
+    history.replaceState(null, '', `${location.pathname}?village=2065&screen=place&eas_tactical_execution_id=${encodeURIComponent(unit.executionId)}&eas_tactical_unit_id=${encodeURIComponent(unit.executionUnitId)}`);
+    check(!api.initializePreparationPage(window), 'reload with exact IDs but no authorization does nothing');
+    check(field('axe').value === '' && noSend(), 'unauthorized bootstrap writes no troops');
+  }
+  document.title = failures.length ? 'FAIL' : 'PASS';
+  document.getElementById('result').textContent = failures.length ? failures.join('\n') : `PASS - ${assertions} assertions`;
+});
+</script>

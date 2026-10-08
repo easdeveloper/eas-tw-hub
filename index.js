@@ -168,6 +168,24 @@
     const shouldInitializeMarketBalanceExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_balance_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send' && String(window.game_data?.village?.id || url.searchParams.get('village') || '') === String(item.sourceVillageId)); } catch { return false; } };
     const shouldInitializeMarketTargetExecution = () => { try { const execution = JSON.parse(localStorage.getItem('eas_tw_market_target_supply_execution') || 'null'); const item = execution?.queue?.find((entry, index) => index >= (execution.currentIndex || 0) && !['sent', 'skipped', 'cancelled'].includes(entry.status)); const url = new URL(location.href); return Boolean(item && !execution.endedAt && !execution.finishedAt && url.searchParams.get('screen') === 'market' && url.searchParams.get('mode') === 'send'); } catch { return false; } };
     const shouldInitializeMassFarmExecution = () => { try { const execution=JSON.parse(localStorage.getItem('eas-tw-hub:farm.mass.execution')||'null');const url=new URL(location.href);return Boolean(execution&&!['completed','cancelled'].includes(execution.status)&&execution.queue?.[execution.currentIndex]&&url.searchParams.get('screen')==='am_farm'); } catch { return false; } };
+    const initializeTacticalPreflightIfNeeded = async () => {
+        try {
+            const stored = JSON.parse(localStorage.getItem('eas_tw_tactical_scheduler_v1') || 'null');
+            const scope = `${window.game_data?.world || location.hostname}:${String(window.game_data?.player?.id || 0)}`;
+            const hasAuthorizedScheduledUnit = (stored?.executions?.[scope] || []).some(execution => execution.units?.some(unit =>
+                ['SCHEDULED', 'PRECHECK_10M', 'PREPARED', 'SYNC_2M'].includes(unit.state) && unit.preparationAuthorization?.executionUnitId === unit.executionUnitId));
+            if (!hasAuthorizedScheduledUnit) return false;
+            if (!window.EAS.MassSnipeExecution?.getCurrentServerTimeMs) await loadScript('services/mass-snipe-execution.js');
+            await loadScript('services/tactical-operation-scheduler-adapter.js');
+            if (!window.EAS.Place?.ensureCommandTarget) await loadScript('services/place.js');
+            if (!window.EAS.MissionScheduler?.initialize) await loadScript('services/mission-scheduler.js');
+            window.EAS.MissionScheduler.initialize(window);
+            return Boolean(window.EAS.TacticalOperationSchedulerAdapter?.initializeSchedulerHooks?.(window));
+        } catch (error) {
+            try { window.EAS?.Logger?.warn?.('Tactical', 'TACTICAL_PREFLIGHT_BOOTSTRAP_FAILED', { reason: String(error?.message || error).slice(0, 120) }); } catch {}
+            return false;
+        }
+    };
 
     const initializeMarketOfferExecutionIfNeeded = () => {
         if (!shouldInitializeMarketOfferExecution()) return false;
@@ -269,6 +287,27 @@
             if (window.__EAS_TW_RUNTIME_RESUMED__) return Boolean(window.__EAS_TW_RUNTIME_RESUMED__.active);
             loaderLog('eas-loader-runtime-resume-start', { url: location.href });
             const url = new URL(location.href);
+            let tacticalPreparationContext = null;
+            try { tacticalPreparationContext = JSON.parse(sessionStorage.getItem('eas_tactical_preparation_context') || 'null'); } catch {}
+            const tacticalPreparationRequested = url.searchParams.has('eas_tactical_execution_id') || url.searchParams.has('eas_tactical_unit_id') ||
+                Boolean(tacticalPreparationContext?.executionId && tacticalPreparationContext?.executionUnitId);
+            if (url.searchParams.get('screen') === 'place' && tacticalPreparationRequested) {
+                if (!window.EAS.Place?.ensureCommandTarget) await loadScript('services/place.js');
+                await loadScript('services/tactical-operation-scheduler-adapter.js');
+                if (!window.EAS.MassSnipeExecution?.getCurrentServerTimeMs) await loadScript('services/mass-snipe-execution.js');
+                if (!window.EAS.MassSnipePrecise) await loadScript('services/mass-snipe-precise.js');
+                if (!window.EAS.FakesExecution?.readOutgoingCommands) await loadScript('services/fakes-execution.js');
+                if (!window.EAS.ArrivalExecution) await loadScript('services/arrival-execution.js');
+                const initialized = window.EAS.TacticalOperationSchedulerAdapter?.initializePreparationPage?.(window);
+                if (!initialized) {
+                    let panel = document.getElementById('eas-tactical-preparation-panel');
+                    if (!panel) { panel = document.createElement('aside'); panel.id = 'eas-tactical-preparation-panel'; panel.className = 'fake-execution-panel scheduled-mission-panel'; document.body.appendChild(panel); }
+                    panel.textContent = 'BLOCKED: contexto de preparação tática inválido. Nenhum comando foi preparado ou enviado.';
+                }
+                window.__EAS_TW_RUNTIME_RESUMED__ = { active: true, type: 'tactical-preparation' };
+                loaderLog('eas-loader-main-menu-suppressed', window.__EAS_TW_RUNTIME_RESUMED__);
+                return true;
+            }
             if (shouldInitializeMassFarmExecution()) { const active=Boolean(window.EAS?.MassFarmExecution?.initialize?.());if(active){window.__EAS_TW_RUNTIME_RESUMED__={active:true,type:'mass-farm'};loaderLog('eas-loader-main-menu-suppressed',window.__EAS_TW_RUNTIME_RESUMED__);return true;} }
             if (url.searchParams.get('screen') === 'place' && (url.searchParams.get('eas_mission') || getScheduledMissionTabContext()?.missionId)) {
                 loaderLog('eas-loader-scheduled-mission-detected', { missionId: url.searchParams.get('eas_mission'), stage: url.searchParams.get('try') === 'confirm' ? 'confirmation' : 'preparation' });
@@ -357,6 +396,7 @@
                     window.__EASFakeBootstrapMark?.('silentExistingUIBranch', { fakeModuleAvailable: Boolean(window.EAS.FakesExecution?.initialize) });
                     await loadActiveFakeRuntime();
                     window.EAS.MissionScheduler?.initialize?.();
+                    await initializeTacticalPreflightIfNeeded();
                     await initializeArrivalIfNeeded();
                     await initializeIncomingIfNeeded();
                     await resumeEASRuntimeIfNeeded();
@@ -456,6 +496,7 @@
             await loadScript('services/arrival-planner.js');
             await loadScript('services/tactical-operation-planner.js');
             await loadScript('services/tactical-operation-controller.js');
+            await loadScript('services/tactical-operation-drafts.js');
             await loadScript('services/tactical-operation-data.js');
             await loadScript('services/market-execution-ui.js');
             await loadScript('services/farm-assistant-adapter.js');
@@ -474,6 +515,7 @@
 
             const marketExecutionOnly = shouldInitializeMarketOfferExecution() || shouldInitializeMarketBalanceExecution() || shouldInitializeMarketTargetExecution();
             window.EAS.MissionScheduler.initialize();
+            await initializeTacticalPreflightIfNeeded();
                 await initializeArrivalIfNeeded();
                 await initializeIncomingIfNeeded();
             const runtimeResumed = await resumeEASRuntimeIfNeeded();

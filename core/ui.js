@@ -36,7 +36,8 @@
         width = 470,
         className = '',
         content = '',
-        closable = true
+        closable = true,
+        viewportRoot = false
     } = {}) => {
         EAS.UI.closeWindow(id);
 
@@ -46,6 +47,8 @@
         windowElement.setAttribute('data-eas-tw-hub', 'window');
         windowElement.className = `eas-window ${className}`.trim();
         windowElement.style.width = `${width}px`;
+        const topLayerWindow = viewportRoot && typeof windowElement.showPopover === 'function';
+        if (topLayerWindow) windowElement.setAttribute('popover', 'manual');
 
         windowElement.innerHTML = `
             <div class="eas-window__header">
@@ -75,7 +78,11 @@
             </div>
         `;
 
-        const mountTarget = document.body || document.querySelector('#contentContainer, #content_value, main') || document.documentElement;
+        const mountTarget = topLayerWindow
+            ? document.body || document.documentElement
+            : viewportRoot
+                ? document.documentElement
+            : document.body || document.querySelector('#contentContainer, #content_value, main') || document.documentElement;
 
         if (!mountTarget) {
             throw Object.assign(new Error('A página do jogo está diferente do esperado.'), {
@@ -84,6 +91,7 @@
         }
 
         mountTarget.appendChild(windowElement);
+        if (topLayerWindow) windowElement.showPopover();
 
         const body = windowElement.querySelector('.eas-window__body');
 

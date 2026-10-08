@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<form id="command-confirm-form" action="?screen=place&amp;try=confirm">
+  <p>Origem (500|500) Destino (484|527)</p>
+  <table><tbody id="train-rows"><tr data-native-attack-row data-source-id="10" data-source-coord="500|500" data-target-coord="484|527" data-command-type="attack">
+    <td data-unit="snob" data-count="1">1</td><td data-unit="axe" data-count="151">151</td><td data-unit="light" data-count="199">199</td><td data-unit="ram" data-count="20">20</td><td data-unit="catapult" data-count="3">3</td><td data-unit="knight" data-count="1">1</td>
+  </tr></tbody></table>
+  <button id="add-native" type="button">Adicionar ataque adicional</button>
+  <button id="troop_confirm_submit" type="submit">Enviar ataque</button>
+</form>
+<script>
+let addClicks = 0, submitClicks = 0;
+document.getElementById('add-native').onclick = () => {
+  addClicks += 1;
+  const index = addClicks;
+  const axe = [0, 152, 153, 154][index];
+  const light = [0, 198, 197, 196][index];
+  document.getElementById('train-rows').insertAdjacentHTML('beforeend', `<tr data-native-attack-row data-source-id="10" data-source-coord="500|500" data-target-coord="484|527" data-command-type="attack"><td data-unit="snob" data-count="1">1</td><td data-unit="axe" data-count="${axe}">${axe}</td><td data-unit="light" data-count="${light}">${light}</td></tr>`);
+};
+document.getElementById('troop_confirm_submit').onclick = event => { event.preventDefault(); submitClicks += 1; };
+window.EAS = { World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }) } };
+</script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>
+(async () => {
+  const failures = []; let assertions = 0;
+  const check = (value, message) => { assertions += 1; if (!value) failures.push(message); };
+  const api = EAS.TacticalOperationSchedulerAdapter;
+  const children = [
+    { slotId: 'nt:1', parentSlotId: 'nt', trainIndex: 1, trainSize: 4, commandType: 'attack', validationStatus: 'ready', blockers: [], source: { id: '10', coord: '500|500' }, target: { coord: '484|527' }, composition: { quantities: { snob: 1, axe: 151, light: 199, ram: 20, catapult: 3, knight: 1 } }, sendAtMs: 890000, desiredArrivalMs: 900000, travelTimeMs: 10000 },
+    { slotId: 'nt:2', parentSlotId: 'nt', trainIndex: 2, trainSize: 4, commandType: 'attack', validationStatus: 'ready', blockers: [], source: { id: '10', coord: '500|500' }, target: { coord: '484|527' }, composition: { quantities: { snob: 1, axe: 152, light: 198 } }, sendAtMs: 890000, desiredArrivalMs: 900100, travelTimeMs: 10100 },
+    { slotId: 'nt:3', parentSlotId: 'nt', trainIndex: 3, trainSize: 4, commandType: 'attack', validationStatus: 'ready', blockers: [], source: { id: '10', coord: '500|500' }, target: { coord: '484|527' }, composition: { quantities: { snob: 1, axe: 153, light: 197 } }, sendAtMs: 890000, desiredArrivalMs: 900200, travelTimeMs: 10200 },
+    { slotId: 'nt:4', parentSlotId: 'nt', trainIndex: 4, trainSize: 4, commandType: 'attack', validationStatus: 'ready', blockers: [], source: { id: '10', coord: '500|500' }, target: { coord: '484|527' }, composition: { quantities: { snob: 1, axe: 154, light: 196 } }, sendAtMs: 890000, desiredArrivalMs: 900300, travelTimeMs: 10300 }
+  ];
+  const group = api.deriveExecutionUnits({ snapshotKind: 'tactical-approved-operation', version: 1, operationId: 'op', revision: 1, validation: { valid: true }, commands: children }).units[0];
+  const result = await api.createNativeTrainRows(window, group, { timeoutMs: 500, intervalMs: 1 });
+  check(result.valid && result.matchedCommands === 4, 'all native rows match approved NT4 children');
+  check(addClicks === 3 && result.clicks === 3, 'exactly N-1 native additional-row controls clicked');
+  check(submitClicks === 0, 'native preparation never clicks final submit');
+  check(result.page.submitButtonCount === 1, 'one final submit control identified');
+  check(result.page.rows.length === 4, 'all four real command rows parsed');
+  const changed = [...document.querySelectorAll('[data-native-attack-row]')];
+  changed[1].querySelector('[data-unit="axe"]').dataset.count = '999';
+  check(api.parseNativeConfirmation(document, group).blocker === 'NATIVE_NT_COMPOSITION_MISMATCH', 'wrong axe allocation blocks');
+  changed[1].querySelector('[data-unit="axe"]').dataset.count = '152';
+  changed[3].remove();
+  check(api.parseNativeConfirmation(document, group).blocker === 'NATIVE_NT_ROW_COUNT_MISMATCH', 'missing native child blocks');
+  document.getElementById('train-rows').insertAdjacentHTML('beforeend', changed[0].outerHTML);
+  document.getElementById('train-rows').insertAdjacentHTML('beforeend', changed[0].outerHTML);
+  check(api.parseNativeConfirmation(document, group).blocker === 'NATIVE_NT_UNEXPECTED_EXTRA_ROW', 'unexpected native child blocks');
+  const unsafeDoc = document.implementation.createHTMLDocument('unsafe add control');
+  unsafeDoc.body.innerHTML = '<form id="command-confirm-form"><p>Origem (500|500) Destino (484|527)</p><table><tbody><tr data-native-attack-row data-source-id="10" data-source-coord="500|500" data-target-coord="484|527"><td data-unit="snob" data-count="1">1</td></tr></tbody></table><button id="unsafe-add" type="submit">Adicionar ataque adicional</button><button id="troop_confirm_submit" type="submit">Enviar ataque</button></form>';
+  let unsafeClicks = 0; unsafeDoc.getElementById('unsafe-add').onclick = () => { unsafeClicks += 1; };
+  const unsafeWindow = { document: unsafeDoc, setTimeout: window.setTimeout.bind(window) };
+  const unsafeResult = await api.createNativeTrainRows(unsafeWindow, group, { timeoutMs: 20, intervalMs: 1 });
+  check(unsafeResult.blocker === 'NATIVE_NT_ADD_CONTROL_UNAVAILABLE' && unsafeClicks === 0, 'submit-type add control is rejected without clicking');
+
+  const support = document.createElement('form'); support.id = 'command-confirm-form'; support.innerHTML = '<p>Origem (500|500) Destino (484|527)</p><div data-unit="spear" data-count="20">20</div><input id="troop_confirm_submit" type="submit" value="Enviar apoio">';
+  const supportUnit = { kind: 'single-command', commandType: 'support', source: { id: '10', coord: '500|500' }, target: { coord: '484|527' }, approvedCommand: { composition: { quantities: { spear: 20 } } } };
+  document.getElementById('command-confirm-form').remove(); document.body.append(support);
+  window.game_data = { village: { id: '10' } };
+  check(api.readSingleConfirmation(document, supportUnit, window).valid, 'SUPPORT confirmation is validated without submission');
+  document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
+  document.title = failures.length ? 'FAIL' : 'PASS';
+})().catch(error => { document.getElementById('result').textContent = `ERROR ${error?.stack || error}`; document.title = 'FAIL'; });
+</script>

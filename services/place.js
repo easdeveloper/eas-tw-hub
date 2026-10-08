@@ -73,22 +73,44 @@
         ));
     };
 
+    const TARGET_INPUT_SELECTORS = [
+        'input.target-input-field[name="input"]',
+        'input.target-input-autocomplete[name="input"]',
+        'input[name="input"][placeholder*="|"]',
+        '#command-data-form input[name="input"]',
+        'form[action*="screen=place"] input[name="input"]'
+    ];
+
     const getTargetInput = (targetDocument = document) => {
-        const selectors = [
-            'input.target-input-field[name="input"]',
-            'input.target-input-autocomplete[name="input"]',
-            'input[name="input"][placeholder*="|"]',
-            '#command-data-form input[name="input"]',
-            'form[action*="screen=place"] input[name="input"]'
-        ];
         const targetWindow = targetDocument.defaultView || window;
 
-        return selectors
+        return TARGET_INPUT_SELECTORS
             .flatMap((selector) => Array.from(
                 targetDocument.querySelectorAll(selector)
             ))
             .find((input) => isCommandTargetInput(input, targetWindow)) ||
             null;
+    };
+
+    // Strict resolution: exactly one accepted candidate, with a token-free diagnostic.
+    const inspectTargetInputs = (targetDocument = document) => {
+        const targetWindow = targetDocument.defaultView || window;
+        const unique = [...new Set(TARGET_INPUT_SELECTORS.flatMap((selector) =>
+            Array.from(targetDocument.querySelectorAll(selector))))];
+        const candidates = unique.map((input, index) => {
+            const reasons = [];
+            if (input.disabled) reasons.push('disabled');
+            if (input.readOnly) reasons.push('readonly');
+            if (!isVisibleInput(input, targetWindow)) reasons.push('not-visible');
+            if (!input.closest('#command-data-form, form[action*="screen=place"]')) reasons.push('outside-command-form');
+            return { index, id: input.id || null, name: input.name || null, type: input.type || null,
+                className: String(input.className || ''), placeholder: input.placeholder || null,
+                accepted: reasons.length === 0, rejectedReasons: reasons };
+        });
+        const accepted = candidates.filter((candidate) => candidate.accepted);
+        const blocker = accepted.length === 1 ? null
+            : accepted.length === 0 ? 'TARGET_INPUT_NOT_FOUND' : 'TARGET_INPUT_AMBIGUOUS';
+        return { input: blocker ? null : unique[accepted[0].index], blocker, candidates };
     };
 
     const getCommandForm = (targetDocument = document) => {
@@ -333,19 +355,26 @@
             const items = Array.from(placeTarget.querySelectorAll('.village-item'));
             const candidates = items.flatMap(item => Array.from(item.querySelectorAll('.village-name')).map(name =>
                 ({ item, name, coords: extract(name), visible: visibleNode(item) && visibleNode(name) })));
-            const match = candidates.find(candidate => candidate.visible && candidate.coords.length === 1 &&
-                expectedTarget && candidate.coords[0] === expectedTarget);
+            const visibleCandidates = candidates.filter(candidate => candidate.visible);
+            const match = visibleCandidates.length === 1 && visibleCandidates[0].coords.length === 1 &&
+                expectedTarget && visibleCandidates[0].coords[0] === expectedTarget ? visibleCandidates[0] : null;
             const input = placeTarget.querySelector('input[name="input"]');
-            const busy = Boolean(placeTarget.querySelector('[aria-busy="true"]') || form?.querySelector?.('[aria-busy="true"]'));
+            const inputConflict = visibleNode(input) && Boolean(input.value.trim()) && normalize(input.value) !== expectedTarget;
+            const busy = Boolean(placeTarget.getAttribute?.('aria-busy') === 'true' || form?.getAttribute?.('aria-busy') === 'true' ||
+                placeTarget.querySelector('[aria-busy="true"]') || form?.querySelector?.('[aria-busy="true"]'));
             const resolvedCoordinate = match?.coords[0] || candidates.find(candidate => candidate.visible && candidate.coords.length === 1)?.coords[0] || null;
-            return { ...state, expectedTarget, actualTarget: resolvedCoordinate, resolvedCoordinate,
+            const safeCandidates = candidates.map(candidate => ({ selector, source: '#place_target .village-item',
+                text: String(candidate.name.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+                coordinates: candidate.coords, visible: candidate.visible }));
+            return { ...state, expectedTarget, actualTarget: resolvedCoordinate, resolvedCoordinate, busy, candidates: safeCandidates,
                 placeTargetFound: true, villageItemFound: items.length > 0, villageNameFound: candidates.length > 0,
                 inputVisible: visibleNode(input), villageItemVisible: match ? true : items.some(visibleNode),
                 candidateSelectors: [selector], candidateCoordinates: [...new Set(candidates.flatMap(candidate => candidate.coords))],
                 selectorMatches: [{ selector, count: candidates.length, coordinates: candidates.flatMap(candidate => candidate.coords) }],
                 resolutionSource: match ? selector : null, resolutionEvidence: match ? selector : null,
-                matchedSelector: match ? selector : null, targetReady: Boolean(expectedTarget && match && !busy),
-                reason: !expectedTarget ? 'TARGET_INVALID' : busy ? 'TARGET_BUSY' : match ? null :
+                matchedSelector: match ? selector : null, targetReady: Boolean(expectedTarget && match && !busy && !inputConflict),
+                reason: !expectedTarget ? 'TARGET_INVALID' : busy ? 'TARGET_BUSY' :
+                    visibleCandidates.length > 1 ? 'TARGET_RESOLUTION_AMBIGUOUS' : inputConflict ? 'TARGET_INPUT_CONFLICT' : match ? null :
                     !items.length ? 'TARGET_RESOLUTION_MISSING' : !candidates.length ? 'TARGET_NAME_MISSING' :
                     !candidates.some(candidate => candidate.visible) ? 'TARGET_CARD_HIDDEN' : 'TARGET_RESOLUTION_MISMATCH' };
         }
@@ -379,7 +408,9 @@
         const matchedSelector = resolutionSource === 'native-target-id'
             ? 'input[name="target_id"], input[name="target_village_id"], input[name="target"]'
             : resolutionSource === 'resolved-target-label' ? matchesBySelector.find(match => match.nodes.includes(resolvedLabel))?.selector || null : null;
-        return { ...state, expectedTarget, placeTargetFound: false, villageItemFound: false, villageNameFound: false, inputVisible: Boolean(state.inputFound), villageItemVisible: false, candidateSelectors, candidateCoordinates, selectorMatches, resolutionSource, matchedSelector,
+        const safeCandidates = matchesBySelector.flatMap(match => match.nodes.map(node => ({ selector: match.selector, source: 'command-form',
+            text: String(node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80), coordinates: coordinates(node), visible: visible(node) })));
+        return { ...state, expectedTarget, busy, candidates: safeCandidates, placeTargetFound: false, villageItemFound: false, villageNameFound: false, inputVisible: Boolean(state.inputFound), villageItemVisible: false, candidateSelectors, candidateCoordinates, selectorMatches, resolutionSource, matchedSelector,
             resolvedCoordinate: evidenceReady ? expectedTarget : null,
             targetReady: Boolean(payloadMatches && !busy && evidenceReady), resolutionEvidence: resolutionSource,
             reason: !payloadMatches ? 'TARGET_NOT_APPLIED' : busy ? 'TARGET_BUSY' : !evidenceReady
@@ -399,6 +430,8 @@
     };
 
     EAS.Place.getCommandForm = getCommandForm;
+    EAS.Place.getTargetInput = getTargetInput;
+    EAS.Place.inspectTargetInputs = inspectTargetInputs;
 
     EAS.Place.fillCommandTarget = (
         coordinate,

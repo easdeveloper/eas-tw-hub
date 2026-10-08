@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>running</title>
+<link rel="stylesheet" href="../css/eas.css">
+<pre id="result">running</pre>
+<style>
+html { min-height: 3600px; transform: translateZ(0); perspective: 1200px; filter: opacity(1); contain: paint; }
+body { min-height: 3600px; transform: translateZ(0); }
+#contentContainer { min-height: 3200px; }
+.workspace-test-content { height: 1400px; }
+</style>
+<div id="contentContainer"><div style="height:2800px">Tribal Wars page content</div></div>
+<script>window.EAS = { name: 'fixture', UI: {} };</script>
+<script src="../core/ui.js"></script>
+<script>
+(async () => {
+  const failures = []; let assertions = 0;
+  const check = (value, label) => { assertions += 1; if (!value) failures.push(label); };
+  const scrollY = window.scrollY;
+  const legacy = EAS.UI.createWindow({ id: 'legacy-body-window', title: 'Legacy mount', width: 500 });
+  check(legacy.element.parentElement === document.body, 'default EAS window mount remains body-local');
+  const legacyStart = legacy.element.getBoundingClientRect().top;
+  window.scrollTo(0, 500);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const legacyScrolled = legacy.element.getBoundingClientRect().top;
+  check(Math.abs(legacyScrolled - legacyStart) > 100, 'transformed, scrolling body reproduces fixed-descendant drift');
+  legacy.close();
+
+  const cases = [
+    ['tactical', 'tactical-operation-planner-window'],
+    ['review', 'tactical-operation-planner-window'],
+    ['eas-scheduled-missions', '']
+  ];
+  const windows = [], initialPositions = new Map();
+  for (const [id, className] of cases) {
+    const beforeOpen = window.scrollY;
+    const win = EAS.UI.createWindow({ id, title: id, width: 1120, className, viewportRoot: true });
+    windows.push(win);
+    win.body.innerHTML = '<div class="workspace-test-content">Workspace body</div>';
+    const topLayer = win.element.matches(':popover-open');
+    check(topLayer || win.element.parentElement === document.documentElement, `${id} uses viewport-safe top layer/root rather than transformed game body`);
+    if ('showPopover' in HTMLElement.prototype) check(topLayer, `${id} is promoted above transformed document ancestors`);
+    check(window.scrollY === beforeOpen, `${id} open does not mutate document scroll`);
+    const rect = win.element.getBoundingClientRect();
+    initialPositions.set(win, { top: rect.top, left: rect.left });
+    check(getComputedStyle(win.element).position === 'fixed', `${id} uses fixed positioning`);
+    check(rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1, `${id} initial bounds are within viewport`);
+    check(win.body.scrollHeight > win.body.clientHeight && getComputedStyle(win.body).overflowY === 'auto', `${id} body scrolls internally`);
+    const header = win.element.querySelector('.eas-window__header');
+    const close = win.element.querySelector('[data-eas-action="close"]');
+    const headerTop = header.getBoundingClientRect().top;
+    win.body.scrollTop = 120;
+    check(Math.abs(header.getBoundingClientRect().top - headerTop) < 1, `${id} header remains fixed while body scrolls`);
+    check(Boolean(close?.isConnected), `${id} close control remains accessible`);
+  }
+  const beforePageScroll = window.scrollY;
+  window.scrollTo(0, 900);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  for (const win of windows) {
+    const rect = win.element.getBoundingClientRect(), initial = initialPositions.get(win);
+    check(Math.abs(rect.top - initial.top) < 2 && Math.abs(rect.left - initial.left) < 2, `${win.element.id} stays at the same viewport-relative position after document scroll`);
+    check(rect.left >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1, `${win.element.id} remains in viewport after document scroll`);
+  }
+  for (const win of windows) {
+    const beforeClose = window.scrollY;
+    win.close();
+    check(window.scrollY === beforeClose, `${win.element.id} close does not mutate document scroll`);
+  }
+  check(window.scrollY >= beforePageScroll, 'page scrolling remains owned by document');
+  document.title = failures.length ? 'FAIL' : 'PASS';
+  document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
+})().catch(error => { document.title = 'FAIL'; document.getElementById('result').textContent = `ERROR ${error?.stack || error}`; });
+</script>

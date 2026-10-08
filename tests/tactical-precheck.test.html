@@ -1,0 +1,81 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+let now = Date.now(), clockAnchor = now, clockOffset = 0, missionCreates = 0, legacyInitializes = 0, openedUrl = null, submitClicks = 0;
+const setServerNow = value => { now = value; clockAnchor = Date.now(); clockOffset = now - clockAnchor; };
+window.game_data = { world: 'br-test', player: { id: 7 }, village: { id: 10, x: 500, y: 500 } };
+window.Timing = { getCurrentServerTime: () => Date.now() + clockOffset };
+window.EAS = {
+  Modules: {},
+  World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }), getServerNowTimestamp: () => now + (Date.now() - clockAnchor), getServerDateTime: () => ({ available: true }) },
+  Utils: { formatDateTime: value => String(value), parseCoordinate: value => { const match = /^(\d{1,3})\|(\d{1,3})$/.exec(String(value || '')); return match ? { coordinate: `${Number(match[1])}|${Number(match[2])}` } : null; }, escapeHtml: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) },
+  MassSnipeExecution: { getCurrentServerTimeMs: () => now + (Date.now() - clockAnchor) },
+  Place: {
+    buildPlaceUrl: id => { const url = new URL(location.href); url.search = ''; url.searchParams.set('screen', 'place'); url.searchParams.set('village', id); return url; },
+    getCommandForm: doc => doc.querySelector('#command-data-form, #command-confirm-form'),
+    getTargetInput: doc => doc.querySelector('input[name="input"]'), inspectTargetInputs: doc => { const input = doc.querySelector('input[name="input"]'); return { input, blocker: input ? null : 'TARGET_INPUT_NOT_FOUND', candidates: [] }; },
+    fillCommandTarget: (coord, targetWindow) => { const field = targetWindow.document.querySelector('input[name="input"]'); if (!field) return false; field.value = coord; return true; },
+    readCommandTarget: targetWindow => ({ actualTarget: targetWindow.document.querySelector('input[name="input"]')?.value || null })
+  },
+  MissionScheduler: {
+    initialize: () => { legacyInitializes += 1; }, load: () => ({ missions: [], settings: {}, logs: [] }),
+    getServerNow: () => new Date(now), sortMissions: values => values, detectMissionConflicts: () => [],
+    getVisualStatus: () => 'waiting', formatRemaining: () => '-', createMission: () => { missionCreates += 1; throw new Error('Legacy Scheduler mission creation forbidden'); }
+  },
+  ScheduledMissionExecution: { openAndPrepare: () => { throw new Error('Legacy execution forbidden'); }, initialize: () => { throw new Error('Legacy execution forbidden'); } },
+  UI: {
+    createWindow: () => { const body = document.createElement('div'); document.body.append(body); return { body, close: () => body.remove() }; },
+    createButton: ({ text, onClick }) => { const button = document.createElement('button'); button.textContent = text; button.onclick = onClick; return button; },
+    openMainWindow: () => {}
+  }
+};
+window.EASLoader = { loadScript: async () => {} };
+window.open = url => { openedUrl = String(url); return { focus() {} }; };
+</script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script src="../modules/scheduled-missions.js"></script>
+<script>
+(async () => {
+ const failures=[];let assertions=0;const check=(v,m)=>{assertions++;if(!v)failures.push(m);};
+ if(document.readyState==='loading')await new Promise(r=>document.addEventListener('DOMContentLoaded',r,{once:true}));
+ const api=EAS.TacticalOperationSchedulerAdapter,SEND=1791336429000,CHECK=SEND-600000;
+ localStorage.removeItem(api.STORAGE_KEY);
+ game_data.village={id:10,x:516,y:458};let clock=CHECK-1000;
+ EAS.MassSnipeExecution.getCurrentServerTimeMs=()=>clock;
+ EAS.World.getServerNowTimestamp=()=>clock-9*3600000;
+ const cmd={slotId:'2065-26',parentSlotId:'2065-26',source:{id:'10',coord:'516|458'},target:{coord:'507|471'},commandType:'attack',composition:{quantities:{axe:5930,light:3117}},sendAtMs:SEND,desiredArrivalMs:SEND+10000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
+ const snapshot={snapshotKind:'tactical-approved-operation',version:1,operationId:'tactical-operation-1791345973844',revision:7,target:cmd.target,validation:{valid:true},commands:[cmd]};
+ const queue=api.enqueue(snapshot,{createdAt:1}),eid=queue.execution.executionId,uid=queue.execution.units[0].executionUnitId;
+ api.authorizeStoredUnit(eid,uid,{authorizedAt:1791335243434});
+ let win=await EAS.Modules.ScheduledMissions.open();
+ const card=()=>win.body.querySelector(`[data-tactical-execution="${eid}"]`);
+ const read=()=>api.list()[0].units[0],flush=()=>new Promise(r=>setTimeout(r,0));await flush();
+ card().querySelector('[data-tactical-precheck]').click();await flush();
+ check(read().state==='SCHEDULED','too early stays SCHEDULED');
+ check(card().querySelector('[data-tactical-preflight-result]').textContent.includes('PRECHECK_TOO_EARLY'),'early reason remains visible after render');
+ check(read().lastPreflight.checkpointAtMs===CHECK,'earliest timestamp persisted');
+ win.close();win=await EAS.Modules.ScheduledMissions.open();await flush();
+ check(card().textContent.includes('PRECHECK_TOO_EARLY'),'reopen preserves reason');
+ clock=CHECK+0.875;card().querySelector('[data-tactical-precheck]').click();await flush();
+ check(read().state==='PRECHECK_10M','real BR143 manual transition persisted');
+ check(read().nextCheckpoint==='PREPARE_5M'&&read().nextCheckpointAtMs===SEND-300000,'next phase and T-5 timestamp');
+ check(card().textContent.includes('PREPARE_5M')&&card().textContent.includes('ACCEPTED'),'success visible after rerender');
+ check(read().lastPreflight.authoritativeNowMs===CHECK,'server wall clock used instead of local-calendar World value');
+ const before=localStorage.getItem(api.STORAGE_KEY);check(api.runStoredPrecheck(eid,uid,window).accepted,'repeated call is accepted idempotently');
+ check(localStorage.getItem(api.STORAGE_KEY)===before,'repeated call does not rewrite execution');
+ const restored=api.createStore(localStorage).read().executions['br-test:7'][0].units[0];
+ check(restored.state==='PRECHECK_10M'&&restored.lastPreflight.result==='ACCEPTED','read-back/reload state retains result');
+ check(!read().finalAuthorization&&!read().attemptId&&submitClicks===0&&missionCreates===0,'no final authorization, attempt, legacy mission or send');
+ let copied;Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{copied=JSON.parse(text);}}});
+ [...win.body.querySelectorAll('button')].find(b=>b.textContent==='Copiar diagn\u00f3stico').click();await flush();
+ const d=copied.tactical.executions[0].units[0];
+ check(d.authoritativeNowMs===CHECK&&d.checkpointAtMs===CHECK&&d.deltaMs===0,'diagnostic carries authoritative comparison');
+ check(d.lastPreflightAction==='MANUAL_PRECHECK_10M'&&d.lastPreflightResult==='ACCEPTED'&&d.lastPreflightReason===null,'diagnostic carries result');
+ const q2=api.enqueue({...snapshot,operationId:'bot-test'},{createdAt:2});api.authorizeStoredUnit(q2.execution.executionId,q2.execution.units[0].executionUnitId,{authorizedAt:CHECK});
+ const captcha=document.createElement('div');captcha.id='bot_check';document.body.append(captcha);
+ await flush();window.dispatchEvent(new CustomEvent('eas:tactical-preparation-updated'));await flush();
+ win.body.querySelector(`[data-tactical-execution="${q2.execution.executionId}"] [data-tactical-precheck]`).click();await flush();
+ check(api.list()[1].units[0].state==='BLOCKED','session failure fail closed');
+ check(win.body.querySelector(`[data-tactical-execution="${q2.execution.executionId}"]`).textContent.includes('SESSION_UNAVAILABLE_OR_UNTRUSTED'),'session reason visible after rerender');
+ captcha.remove();document.title=failures.length?'FAIL':'PASS';document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS - ${assertions} assertions`;
+})().catch(e=>{document.title='FAIL';document.getElementById('result').textContent=e.stack;});
+</script>

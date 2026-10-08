@@ -122,8 +122,190 @@ Phase 4 literal question marks in NT presentation strings were source corruption
 
 ## Phase 5 — Final Operation Review
 
-The Desk's `Aprovar revisão` action derives `EAS.TacticalOperationController.buildFinalReview(draft, {unitOrder})` from `validateDraft()` before opening a separate read-only view. The review contains concrete planner missions sorted by `sendAtMs`, including each generated NT child, train parent/index metadata, per-command blockers, operation totals/counts, and evidence-backed validation dimensions. Zero troop quantities are omitted from command compositions. The view exposes only return-to-edit and approval actions.
+The Desk's `Aprovar revisão` action derives `EAS.TacticalOperationController.buildFinalReview(draft, {unitOrder})` from `validateDraft()` before opening a separate read-only view. The review contains concrete planner missions sorted by desired arrival, then send time, then slot ID, including each generated NT child, train parent/index metadata, per-command blockers, operation totals/counts, and evidence-backed validation dimensions. Zero troop quantities are omitted from command compositions. Before approval, the view exposes only return-to-edit and approval actions; after approval, a separate action can enqueue the snapshot for preparation.
 
 `approveFinalReview(draft, review, approvedAt?)` returns a deeply frozen `{snapshotKind: 'tactical-approved-operation', version: 1, ...}` snapshot containing reviewed target/timing, concrete commands, totals, counts and validation. Approval re-derives and compares the review and requires matching operation ID/revision; edits through the Desk advance the revision, so a returned-and-edited draft needs a new review. The snapshot intentionally excludes candidates and raw analysis data. It stays in memory only: this phase does not create Scheduler missions, prepare Rally Point commands, send, or start timers.
 
 Validation: `node --test tests/tactical-operation-controller.test.cjs` and the `tactical-operation-planner.test.html` / `tactical-operation-ux.test.html` browser fixtures cover derivation, NT expansion, blocked approval, stale review rejection, read-only controls, return preservation, and target-page metadata handoff.
+
+## Phase 6 - Preparation boundary (extended by final execution below)
+
+`services/tactical-operation-scheduler-adapter.js` consumes only the version-1 `tactical-approved-operation` snapshot. `deriveExecutionUnits(snapshot)` copies approved concrete data without recalculating troops, target, command type, arrival, duration, or source. ATTACK/SUPPORT produce one `single-command` unit. NT(N) produces one `native-noble-train` unit retaining all N approved children; no child is sent independently. The Tactical queue is stored separately under `eas_tw_tactical_scheduler_v1`, scoped by world/player. It does not call `MissionScheduler.createMission()` or the legacy execution initializer.
+
+The planner places `parentSlotId` on ordinary commands as a self-reference too. Classification therefore uses NT child markers (`trainIndex`/`trainSize`, or a parent different from the command's own slot ID); a self-parented ATTACK/SUPPORT remains a simple command. Safe label helpers emit no zero/null NT labels.
+
+Native timing separates child arrival intentions from one `nativeSubmitAtMs`. All approved child timestamps and compositions remain immutable. Neither equal nor unequal child send times prove the native submit timestamp. Current fixtures contain no authoritative native common duration/row offsets. Consequently NT(2-5) remain one group each, blocked with `NATIVE_NT_NATIVE_TIMING_UNPROVEN`, and `nativeSubmitAtMs: null`. No child is submitted independently. Observed ~100 ms spacing is not a measured browser-submit schedule.
+
+The lifecycle is `SCHEDULED → PRECHECK_10M → PREPARE_5M → SYNC_2M → READY_TO_SEND`, with `BLOCKED` and `CANCELLED` terminal preparation outcomes. A user explicitly authorizes preflight per execution unit/group. Existing Scheduler ticks run only the T−10 session/login/anti-bot/source/target check for authorized units. T−5 is a user action that opens the bound source's Rally Point; another explicit action fills the exact approved composition and opens the first confirmation step. Native NT uses only the game's non-submit “Adicionar ataque adicional” controls, then parses and reconciles every confirmation row. No final submit control is clicked.
+
+T−2 requires three stable samples, a fresh server clock, and `Timing.getCurrentServerTime()` precision together with `World.getServerDateTime()`. Second-only fallback is rejected as `CLOCK_PRECISION_UNAVAILABLE`; outlier, stale, and implausible offsets block. The Scheduler view displays sample count, offset, spread, current state, and blockers.
+
+Persisted transitions retain immutable execution identity and checkpoint evidence.
+`preparationAuthorization` still authorizes preparation only. Final authorization,
+arming and recovery are described in the next section. `compareOutgoing()` remains
+a planning-level evidence comparator; the live single execution uses the shared
+Arrival reconciliation instead of treating arbitrary observations as send proof.
+
+BR143 dry-run: install the generated local build; approve and add one simple ATTACK to Tactical preparation; explicitly authorize it in Scheduled Missions; allow the T−10 check; at T−5 open the bound Rally Point, apply the approved quantities, and open confirmation; at T−2 synchronize and reconcile. Verify `READY_TO_SEND`, then stop without clicking Tribal Wars' final submit. NT dry-run is a separate follow-up because some approved child send-time patterns intentionally block until a safe shared native send time is proven.
+
+## Phase 7 — editable drafts and operation agenda UX
+
+Editable drafts use `EAS.TacticalOperationDrafts` with namespaced key `eas_tw_tactical_operation_drafts_v1:<world>:<player>`, schema version 1, a 20-record cap, a 200-selected-slot cap, and a per-record size bound. Records contain only user intent: label, target metadata/coordinate, previous central arrival, selected village IDs, roles, offsets, FULL intent, CUSTOM quantities, and filter. They exclude candidates, troop/timing evidence, analysis payloads, validation, and approvals. Loading only fills the Desk fields; the user must analyze again. `restoreEditableConfiguration()` applies saved roles/offsets/intent to fresh candidates, leaves compositions unconfirmed, rebuilds FULL from current trusted troops, and leaves the newly entered central arrival authoritative. A new Final Review and approval are required.
+
+Cancelled Tactical execution units/groups remain in the versioned Tactical history store but are filtered out of `listActive()`. Native NT is already one execution unit, so cancelling it removes the entire group. The Scheduler tick only processes `SCHEDULED` units; a cancelled record is terminal across rerender/reload.
+
+Scheduled Missions groups active Tactical cards by approved operation ID/revision inside a collapsible operation parent. Parent status/counts are presentation aggregates only; every unit retains its own state, blocker, timing, authorization, and cancel action. Legacy missions remain in their existing list. Tactical Desk, Final Review, and Scheduled Missions use fixed, viewport-bounded `.eas-window` surfaces with internally scrolling bodies; the Desk retains its row anchor restoration.
+
+
+## Final execution validation (local, awaiting BR143)
+
+Simple ATTACK/SUPPORT reuse `MassSnipePrecise.createScheduler`, the shared
+`FakesExecution.readOutgoingCommands` reader, and `ArrivalExecution.matchOutgoing`.
+No new clock or outgoing parser is introduced. The existing preparation controls
+remain manual. Final execution is a separate explicit action on the confirmation panel.
+
+Before opening confirmation the adapter captures an available BEFORE inventory,
+creates one attempt ID, persists it and verifies read-back. An unavailable inventory
+never becomes empty. Older prepared executions without this baseline cannot send;
+create a newly approved execution instead of patching persisted state.
+
+`Autorizar envio real` binds `tactical-final-submit` authorization to operation,
+revision, execution/unit IDs, source, target, type, full approved composition and
+submit timestamp. Preflight approval is insufficient. The final live check requires
+the same confirmation, one visible enabled final submit, exact composition, trusted
+session and a fresh precise server clock. Maximum permitted lateness is 1000 ms,
+matching Arrival's boundary. No latency compensation is invented.
+
+Arming holds a browser Web Lock scoped to world/player/execution/unit. Missing Web
+Locks blocks. At the boundary it re-reads persistent state, writes an independent
+consumed tombstone and SUBMITTING attempt, and verifies read-back before the single
+native button action. Duplicate callbacks cannot click twice. Manual send while armed
+also consumes the authorization. Tombstones are intentionally not cleared automatically.
+The scheduler is cancelled on document exit. Reload never automatically rearms.
+
+A click transitions through RECONCILING; until outgoing proof exists the result is
+UNCERTAIN. Return navigation triggers one read of the existing outgoing DOM. New ID,
+source, target, type and arrival evidence are matched by the shared Arrival matcher.
+The early baseline requires timing evidence. Only an exact match becomes COMPLETED;
+missing/ambiguous evidence stays UNCERTAIN without resend. A manual read-only
+`Reconciliar novamente, sem reenviar` action permits another observation. No network
+polling/retry is added. Attempt/baseline identity is preserved through recovery.
+
+### Historical final-execution test (not the current preparation validation)
+
+1. Plan one low-risk simple ATTACK with enough time for the existing T-10/T-5/T-2
+   checkpoints; approve Final Review, add to preparation and authorize preparation.
+2. At T-5 open its source Rally Point, apply approved composition, and open confirmation.
+   Confirm baseline availability; no final send has occurred.
+3. Validate the command; at T-2 synchronize and validate. Choose **DRY RUN - armar
+   sem enviar**. Keep this tab open. At the deadline expect DRY RUN completed and
+   zero new outgoing commands. Use a new execution for the subsequent real test.
+4. NT(4) is deliberately BLOCKED, not READY. To collect native evidence without sending,
+   manually prepare the approved first attack and add the three native additional rows.
+   Do not click Enviar ataque. With the Tactical adapter loaded, run:
+
+```js
+// If the adapter is not loaded on this manually opened confirmation:
+await EASLocalBuild.execute('services/tactical-operation-scheduler-adapter.js');
+JSON.stringify(EAS.TacticalOperationSchedulerAdapter.nativeTimingDiagnostic(window), null, 2)
+// Equivalent global helper:
+JSON.stringify(EASTacticalNativeTimingDebug(), null, 2)
+```
+
+The diagnostic is read-only and excludes tokens/form actions/script bodies. It inventories
+native timing text, numeric timing attributes and numeric timing inputs. Capture it before
+and after adding the rows. Missing proof is the common native duration from final submit
+to first arrival, each native row's offset relative to it, and stable row/timing structure.
+A plain duration or independent map_info unit durations cannot establish those semantics.
+It never computes an optimistic submit timestamp. NT real send remains unavailable.
+
+### Controlled real test
+
+1. Complete the simple dry run first. Create a NEW low-risk ATTACK, repeat preparation
+   and synchronization, then explicitly choose **Autorizar envio real** before the deadline.
+2. Keep the confirmation tab active. Expect one final action, then COMPLETED with one new
+   outgoing ID. Independently inspect the game. UNCERTAIN means inspect/reconcile, never
+   press the game submit again or authorize a replacement blindly.
+3. Repeat with one low-risk SUPPORT only after the ATTACK reconciliation is verified.
+4. Do not test native NT real submission yet: native timing is still unproven.
+
+Browser scheduling does not guarantee the server's recorded millisecond of receipt.
+No live BR143 send has been performed by this patch's automated tests.
+
+
+## BR143 preparation-only validation: automatic T-5
+
+The current authorized flow stops at **PREPARED**. Do not follow the historical
+confirmation/send test above for this validation.
+
+Code-path findings:
+
+- The agenda button called `openRallyPoint`, but the scheduler hook only visited
+  `SCHEDULED` units for T-10. It never performed T-5 for `PRECHECK_10M` units.
+  The index bootstrap also only attached that hook for `SCHEDULED` records.
+- Tactical's old identity verifier independently vetoed a canonical Place card
+  whenever `readCommandTarget().actualTarget` disagreed. That payload prioritizes
+  native x/y fields and can differ from the resolved widget. It also accepted a
+  typed coordinate without resolution. The provided real screenshot does not
+  identify which raw payload value triggered the real mismatch; the regression
+  reproduces the conflicting hidden-payload case without attributing that value
+  to BR143.
+- The agenda rendered operation groups and then its observer grouped their cards
+  again. Moving the cards left the first header empty. No execution unit was
+  created by this rendering path. The regression verifies one stored unit and
+  one nonempty header; confirming the user's original record count still requires
+  their persisted diagnostic.
+
+Implementation boundary:
+
+- Existing scheduler tick calls the same `openRallyPoint` service. Automatic mode
+  uses current-tab navigation (no popup activation requirement). It persists and
+  reads back `unit.rallyPreparation` with the exact execution/unit context before
+  navigation. Repeated ticks do not repeat a pending navigation.
+- Index reattaches the existing scheduler for both SCHEDULED and PRECHECK_10M.
+  On the Rally Point, its actual resume router loads Place and recovers the unit
+  from storage and the two URL IDs. No pre-navigation closure is needed.
+- Target application uses `Place.ensureCommandTarget`; resolved identity uses
+  `Place.readTargetReadiness`. A single visible canonical village card must prove
+  the exact coordinate. Busy, hidden, conflicting visible input, and multiple
+  visible cards fail closed. A consumed/hidden input is not an independent veto.
+  The previously supported canonical container outside the form remains supported.
+- Source/session/time/authorization are checked again after awaiting native
+  resolution. All troop inputs and availability are validated before writing;
+  positive missing inputs block, missing zero units are allowed, and zero fields
+  stay blank. Read-back is persisted as `rallyPreparation.evidence` with state
+  PREPARED and no next checkpoint. Concurrent same-document preparation shares
+  a Promise; subsequent calls read the persisted state.
+- This path creates no send attempt, outgoing baseline or final authorization,
+  and exposes no action to open confirmation. It does not click Attack/Support
+  or submit a form. Existing final-execution tests exercise that older boundary
+  separately, not through this new preparation path.
+
+Local regression `tactical-t5-navigation.test.html` uses the real MissionScheduler
+and index bootstrap in two actual browser documents. Only the clock, native target
+widget response and local transport destination are fixtures. No game request or
+real attack is made. It tests T-10, before/exact T-5, navigation, persisted recovery,
+automatic troop fill and zero sending effects without opening the agenda.
+
+### Minimal next BR143 test
+
+1. Install the new local build. Create one simple ATTACK with enough time for T-10,
+   approve its exact composition and authorize preparation. Keep one EAS tab active.
+2. Close the agenda. At T-10 expect ACCEPTED; at T-5 expect the same tab to navigate
+   automatically to the source Rally Point, carrying both Tactical URL IDs.
+3. Verify the native target card and sword 7 / axe 5930 / light 3117 / heavy 2 (or
+   the exact newly approved composition), zero fields blank, and PREPARED.
+4. Stop there: do not click Attack, Support or confirmation. Verify no outgoing
+   command was created. Inspect the agenda for one nonempty operation header.
+5. Capture the safe persisted diagnostics if anything blocks:
+
+```js
+JSON.stringify(EAS.TacticalOperationSchedulerAdapter.preparationDiagnostic(), null, 2)
+```
+
+Logger events: `TACTICAL_PREPARATION_NAVIGATION`,
+`TACTICAL_PREPARATION_BOOTSTRAP_RESUMED`, `TACTICAL_TARGET_IDENTITY_DIAGNOSTIC`,
+`TACTICAL_PREPARATION_COMPLETED` / `TACTICAL_PREPARATION_BLOCKED`.
+Server timing/checkpoint/delta and sanitized expected URL are recorded for navigation;
+resolved candidates, busy/visibility and readiness reason are recorded for target proof.
+The real BR143 validation remains pending.

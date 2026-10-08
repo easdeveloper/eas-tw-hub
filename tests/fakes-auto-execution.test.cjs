@@ -481,7 +481,9 @@ test('real village-item adapter waits for late card through reinjection and subm
  const attempt=f.read().queue[0].confirmationAttempt.attemptId;
  vm.runInContext(source,f.sandbox);f.run();f.tick();assert.equal(f.counts().attacks,0);
  labels.push({textContent:'Old village (604|379)'});f.tick();assert.equal(f.counts().attacks,0);
- labels.push({textContent:'Renamed village (501|501)'});f.input().value='';f.tick();f.tick();f.run();
+ labels.push({textContent:'Renamed village (501|501)'});f.input().value='';f.tick();
+ assert.equal(f.counts().attacks,0,'two visible native targets remain ambiguous');
+ labels.shift();f.tick();f.tick();f.run();
  assert.equal(f.counts().attacks,1);assert.equal(logs.filter(log=>log.event==='TARGET_APPLY_START').length,1);
  assert.equal(f.read().queue[0].confirmationAttempt.attemptId,attempt);
  const ready=logs.find(log=>log.event==='TARGET_READY');assert.equal(ready.resolutionSource,'#place_target .village-item .village-name');assert.equal(ready.resolvedCoordinate,'501|501');

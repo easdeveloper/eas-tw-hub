@@ -1,0 +1,54 @@
+﻿<!doctype html><meta charset="utf-8"><title>Tactical document fixture</title>
+<form id="command-data-form">
+  <div id="place_target"><input name="input" class="target-input-field" placeholder="123|456"></div>
+  <input type="hidden" name="x" value="0"><input type="hidden" name="y" value="0">
+  <input name="spear" data-all-count="100"><input name="sword" data-all-count="7">
+  <input name="axe" data-all-count="5930"><input name="light" data-all-count="3117"><input name="heavy" data-all-count="2">
+  <input name="spy" data-all-count="100"><input name="ram" data-all-count="0"><input name="catapult" data-all-count="0">
+  <input name="knight" data-all-count="0"><input name="snob" data-all-count="0">
+  <button id="target_attack" name="attack">Attack</button><button id="target_support" name="support">Support</button>
+</form>
+<script>
+const page = new URL(location.href);
+window.game_data = { world: 'br143-t5-test', player: { id: 7 }, village: { id: page.searchParams.get('village') || '2065', x: page.searchParams.get('village') === '2065' ? 516 : 515, y: page.searchParams.get('village') === '2065' ? 458 : 457 },
+  units: ['spear','sword','axe','spy','light','heavy','ram','catapult','knight','snob'] };
+window.open = (url, name) => parent.openPreparationTab(url, name);
+window.__EAS_TW_SILENT_BOOTSTRAP__ = true;
+window.EAS = {
+  Modules: {}, Minting: {},
+  UI: { toggle() {}, FloatingPanel: { initialize() {} } },
+  World: { getWorldName: () => game_data.world, getPlayer: () => game_data.player, getServerNowTimestamp: () => parent.testClock },
+  Utils: { parseCoordinate: value => { const m = /^(\d{1,3})\|(\d{1,3})$/.exec(String(value)); return m ? { coordinate: `${+m[1]}|${+m[2]}` } : null; } },
+  MassSnipeExecution: { getCurrentServerTimeMs: () => parent.testClock },
+  MassSnipePrecise: {}, ArrivalExecution: {}, ArrivalPlanner: { initialize() {} }, Runtime: { create() {} }, Data: { Troops: {} },
+  FakesExecution: { readOutgoingCommands() { parent.effects.baseline++; throw new Error('Baseline forbidden during preparation'); } },
+  Logger: { info(module, event, data) { parent.trace.push({ event, data }); } }
+};
+window.EASLocalBuild = { id: 'test-real-bootstrap', execute: async asset => {
+  if (EAS.TacticalOperationSchedulerAdapter && asset === 'services/tactical-operation-scheduler-adapter.js') return;
+  if (['core/runtime.js','core/game-data.js','services/mass-snipe-execution.js','services/mass-snipe-precise.js','services/arrival-planner.js','services/arrival-execution.js'].includes(asset)) return; // unrelated Arrival Planner init on info_village
+  if (!['services/tactical-operation-scheduler-adapter.js','services/mission-scheduler.js','services/place.js'].includes(asset))
+    throw new Error(`Unexpected dependency ${asset}`);
+  await new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = '../../' + asset; script.onload = resolve; script.onerror = reject; document.head.append(script); });
+} };
+const input = document.querySelector('[name="input"]');
+input.addEventListener('change', () => {
+  parent.effects.targetApplications++;
+  input.value = ''; input.hidden = true;
+  setTimeout(() => {
+    const item = document.createElement('div'); item.className = 'village-item';
+    item.innerHTML = '<span class="village-name">Aldeia de bárbaros (507|471)</span>';
+    document.getElementById('place_target').append(item);
+  }, 50);
+});
+document.querySelector('form').addEventListener('submit', event => { event.preventDefault(); parent.effects.submit++; });
+for (const id of ['target_attack', 'target_support']) document.getElementById(id).addEventListener('click', event => { event.preventDefault(); parent.effects.click++; });
+if (page.searchParams.get('screen') !== 'place') document.querySelector('form').hidden = true;
+window.addEventListener('eas-tw-hub-error', event => { parent.trace.push({ event: 'bootstrap-error', data: event.detail }); });
+</script>
+<script src="../../services/place.js"></script>
+<script>
+// Only the transport destination is local: production service creates all context parameters.
+EAS.Place.buildPlaceUrl = id => { const url = new URL(location.href); url.search = ''; url.searchParams.set('screen','place'); url.searchParams.set('village',id); return url; };
+</script>
+<script src="../../index.js"></script>

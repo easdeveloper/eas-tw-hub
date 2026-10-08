@@ -210,7 +210,7 @@ test('review sorting is by send timestamp and filters do not mutate roles', () =
     assert.equal(api.setFilter(draft, 'OFFENSIVE').operation.slots[0].role, 'attack');
 });
 
-test('Final Review expands mixed ATTACK, SUPPORT, and NT2 into send-ordered real commands', () => {
+test('Final Review expands mixed ATTACK, SUPPORT, and NT2 into arrival-ordered real commands', () => {
     const candidates = [
         { source: { id: '2', coord: '502|500', name: 'Attack source' }, ownHome: { spear: 100, spy: 9 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { spear: { durationMs: 3000, trusted: true } } },
         { source: { id: '1', coord: '501|500', name: 'Support source' }, ownHome: { ram: 20 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { ram: { durationMs: 3000, trusted: true } } },
@@ -232,17 +232,18 @@ test('Final Review expands mixed ATTACK, SUPPORT, and NT2 into send-ordered real
     assert.equal(review.validation.noOverAllocation, true);
     assert.equal(review.validation.timingAvailable, true);
     assert.deepEqual(review.commands.map(command => command.slotId), [
-        `${trainSlot.id}:nt:1`, `${trainSlot.id}:nt:2`, supportSlot.id, attackSlot.id
+        `${trainSlot.id}:nt:1`, supportSlot.id, attackSlot.id, `${trainSlot.id}:nt:2`
     ]);
+    assert.deepEqual(review.commands.map(command => command.desiredArrivalMs), [20_000, 20_000, 20_000, 20_100]);
     assert.equal(review.commands[0].trainIndex, 1);
-    assert.equal(review.commands[1].trainIndex, 2);
-    assert.equal(review.commands[2].sendAtMs, review.commands[3].sendAtMs);
-    assert.deepEqual(review.commands.map(command => command.commandType), ['attack', 'attack', 'support', 'attack']);
+    assert.equal(review.commands[3].trainIndex, 2);
+    assert.equal(review.commands[1].sendAtMs, review.commands[2].sendAtMs);
+    assert.deepEqual(review.commands.map(command => command.commandType), ['attack', 'support', 'attack', 'attack']);
     assert.deepEqual(review.commands.map(command => command.composition.quantities), [
         { snob: 1, axe: 151, light: 151, knight: 1 },
-        { snob: 1, axe: 150, light: 150 },
         { ram: 2 },
-        { spear: 10 }
+        { spear: 10 },
+        { snob: 1, axe: 150, light: 150 }
     ]);
     assert.deepEqual(JSON.parse(JSON.stringify(review.totals)), { snob: 2, axe: 301, light: 301, knight: 1, ram: 2, spear: 10 });
     assert.deepEqual(JSON.parse(JSON.stringify(review.counts)), { villages: 3, attacks: 1, supports: 1, trains: 1, nobleCommands: 2, commands: 4 });

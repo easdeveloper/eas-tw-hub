@@ -125,6 +125,52 @@
         operation.reviewState = 'unreviewed';
         return { ...cloneDraft(draft), operation, revision: operation.revision, reviewState: 'unreviewed', approvedAt: null };
     };
+    const restoreEditableConfiguration = (freshDraft, record) => {
+        if (!freshDraft?.operation || record?.schemaVersion !== 1 || !Array.isArray(record.slots) || record.slots.length > 200)
+            return { restored: false, reason: 'DRAFT_SCHEMA_INVALID', draft: freshDraft, name: '' };
+        if (record.target?.coord && record.target.coord !== freshDraft.operation.target?.coord)
+            return { restored: false, reason: 'TARGET_COORDINATE_MISMATCH', draft: freshDraft, name: record.name || '' };
+        let draft = cloneDraft(freshDraft);
+        const roles = new Set(['attack', 'support', 'nt2', 'nt3', 'nt4', 'nt5']);
+        for (const [index, saved] of record.slots.entries()) {
+            const sourceId = identity(saved.sourceId);
+            if (!sourceId || !roles.has(saved.role)) continue;
+            let slot = draft.operation.slots.find(item => identity(item.source?.id) === sourceId);
+            if (!slot) {
+                draft = addSlot(draft, { id: `saved-${sourceId}-${index + 1}`, role: 'unused', groupIndex: draft.operation.slots.length + 1,
+                    arrivalOffsetMs: 0, source: { id: sourceId, coord: saved.sourceCoord || null, name: saved.sourceName || null },
+                    compositionRef: null, composition: { requestedMode: 'custom', quantities: {}, confirmed: false,
+                        evidence: { mode: 'draft', materializedBy: 'draft-restore' }, limitingUnits: [] }, status: 'draft', validation: null });
+                slot = draft.operation.slots[draft.operation.slots.length - 1];
+            }
+            draft = setRole(draft, slot.id, saved.role);
+            slot = draft.operation.slots.find(item => item.id === slot.id);
+            if (saved.sourceCoord && saved.sourceCoord !== slot.source.coord) {
+                draft = updateSlot(draft, slot.id, current => {
+                    current.source = { ...current.source, id: sourceId, coord: saved.sourceCoord, name: saved.sourceName || current.source.name || null };
+                    current.composition.confirmed = false;
+                    current.status = 'edited';
+                });
+            }
+            if (integer(saved.arrivalOffsetMs)) draft = setArrivalOffset(draft, slot.id, saved.arrivalOffsetMs);
+            if (saved.role.startsWith('nt')) continue;
+            if (saved.compositionMode === 'full') {
+                const candidate = draft.operation.candidates.find(item => identity(item.source?.id) === sourceId);
+                const fresh = candidate?.evidence?.trusted === true && candidate.evidence.complete === true && candidate.evidence.fresh === true;
+                const quantities = fresh ? Object.fromEntries(Object.entries(candidate.ownHome || {}).filter(([, amount]) => integer(amount) && amount > 0)) : {};
+                draft = materializeFull(draft, slot.id, quantities);
+            } else if (saved.compositionMode === 'custom') {
+                draft = useCustomComposition(draft, slot.id);
+                for (const [unit, amount] of Object.entries(saved.customQuantities || {})) {
+                    if (typeof amount === 'number' && Number.isFinite(amount)) draft = setCustomQuantity(draft, slot.id, unit, amount);
+                }
+            }
+        }
+        if (record.filter) draft = setFilter(draft, record.filter);
+        draft = { ...draft, reviewState: 'unreviewed', executionArtifact: null, approvedAt: null, draft: true };
+        draft.operation.reviewState = 'unreviewed';
+        return { restored: true, reason: null, draft, name: String(record.name || '') };
+    };
     const validateDraft = draft => {
         const operation = cloneDraft(draft.operation);
         const planner = EAS.TacticalOperationPlanner;
@@ -192,7 +238,9 @@
     const buildFinalReview = (draft, { unitOrder = [] } = {}) => {
         const plan = validateDraft({ ...draft, filter: 'ALL' });
         const commands = plan.missions.map(mission => copy(mission)).sort((a, b) =>
-            (a.sendAtMs ?? Infinity) - (b.sendAtMs ?? Infinity) || (a.slotId < b.slotId ? -1 : a.slotId > b.slotId ? 1 : 0));
+            (a.desiredArrivalMs ?? Infinity) - (b.desiredArrivalMs ?? Infinity) ||
+            (a.sendAtMs ?? Infinity) - (b.sendAtMs ?? Infinity) ||
+            (a.slotId < b.slotId ? -1 : a.slotId > b.slotId ? 1 : 0));
         const totals = {}, blockers = [...plan.blockers];
         for (const command of commands) {
             // Keep invalid evidence visible on blocked commands; only genuine zeroes are omitted.
@@ -251,6 +299,6 @@
             operationId: review.operationId, revision: review.revision, target: copy(review.target), centralArrivalMs: review.centralArrivalMs,
             commands: copy(review.commands), totals: copy(review.totals), counts: copy(review.counts), validation: copy(review.validation), unitOrder: copy(review.unitOrder) });
     };
-    const api = Object.freeze({ buildFinalReview, approveFinalReview, createDraft, materializeFull, useCustomComposition, setCustomQuantity, setRole, setArrivalOffset, setFilter, confirmComposition, approveReview, addSlot, validateDraft, cloneDraft });
+    const api = Object.freeze({ buildFinalReview, approveFinalReview, createDraft, materializeFull, useCustomComposition, setCustomQuantity, setRole, setArrivalOffset, setFilter, confirmComposition, approveReview, addSlot, restoreEditableConfiguration, validateDraft, cloneDraft });
     EAS.TacticalOperationController = api;
 })();

@@ -8,16 +8,19 @@ const candidate = { source: { id: '1', coord: '500|500', name: 'Source' }, ownHo
 const candidateTwo = { ...candidate, source: { id: '2', coord: '499|500', name: 'Second Source' }, ownHome: { ...candidate.ownHome } };
 const realUnits = ['spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob', 'militia'];
 const realCandidate = { source: { id: '75186', coord: '510|491', name: 'Source 75186' }, ownHome: Object.fromEntries(realUnits.map(unit => [unit, unit === 'heavy' ? 200 : 0])), evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { heavy: { durationMs: 102347000, trusted: true } }, eligibility: 'eligible', blockingReasons: [], warnings: [] };
-let failAnalysis = false, analysisCalls = 0;
+let failAnalysis = false, analysisCalls = 0, lastTarget = null;
 window.EAS = { Modules: {}, MissionScheduler: forbidden, ScheduledMissionExecution: forbidden, FakesExecution: forbidden, SupportExecution: forbidden, Runtime: forbidden,
-  TacticalOperationData: { analyzeTarget: async () => { analysisCalls += 1; if (failAnalysis) throw new Error('fixture analysis failure'); return { status: 'complete', partial: false, reason: null, failureStage: null, errorCode: null, errorMessage: null, target: { villageId: '9', coord: '501|501', name: 'Target', playerId: '7' }, sourcesDiscovered: 3, candidates: [candidate, candidateTwo, realCandidate], startedAt: 1, finishedAt: 2, summary: { completeTroops: 3, blockedTroops: 0, mapInfoSuccess: 3, mapInfoFailed: 0, mapInfoPending: 0 } }; } },
-  World: { getServerDateTime: () => ({ available: true, year: 2026, month: 10, day: 5, hours: 0, minutes: 0, seconds: 0, milliseconds: 0 }) },
+  TacticalOperationData: { analyzeTarget: async options => { analysisCalls += 1; lastTarget = options.target; if (failAnalysis) throw new Error('fixture analysis failure'); return { status: 'complete', partial: false, reason: null, failureStage: null, errorCode: null, errorMessage: null, target: { villageId: '9', coord: '501|501', name: 'Target', playerId: '7' }, sourcesDiscovered: 3, candidates: [candidate, candidateTwo, realCandidate], startedAt: 1, finishedAt: 2, summary: { completeTroops: 3, blockedTroops: 0, mapInfoSuccess: 3, mapInfoFailed: 0, mapInfoPending: 0 } }; } },
+  World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }), getServerDateTime: () => ({ available: true, year: 2026, month: 10, day: 5, hours: 0, minutes: 0, seconds: 0, milliseconds: 0 }) },
   Utils: { createServerDateTime: (date, time) => { const d = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(date); const t = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(time); return d && t ? { year: +d[3], month: +d[2], day: +d[1], hours: +t[1], minutes: +t[2], seconds: +t[3], milliseconds: +(t[4] || '0') } : null; } },
   UI: { createWindow: ({ id, title, width }) => { document.getElementById(id)?.remove(); const element = document.createElement('section'); element.id = id; element.innerHTML = `<h1>${title}</h1><div class="eas-window__body"></div>`; document.body.append(element); return { element, body: element.querySelector('.eas-window__body'), close: () => element.remove() }; } } };
 window.__executionApiReads = 0;
 </script>
 <script src="../services/tactical-operation-planner.js"></script>
 <script src="../services/tactical-operation-controller.js"></script>
+<script src="../services/tactical-operation-drafts.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>localStorage.removeItem(EAS.TacticalOperationSchedulerAdapter.STORAGE_KEY);</script>
 <script src="../modules/tactical-operation-planner.js"></script>
 <script>
 (async () => {
@@ -57,6 +60,38 @@ window.__executionApiReads = 0;
   check(root.querySelector('[data-op-balances]').textContent.includes('500|500'), 'balance identity includes coordinate');
   check(root.querySelector('[data-op-balances]').textContent.includes('ID: 1'), 'internal ID is secondary');
   check(root.querySelector('[data-op-balances]').textContent.includes('Alocado: -'), 'unused source has no allocation');
+  const editableSlotId = module.getState().draft.operation.slots[0].id;
+  const editableRole = root.querySelector(`[data-role="${editableSlotId}"]`); editableRole.value = 'attack'; editableRole.dispatchEvent(new Event('change', { bubbles: true }));
+  root.querySelector(`[data-custom="${editableSlotId}"]`).click();
+  const savedSpear = [...root.querySelectorAll(`[data-quantity="${editableSlotId}"]`)].find(input => input.dataset.unit === 'spear');
+  savedSpear.value = '10'; savedSpear.dispatchEvent(new Event('change', { bubbles: true }));
+  const savedOffset = root.querySelector(`[data-offset="${editableSlotId}"]`); savedOffset.value = '500'; savedOffset.dispatchEvent(new Event('change', { bubbles: true }));
+  root.querySelector(`[data-confirm="${editableSlotId}"]`).click();
+  root.querySelector('[data-draft-name]').value = 'FANTASMA salvo';
+  check(!root.querySelector('[data-draft-save]').disabled, 'analyzed editable operation enables draft save');
+  root.querySelector('[data-draft-save]').click();
+  const savedRecord = EAS.TacticalOperationDrafts.list()[0];
+  check(savedRecord.name === 'FANTASMA salvo' && savedRecord.slots[0].sourceId === '1', 'saved draft keeps its name and stable source ID');
+  check(!Object.hasOwn(savedRecord, 'candidates') && !Object.hasOwn(savedRecord, 'analysisId') && !Object.hasOwn(savedRecord, 'approvedSnapshot'), 'saved draft excludes stale evidence and approvals');
+  root.querySelector('[data-draft-select]').value = savedRecord.draftId;
+  root.querySelector('[data-draft-load]').click();
+  check(analysisCalls === 1 && module.getState().draft === null && module.getState().approvedSnapshot === null && !module.getState().finalReview && root.querySelector('[data-op-review]').disabled, 'loading is not analysis, approval, or execution authorization');
+  root.querySelector('[data-op-time]').value = '08:30:00.000';
+  const reanalysisFinished = new Promise(resolve => root.addEventListener('tactical-operation-analysis-finished', resolve, { once: true }));
+  root.querySelector('[data-op-analyze]').click(); await reanalysisFinished;
+  const restoredDraft = module.getState().draft, restoredSlot = restoredDraft.operation.slots.find(slot => slot.source.id === '1');
+  check(analysisCalls === 2, 'loading requires a new analysis');
+  check(lastTarget.villageId === '9' && lastTarget.playerId === '7', 'matching saved target metadata is revalidated during fresh analysis');
+  check(restoredSlot.role === 'attack' && restoredSlot.arrivalOffsetMs === 500, 'role and offset restore by stable village identity');
+  check(restoredSlot.composition.requestedMode === 'custom' && restoredSlot.composition.quantities.spear === 10 && !restoredSlot.composition.confirmed, 'CUSTOM restores without reusing old confirmation');
+  check(restoredDraft.operation.centralArrivalMs === Date.UTC(2026, 9, 6, 8, 30), 'edited central arrival replaces the saved prior time');
+  const confirmRestored = root.querySelector(`[data-confirm="${restoredSlot.id}"]`); confirmRestored.click();
+  const restoredMission = EAS.TacticalOperationController.validateDraft(module.getState().draft).missions.find(mission => mission.slotId === restoredSlot.id);
+  check(restoredMission.desiredArrivalMs === Date.UTC(2026, 9, 6, 8, 30, 0, 500), 'new validation recomputes desired arrival using edited central time and saved offset');
+  root.querySelector('[data-draft-select]').value = savedRecord.draftId;
+  root.querySelector('[data-draft-delete]').click();
+  check(!EAS.TacticalOperationDrafts.list().some(record => record.draftId === savedRecord.draftId), 'delete removes the selected reusable draft');
+  const resetRole = root.querySelector(`[data-role="${restoredSlot.id}"]`); resetRole.value = 'unused'; resetRole.dispatchEvent(new Event('change', { bubbles: true }));
   root.querySelector('[data-filter="ALL"]').click();
   let realRow = [...root.querySelectorAll('[data-op-table] tr')].find(row => row.querySelector('td')?.textContent.includes('510|491'));
   realRow.querySelector('[data-role]').value = 'support';
@@ -144,7 +179,7 @@ window.__executionApiReads = 0;
   check(root.querySelectorAll('[data-nt-command]').length === 4, 'real-style NT4 ready review has four commands');
   check([...root.querySelectorAll('[data-nt-command]')].every(node => node.textContent.includes('READY')), 'real-style NT4 ready without confirmation or materialization');
   check(root.querySelector('[data-nt-command="1"]').textContent.includes('1606 Machado') && root.querySelector('[data-nt-command="4"]').textContent.includes('779 Leve'), 'UI consumes exact domain distribution');
-  check(root.querySelector('[data-nt-command="4"]').textContent.includes('08:00:00.300'), 'UI shows last arrival milliseconds');
+  check(root.querySelector('[data-nt-command="4"]').textContent.includes('08:30:00.300'), 'UI shows last arrival milliseconds after editing loaded draft time');
   check(!root.querySelector('[data-op-review]').disabled, 'automatic NT review can be approved');
   const reviewedDraft = module.getState().draft;
   root.querySelector('[data-op-review]').click();
@@ -168,6 +203,11 @@ window.__executionApiReads = 0;
   check(module.getState().approvedSnapshot?.snapshotKind === 'tactical-approved-operation', 'approval creates an in-memory approved snapshot');
   check(module.getState().approvedSnapshot?.commands.length === 4, 'approved snapshot contains all concrete NT commands');
   check(finalView.textContent.includes('Nenhum comando criado'), 'approval does not create or prepare commands');
+  check(Boolean(finalView.querySelector('[data-final-queue]')), 'preparation enqueue is a separate post-approval action');
+  finalView.querySelector('[data-final-queue]').click(); await new Promise(resolve => setTimeout(resolve, 0));
+  check(EAS.TacticalOperationSchedulerAdapter.list().length === 1, 'approved snapshot enters separate Tactical preparation queue');
+  check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].state === 'BLOCKED' && EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].blockers.includes('NATIVE_NT_NATIVE_TIMING_UNPROVEN'), 'NT send-time mismatch blocks instead of guessing');
+  check(EAS.MissionScheduler === forbidden && EAS.ScheduledMissionExecution === forbidden, 'enqueue does not use legacy Scheduler or execution APIs');
   finalView.querySelector('[data-final-back]').click();
   const blockedRole = root.querySelector('[data-role]'); blockedRole.value = 'nt4'; blockedRole.dispatchEvent(new Event('change', { bubbles: true }));
   root.querySelector('[data-op-review]').click();

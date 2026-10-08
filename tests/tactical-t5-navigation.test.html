@@ -1,0 +1,90 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+window.testClock = 1791335829000;
+window.effects = { click: 0, submit: 0, baseline: 0, targetApplications: 0 };
+window.trace = [];
+window.preparationTabs = [];
+window.openPreparationTab = (url, name) => {
+  const frame = document.createElement('iframe'); frame.name = name; frame.style.cssText='width:900px;height:400px';
+  document.body.append(frame); preparationTabs.push(frame); frame.src = url;
+  return frame.contentWindow;
+};
+window.game_data = { world: 'br143-t5-test', player: { id: 7 } };
+window.EAS = { World: { getWorldName: () => game_data.world, getPlayer: () => game_data.player } };
+</script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>
+(async () => {
+  const failures = []; let assertions = 0;
+  const check = (ok, text) => { assertions++; if (!ok) failures.push(text); };
+  const api = EAS.TacticalOperationSchedulerAdapter, sendAt = testClock + 600000;
+  const wait = async predicate => { for (let i=0; i<180; i++) { if (predicate()) return; await new Promise(r => setTimeout(r,20)); } throw new Error('Timeout: ' + predicate + '\n' + JSON.stringify(trace.slice(-10))); };
+  localStorage.removeItem(api.STORAGE_KEY);
+  const command = { slotId: 'one', parentSlotId: 'one', source: { id:'2065',coord:'516|458' }, target: { coord:'507|471' }, commandType:'attack',
+    composition: { quantities:{sword:7,axe:5930,light:3117,heavy:2,archer:0,marcher:0} }, sendAtMs:sendAt, desiredArrivalMs:sendAt+10000,
+    travelTimeMs:10000, validationStatus:'ready', blockers:[] };
+  const queued = api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'real-br143-t5',revision:1,validation:{valid:true},target:command.target,commands:[command]},{createdAt:1});
+  const eid=queued.execution.executionId, uid=queued.execution.units[0].executionUnitId;
+  const read = () => api.list()[0].units[0];
+  api.authorizeStoredUnit(eid,uid,{authorizedAt:testClock});
+  const frame=document.createElement('iframe'); frame.style.cssText='width:900px;height:400px';
+  frame.src='fixtures/tactical-rally-bootstrap.html?screen=info_village&village=999'; document.body.append(frame);
+  await wait(() => frame.contentWindow.__EASIndexBootstrap?.completedAt);
+  let w=frame.contentWindow;
+  await wait(() => w.EAS.MissionScheduler?.getRuntime);
+  check(w.EAS.MissionScheduler.getRuntime(w).initialized, 'real index initializes existing tick without opening Hub or agenda');
+  w.EAS.MissionScheduler.tick(w);
+  check(read().state==='PRECHECK_10M' && w.game_data.village.x===515, 'actual T-10 accepts a different selected village/screen');
+  const originalPrecheck=JSON.stringify(read().lastPreflight);
+  testClock=sendAt-300001; w.EAS.MissionScheduler.tick(w);
+  check(!read().rallyPreparation && effects.targetApplications===0, 'one ms before T-5 does nothing');
+  const previousDocument=w.document;
+  testClock=sendAt-300000; w.EAS.MissionScheduler.tick(w);
+  await wait(() => !!read().rallyPreparation);
+  check(preparationTabs.length===1 && frame.contentDocument===previousDocument, 'exact T-5 opens dedicated tab without hijacking controller');
+  const tab=preparationTabs[0];
+  await wait(() => tab.contentWindow.__EASIndexBootstrap?.completedAt);
+  w=tab.contentWindow;
+  await wait(() => read().state==='PREPARED');
+  check(new URL(w.location.href).searchParams.get('eas_tactical_execution_id')===eid, 'new document keeps exact persisted execution context');
+  check(w.__EAS_TW_RUNTIME_RESUMED__?.type==='tactical-preparation', 'real index resume router continues preparation');
+  for (const [name, amount] of Object.entries({sword:7,axe:5930,light:3117,heavy:2})) check(w.document.querySelector(`[name="${name}"]`).value===String(amount), name+' filled automatically');
+  check(w.document.querySelector('[name="spear"]').value==='' && !w.document.querySelector('[name="archer"]'), 'zero units blank; missing zero archer accepted');
+  check(JSON.stringify(read().lastPreflight)===originalPrecheck, 'T-10 timing diagnostics survive dedicated-tab navigation');
+  check(read().rallyPreparation.evidence.targetIdentityDiagnostic.resolvedCoordinate==='507|471', 'resolved card and read-back persisted');
+  check(!read().attemptId && !read().outgoingBaseline && !read().finalAuthorization && read().nextCheckpoint==='SYNC_2M', 'PREPARED stops before all sending infrastructure');
+  await Promise.all([w.resumeEASRuntimeIfNeeded(),w.resumeEASRuntimeIfNeeded(),w.EAS.TacticalOperationSchedulerAdapter.prepareRallyPoint(eid,uid,w)]);
+  w.EAS.TacticalOperationSchedulerAdapter.initializePreparationPage(w);
+  w.EAS.MissionScheduler.tick(w);
+  check(effects.targetApplications===1, 'duplicate bootstrap/tick does not repeat target application');
+  check(effects.click===0 && effects.submit===0 && effects.baseline===0, 'zero Attack/Support clicks, submits and baseline captures');
+  check(trace.some(x=>x.event==='TACTICAL_PREPARATION_NAVIGATION' && x.data.action==='AUTOMATIC_PREPARE_5M_OPEN_RALLY_POINT' && x.data.navigationStarted), 'automatic navigation diagnostic');
+  check(trace.some(x=>x.event==='TACTICAL_PREPARATION_BOOTSTRAP_RESUMED') && trace.some(x=>x.event==='TACTICAL_PREPARATION_COMPLETED'), 'bootstrap and completion diagnostics');
+  frame.contentWindow.EAS.MissionScheduler.tick(frame.contentWindow);
+  await new Promise(r=>setTimeout(r,20));
+  check(preparationTabs.length===1, 'controller ticks do not duplicate prepared tab');
+  const oldController=frame.contentDocument; frame.contentWindow.location.reload();
+  await wait(() => frame.contentDocument!==oldController && frame.contentWindow.__EASIndexBootstrap?.completedAt);
+  check(preparationTabs.length===1 && read().state==='PREPARED', 'controller reload retains independent prepared unit and does not reopen tab');
+  // Wrong source on arrival: the dedicated tab lands on a different village and must block before applying anything.
+  const appliedBefore=effects.targetApplications, tabsBefore=preparationTabs.length;
+  const sendAt2=testClock+600000, command2={...command, slotId:'two', parentSlotId:'two', sendAtMs:sendAt2, desiredArrivalMs:sendAt2+10000};
+  const queued2=api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'real-br143-wrong-arrival',revision:1,validation:{valid:true},target:command2.target,commands:[command2]},{createdAt:2});
+  const eid2=queued2.execution.executionId, uid2=queued2.execution.units[0].executionUnitId;
+  const read2=()=>api.list().find(e=>e.executionId===eid2).units[0];
+  api.authorizeStoredUnit(eid2,uid2,{authorizedAt:testClock});
+  const frame2=document.createElement('iframe'); frame2.style.cssText='width:900px;height:400px'; frame2.src='fixtures/tactical-rally-bootstrap.html?screen=info_village&village=999'; document.body.append(frame2);
+  await wait(() => frame2.contentWindow.EAS?.MissionScheduler?.tick && frame2.contentWindow.EAS.Place);
+  const cw=frame2.contentWindow;
+  cw.EAS.Place.buildPlaceUrl=id=>{ const url=new URL(cw.location.href); url.search=''; url.searchParams.set('screen','place'); url.searchParams.set('village','999'); return url; };
+  cw.EAS.MissionScheduler.tick(cw);
+  check(read2().state==='PRECHECK_10M', 'second unit passes T-10 from a different village');
+  testClock=sendAt2-300000; cw.EAS.MissionScheduler.tick(cw);
+  await wait(() => preparationTabs.length===tabsBefore+1);
+  await wait(() => read2().state==='BLOCKED');
+  check(read2().blockers.includes('SOURCE_IDENTITY_MISMATCH') && effects.targetApplications===appliedBefore, 'wrong source on arrival blocks before applying anything');
+  check(effects.click===0 && effects.submit===0 && !read2().attemptId && !read2().finalAuthorization, 'wrong source arrival creates no click, submit, attempt or authorization');
+  w.EAS.MissionScheduler.stop(w); tab.remove(); frame.remove(); frame2.remove();
+  document.title=failures.length?'FAIL':'PASS'; document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS - ${assertions} assertions`;
+})().catch(error => { document.title='FAIL'; document.getElementById('result').textContent=error.stack; });
+</script>
