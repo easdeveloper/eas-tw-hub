@@ -31,18 +31,22 @@
         const pad = (value, size = 2) => String(value).padStart(size, '0');
         return `${Math.floor(duration / 3600000)}:${pad(Math.floor(duration / 60000) % 60)}:${pad(Math.floor(duration / 1000) % 60)}.${pad(duration % 1000, 3)}`;
     };
-    const getCurrentServerTimeMs = () => {
+    const getCurrentServerTimeMs = (observeClock) => {
         // Reuse the Hub's #serverDate/#serverTime reader, but never its locally
         // constructed timestamp. The displayed fields define the server calendar.
         const server = EAS.World.getServerDateTime();
         if (!server.date || !server.time) throw new Error('Data/hora do servidor indisponível.');
         const wallTime = getLandingTime(`${server.date} ${server.time.replace('.', ':')}`).getTime();
         const synchronized = window.Timing?.getCurrentServerTime?.();
-        if (!Number.isFinite(synchronized)) return wallTime;
+        const report = offset => { try { if (typeof observeClock === 'function') observeClock({
+            domWallTimeMs: wallTime, rawTimingMs: Number.isFinite(synchronized) ? synchronized : null, appliedOffsetMs: offset
+        }); } catch { /* Diagnostic observers cannot affect the authoritative clock. */ } };
+        if (!Number.isFinite(synchronized)) { report(null); return wallTime; }
         // Discover the clock offset in whole minutes (including fractional-hour
         // zones). Rounding only the offset avoids importing the DOM clock's
         // second-level quantization into Timing's millisecond precision.
         const offset = Math.round((wallTime - synchronized) / 60000) * 60000;
+        report(offset);
         return synchronized + offset;
     };
 

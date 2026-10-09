@@ -38,12 +38,12 @@
         unit.blockers = [...new Set([...(unit.blockers || []), reason])];
         unit.state = 'BLOCKED';
     };
-    const readAuthoritativeNowMs = targetWindow => {
+    const readAuthoritativeNowMs = (targetWindow, observeClock) => {
         let raw;
         try {
             const provider = targetWindow?.EAS?.MassSnipeExecution?.getCurrentServerTimeMs;
             if (typeof provider !== 'function') return { available: false, nowMs: null, reason: 'TIMING_PROVIDER_UNAVAILABLE' };
-            raw = provider.call(targetWindow.EAS.MassSnipeExecution);
+            raw = provider.call(targetWindow.EAS.MassSnipeExecution, observeClock);
         } catch { return { available: false, nowMs: null, reason: 'TIMING_PROVIDER_ERROR' }; }
         if (typeof raw !== 'number') return { available: false, nowMs: null, reason: 'TIMING_VALUE_NOT_NUMERIC' };
         if (!Number.isFinite(raw)) return { available: false, nowMs: null, reason: 'TIMING_VALUE_NOT_FINITE' };
@@ -239,19 +239,47 @@
         return freeze(unit);
     };
 
+    // Diagnostic-only, bounded numeric whitelist. All input samples still participate in validation.
+    const clockDiagnostic = (samples, now, limits, result) => {
+        const numeric = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+        const all = Array.isArray(samples) ? samples : [];
+        const offsets = all.map(sample => integer(sample?.serverNowMs) && integer(sample?.localNowMs)
+            ? sample.serverNowMs - sample.localNowMs : null);
+        const sorted = offsets.filter(value => value !== null).sort((a, b) => a - b);
+        const complete = all.length > 0 && sorted.length === all.length;
+        return { version: 1, valid: result.valid === true, reason: result.blocker || null, nowMs: numeric(now),
+            sampleCount: all.length, truncated: all.length > 8,
+            samples: all.slice(0, 8).map((sample, index) => ({ index,
+                ...Object.fromEntries(['serverNowMs', 'localNowMs', 'measuredAt', 'rawTimingMs', 'providerTimingMs',
+                    'domWallTimeMs', 'appliedOffsetMs', 'readDurationMs'].map(key => [key, numeric(sample?.[key])])), offsetMs: offsets[index] })),
+            minimumOffsetMs: complete ? sorted[0] : null, maximumOffsetMs: complete ? sorted[sorted.length - 1] : null,
+            medianOffsetMs: complete ? sorted[Math.floor(sorted.length / 2)] : null,
+            spreadMs: complete ? sorted[sorted.length - 1] - sorted[0] : null,
+            limits: Object.fromEntries(['minimumSamples', 'maximumSpreadMs', 'maximumAgeMs', 'maximumAbsoluteOffsetMs'].map(key => [key, numeric(limits[key])])) };
+    };
+    const exposedClockDiagnostic = value => {
+        if (!value) return null;
+        const result = clockDiagnostic(value.samples, value.nowMs, value.limits || {}, { valid: value.valid, blocker: value.reason });
+        for (const key of ['sampleCount', 'minimumOffsetMs', 'maximumOffsetMs', 'medianOffsetMs', 'spreadMs'])
+            result[key] = typeof value[key] === 'number' && Number.isFinite(value[key]) ? value[key] : null;
+        result.truncated = value.truncated === true;
+        return result;
+    };
     const evaluateClockSamples = (samples, now = Date.now(), { minimumSamples = 3, maximumSpreadMs = 500, maximumAgeMs = 120000, maximumAbsoluteOffsetMs = 86400000 } = {}) => {
+        const finish = result => ({ ...result, diagnostic: clockDiagnostic(samples, now,
+            { minimumSamples, maximumSpreadMs, maximumAgeMs, maximumAbsoluteOffsetMs }, result) });
         if (!Array.isArray(samples) || samples.length < minimumSamples || !integer(now) ||
             samples.some(sample => !integer(sample.serverNowMs) || !integer(sample.localNowMs) || !integer(sample.measuredAt)))
-            return { valid: false, blocker: 'CLOCK_SAMPLES_INSUFFICIENT' };
+            return finish({ valid: false, blocker: 'CLOCK_SAMPLES_INSUFFICIENT' });
         const offsets = samples.map(sample => sample.serverNowMs - sample.localNowMs).sort((left, right) => left - right);
         const spreadMs = offsets[offsets.length - 1] - offsets[0];
         const serverClockOffsetMs = offsets[Math.floor(offsets.length / 2)];
         const measuredAt = Math.max(...samples.map(sample => sample.measuredAt));
-        if (spreadMs > maximumSpreadMs) return { valid: false, blocker: 'CLOCK_SAMPLE_OUTLIER', spreadMs };
-        if (Math.abs(serverClockOffsetMs) > maximumAbsoluteOffsetMs) return { valid: false, blocker: 'CLOCK_OFFSET_IMPLAUSIBLE', serverClockOffsetMs };
-        if (now - measuredAt < 0 || now - measuredAt > maximumAgeMs) return { valid: false, blocker: 'CLOCK_EVIDENCE_STALE', measuredAt };
-        return { valid: true, serverClockOffsetMs, sampleCount: samples.length,
-            measuredAt, spreadMs, quality: 'consistent-multiple-samples' };
+        if (spreadMs > maximumSpreadMs) return finish({ valid: false, blocker: 'CLOCK_SAMPLE_OUTLIER', spreadMs });
+        if (Math.abs(serverClockOffsetMs) > maximumAbsoluteOffsetMs) return finish({ valid: false, blocker: 'CLOCK_OFFSET_IMPLAUSIBLE', serverClockOffsetMs });
+        if (now - measuredAt < 0 || now - measuredAt > maximumAgeMs) return finish({ valid: false, blocker: 'CLOCK_EVIDENCE_STALE', measuredAt });
+        return finish({ valid: true, serverClockOffsetMs, sampleCount: samples.length,
+            measuredAt, spreadMs, quality: 'consistent-multiple-samples' });
     };
 
     // The authoritative clock is the server's wall clock parsed as UTC (see mass-snipe-execution getLandingTime), so
@@ -277,6 +305,7 @@
         if (unit.state === 'PREPARED' && evidence.preparedFormValid !== true) block(unit, evidence.preparedFormBlocker || 'PREPARED_FORM_UNVERIFIED');
         if (evidence.source !== 'Timing.getCurrentServerTime+World.getServerDateTime') block(unit, 'CLOCK_PRECISION_UNAVAILABLE');
         const clock = evaluateClockSamples(evidence.samples, evidence.now, evidence.clockPolicy);
+        unit.clockDiagnostic = copy(clock.diagnostic);
         if (!clock.valid) block(unit, clock.blocker);
         if (unit.state !== 'BLOCKED') { unit.state = 'SYNC_2M'; unit.nextCheckpoint = 'FINAL_CHECK'; unit.nextCheckpointAtMs = evidence.preparedFormValid === true ? unit.executionSendAtMs - FINAL_CHECK_START_MS : unit.executionSendAtMs; unit.checkpointDue = true; unit.clockEvidence = { ...clock, source: evidence.source }; unit.syncEvidence = copy(evidence); }
         return freeze(unit);
@@ -675,21 +704,31 @@
         if (!integer(count) || count < 3 || !integer(intervalMs) || intervalMs < 1 ||
             typeof targetWindow.Timing?.getCurrentServerTime !== 'function' ||
             targetWindow.EAS?.World?.getServerDateTime?.()?.available !== true)
-            return { valid: false, blocker: 'CLOCK_PRECISION_UNAVAILABLE', samples: [] };
+            return { valid: false, blocker: 'CLOCK_PRECISION_UNAVAILABLE', samples: [],
+                diagnostic: { ...evaluateClockSamples([], null).diagnostic, reason: 'CLOCK_PRECISION_UNAVAILABLE' } };
         const samples = [];
+        const monotonicNow = () => { try { const value = targetWindow.performance?.now?.(); return Number.isFinite(value) ? value : null; } catch { return null; } };
+        const failed = blocker => ({ valid: false, blocker, samples,
+            diagnostic: { ...evaluateClockSamples(samples, samples.at(-1)?.serverNowMs ?? null).diagnostic, valid: false, reason: blocker } });
         for (let index = 0; index < count; index += 1) {
+            const started = monotonicNow();
             const localNowMs = Date.now();
+            let providerEvidence = null;
             let serverNowMs, synchronizedNowMs;
             try {
                 synchronizedNowMs = targetWindow.Timing.getCurrentServerTime();
             }
-            catch { return { valid: false, blocker: 'CLOCK_SOURCE_UNAVAILABLE', samples }; }
-            const timing = readAuthoritativeNowMs(targetWindow);
-            if (!timing.available) return { valid: false, blocker: timing.reason, samples };
+            catch { return failed('CLOCK_SOURCE_UNAVAILABLE'); }
+            const timing = readAuthoritativeNowMs(targetWindow, value => { providerEvidence = value; });
+            const ended = monotonicNow();
+            if (!timing.available) return failed(timing.reason);
             serverNowMs = timing.nowMs;
             const measuredAt = serverNowMs;
-            if (!integer(serverNowMs) || !Number.isFinite(synchronizedNowMs)) return { valid: false, blocker: 'CLOCK_SOURCE_UNAVAILABLE', samples };
-            samples.push({ serverNowMs, localNowMs, measuredAt, timingSource: 'Timing.getCurrentServerTime' });
+            if (!integer(serverNowMs) || !Number.isFinite(synchronizedNowMs)) return failed('CLOCK_SOURCE_UNAVAILABLE');
+            samples.push({ serverNowMs, localNowMs, measuredAt, timingSource: 'Timing.getCurrentServerTime',
+                rawTimingMs: synchronizedNowMs, providerTimingMs: providerEvidence?.rawTimingMs ?? null,
+                domWallTimeMs: providerEvidence?.domWallTimeMs ?? null, appliedOffsetMs: providerEvidence?.appliedOffsetMs ?? null,
+                readDurationMs: started !== null && ended !== null && ended >= started ? ended - started : null });
             if (index + 1 < count) await new Promise(resolve => targetWindow.setTimeout(resolve, intervalMs));
         }
         const evidence = evaluateClockSamples(samples, samples[samples.length - 1]?.serverNowMs);
@@ -796,22 +835,22 @@
             const unit = lookup(executionId, executionUnitId);
             if (!unit || unit.state !== 'PREPARED' || !preparationAuthorizationValid(unit) || unit.attemptId || unit.finalAuthorization)
                 return { valid: false, blocker: 'SYNC_STATE_INELIGIBLE' };
-            const fail = reason => {
+            const fail = (reason, diagnostic = null) => {
                 const current = lookup(executionId, executionUnitId);
-                if (current?.state === 'PREPARED') { const blocked = copy(current); block(blocked, reason); updateStoredUnit(executionId, executionUnitId, blocked); }
-                executionLog('TACTICAL_SYNC_2M_BLOCKED', unit, { reason });
+                if (current?.state === 'PREPARED') { const blocked = copy(current); block(blocked, reason); if (diagnostic) blocked.clockDiagnostic = copy(diagnostic); updateStoredUnit(executionId, executionUnitId, blocked); }
+                executionLog('TACTICAL_SYNC_2M_BLOCKED', unit, { reason, clockDiagnostic: diagnostic });
                 return { valid: false, blocker: reason };
             };
             const formBlocker = verifyPreparedForm(unit, targetWindow);
             if (formBlocker) return fail(formBlocker);
             const clock = await collectClockSamples(targetWindow);
-            if (!clock.source) return fail(clock.blocker || 'CLOCK_PRECISION_UNAVAILABLE');
+            if (!clock.source) return fail(clock.blocker || 'CLOCK_PRECISION_UNAVAILABLE', clock.diagnostic);
             const again = verifyPreparedForm(lookup(executionId, executionUnitId) || unit, targetWindow);
-            if (again) return fail(again);
+            if (again) return fail(again, clock.diagnostic);
             const now = clock.samples[clock.samples.length - 1]?.serverNowMs;
             const next = advanceSync2m(unit, { now, samples: clock.samples, source: clock.source, preparedFormValid: true });
             if (next.state === 'PREPARED') return { valid: false, blocker: 'SYNC_NOT_DUE' };
-            if (next.state !== 'SYNC_2M') return fail(next.blockers[next.blockers.length - 1]);
+            if (next.state !== 'SYNC_2M') return fail(next.blockers[next.blockers.length - 1], next.clockDiagnostic || clock.diagnostic);
             const saved = updateStoredUnit(executionId, executionUnitId, next);
             if (!saved) return fail('PERSISTED_STATE_TRANSITION_REJECTED');
             executionLog('TACTICAL_SYNC_2M_COMPLETED', saved, { now, clockFrame: describeClockFrame(saved.clockEvidence?.serverClockOffsetMs), spreadMs: clock.spreadMs });
@@ -1101,7 +1140,11 @@
         if (!executionId || !executionUnitId) return false;
         const execution = list().find(item => item.executionId === executionId);
         let unit = execution?.units.find(item => item.executionUnitId === executionUnitId);
-        if (!unit || !preparationAuthorizationValid(unit) || !navigationContextValid(unit, targetWindow)) return false;
+        // The native confirmation URL carries no EAS navigation id; its tab is bound by the persisted confirmation intent and session context.
+        const confirmationPage = url?.searchParams.get('try') === 'confirm' && unit && ['READY_TO_SEND', 'CONFIRMATION_READY', 'BLOCKED'].includes(unit.state) &&
+            unit.confirmationIntent?.navigationId && unit.confirmationIntent.navigationId === unit.rallyPreparation?.navigationId &&
+            targetWindow.name === unit.confirmationIntent.tabName && storedContext?.executionUnitId === executionUnitId && storedContext?.operationId === unit.operationId && storedContext?.revision === unit.revision;
+        if (!unit || !preparationAuthorizationValid(unit) || !(confirmationPage || navigationContextValid(unit, targetWindow))) return false;
         unit = recoverFinalExecution(executionId, executionUnitId, targetWindow) || unit;
         const session = readSessionEvidence(targetWindow, unit);
         const panelId = 'eas-tactical-preparation-panel';
@@ -1209,6 +1252,19 @@
             const syncButton = action('Sincronizar relógio e validar final', syncAndFinal);
             syncButton.hidden = true;
         } else {
+            const describe = current => current.state === 'CONFIRMATION_READY' ? `CONFIRMATION_READY · confirmação nativa validada · PREPARADO, NÃO ENVIADO ·  · READY_TO_SEND não autoriza envio.`
+                : current.state === 'BLOCKED' ? `BLOCKED: ${(current.blockers || []).join(', ')}`
+                : current.confirmationIntent ? `READY_TO_SEND · validando confirmação nativa · ` : null;
+            const confirmationText = describe(unit);
+            if (confirmationText && url.searchParams.get('try') === 'confirm') {
+                status.textContent = confirmationText;
+                const timer = targetWindow.setInterval?.(() => {
+                    const current = lookup(executionId, executionUnitId);
+                    if (!current || !panel.isConnected) { targetWindow.clearInterval(timer); return; }
+                    status.textContent = describe(current) || current.state;
+                    if (['CONFIRMATION_READY', 'BLOCKED', 'CANCELLED'].includes(current.state)) targetWindow.clearInterval(timer);
+                }, 1000);
+            } else
             status.textContent = `${unit.state}${unit.blockers?.length ? ` · ${unit.blockers.join(', ')}` : ''}${unit.state === 'READY_TO_SEND' ? (unit.finalCheckEvidence?.fromPreparedForm === true ? ` · RALLY_PREPARED · confirmação nativa pendente · PREPARADO, NÃO ENVIADO · ${unit.commandType} · ${Object.entries(unit.finalCheckEvidence.composition || {}).map(([name, count]) => `${name} ${count}`).join(', ')} · READY_TO_SEND não autoriza envio.` : ' · escolha DRY RUN ou Autorizar envio real.') : ''}`;
         }
         if (unit.state === 'PREPARE_5M' && url.searchParams.get('try') === 'confirm') action('Sincronizar relógio e validar final', syncAndFinal);
@@ -1660,6 +1716,7 @@
                 source: { id: unit.source?.id ?? null, coord: unit.source?.coord ?? null },
                 target: { id: unit.target?.villageId ?? unit.target?.id ?? null, coord: unit.target?.coord ?? null },
                 scheduledSubmitAtMs: unit.executionSendAtMs ?? null, nativeSubmitAtMs: unit.nativeSubmitAtMs ?? null,
+                clockDiagnostic: exposedClockDiagnostic(unit.clockDiagnostic),
                 rallyPreparation: copy(unit.rallyPreparation || null),
                 blockers: [...(unit.blockers || [])],
                 attempt: { present: Boolean(unit.attemptId), started: Boolean(unit.submitAttempt),

@@ -464,3 +464,32 @@ test('manual T-5 rejects unavailable clocks without unit mutation and exposes bo
     assert.equal(diagnostic.preparationAttempts.length, 100, 'manual attempt diagnostics are capped');
     assert.deepEqual(plain(api.list(options)[0].units[0]), before);
 });
+
+
+test('clock diagnostics preserve offsets, median and exact 500ms boundary without changing decisions',()=>{
+ const samples=[0,250,500].map((offset,index)=>({serverNowMs:10000+offset,localNowMs:10000,measuredAt:10500,index,token:'must-not-copy'}));
+ const ok=api.evaluateClockSamples(samples,10500);assert.equal(ok.valid,true);assert.equal(ok.diagnostic.spreadMs,500);
+ assert.deepEqual(plain(ok.diagnostic.samples.map(s=>s.offsetMs)),[0,250,500]);assert.equal(ok.diagnostic.medianOffsetMs,250);
+ assert.equal(ok.diagnostic.minimumOffsetMs,0);assert.equal(ok.diagnostic.maximumOffsetMs,500);
+ assert.deepEqual(plain(ok.diagnostic.limits),{minimumSamples:3,maximumSpreadMs:500,maximumAgeMs:120000,maximumAbsoluteOffsetMs:86400000});
+ const bad=api.evaluateClockSamples(samples.map((s,i)=>({...s,serverNowMs:s.serverNowMs+(i===2?1:0)})),10501);
+ assert.equal(bad.blocker,'CLOCK_SAMPLE_OUTLIER');assert.equal(bad.diagnostic.reason,bad.blocker);assert.equal(bad.diagnostic.spreadMs,501);
+ assert.equal(bad.diagnostic.samples.length,3);assert.ok(!JSON.stringify(bad.diagnostic).includes('token'));
+ const many=api.evaluateClockSamples(Array.from({length:20},(_,i)=>({...samples[0],serverNowMs:10000+i*100})),12000);
+ assert.equal(many.diagnostic.samples.length,8);assert.equal(many.diagnostic.sampleCount,20);assert.equal(many.diagnostic.spreadMs,1900);assert.equal(many.blocker,'CLOCK_SAMPLE_OUTLIER');
+});
+test('real shared clock observer records the exact values without additional reads or changing its result',async()=>{
+ let raw=Date.UTC(2026,9,9,6,0,0),reads=0,domReads=0,mono=0;
+ const world={getServerDateTime:()=>{domReads++;return {available:true,date:'09/10/2026',time:'03:00:00'};}};
+ const EAS={Selectors:{},Adapters:{},World:world};
+ const w={EAS,Timing:{getCurrentServerTime:()=>{reads++;return raw;}},performance:{now:()=>++mono},setTimeout:fn=>fn()};
+ const context=vm.createContext({EAS,window:w,Date:class extends Date{static now(){return raw;}}});
+ for(const file of ['services/mass-snipe-execution.js','services/tactical-operation-scheduler-adapter.js'])vm.runInContext(fs.readFileSync(file,'utf8'),context);
+ const clock=EAS.MassSnipeExecution;const unchanged=clock.getCurrentServerTimeMs();
+ assert.equal(clock.getCurrentServerTimeMs(()=>{throw Error('diagnostic failure');}),unchanged);
+ reads=0;domReads=0;
+ const result=await EAS.TacticalOperationSchedulerAdapter.collectClockSamples(w);
+ assert.equal(result.valid,true);assert.equal(reads,6,'two existing Timing calls per sample, no diagnostic rereads');assert.equal(domReads,4,'one availability check + one DOM read per sample');
+ for(const sample of result.diagnostic.samples){assert.equal(sample.rawTimingMs,raw);assert.equal(sample.providerTimingMs,raw);assert.equal(sample.domWallTimeMs,raw-10800000);assert.equal(sample.appliedOffsetMs,-10800000);assert.equal(sample.readDurationMs,1);}
+ delete w.performance;assert.equal((await EAS.TacticalOperationSchedulerAdapter.collectClockSamples(w)).diagnostic.samples[0].readDurationMs,null);
+});

@@ -303,6 +303,19 @@ for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'}: READY_TO_
  const e=u.confirmationEvidence;assert.equal(e.nativeDurationMs,10000);assert.equal(e.commandType,support?'support':'attack');assert.equal(e.submitControlCount,1);assert.equal(e.predictedArrivalMs,SEND+10000);assert.equal(e.target.coord,'507|471');
  await f.tick(SEND-30000);assert.equal(f.read().state,'CONFIRMATION_READY');noFinal(f);
 });
+for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'}: confirmation page shows no stale BLOCKED and the panel follows persisted state`,async()=>{
+ const f=await confirmFixture({support});await f.c.open();f.c.go();
+ const mk=()=>({children:[],style:{},dataset:{},addEventListener(){},append(...n){this.children.push(...n);},after(){},remove(){},get isConnected(){return true;}});
+ const body=mk(),made=[];const d=f.w.document;
+ d.readyState='complete';d.getElementById=()=>null;d.createElement=()=>{const e=mk();made.push(e);return e;};d.body=body;
+ f.w.setInterval=()=>1;f.w.clearInterval=()=>{};
+ assert.equal(f.api.initializePreparationPage(f.w),true,'panel initializes on try=confirm');
+ const texts=()=>made.map(e=>e.textContent||'').join('|');
+ assert.ok(!/BLOCKED/.test(texts()));assert.ok(/validando confirma/.test(texts()));
+ await f.tick(SEND-45000);assert.equal(f.read().state,'CONFIRMATION_READY');
+ made.length=0;assert.equal(f.api.initializePreparationPage(f.w),true);assert.ok(/CONFIRMATION_READY/.test(texts())&&/N\u00c3O ENVIADO/.test(texts()));
+ f.w.name='other-tab';assert.equal(f.api.initializePreparationPage(f.w),false,'foreign tab is not adopted');noFinal(f);
+});
 test('reload on the confirmation page recovers from storage; reload on Rally Point after intent never re-clicks',async()=>{
  const f=await confirmFixture();await f.c.open();assert.equal(f.clicks(),1);
  delete f.w.EAS.TacticalOperationSchedulerAdapter;f.listeners.clear();vm.runInContext(f.code,f.ctx);f.w.EAS.TacticalOperationSchedulerAdapter.initializeSchedulerHooks(f.w);
@@ -333,4 +346,26 @@ test('duplicate tab, cancelled, legacy READY_TO_SEND, timeout, missed window, no
  const late=await confirmFixture();await late.c.open(SEND-9000);assert.equal(late.read().state,'BLOCKED');assert.ok(late.read().blockers.includes('CONFIRMATION_WINDOW_MISSED'));assert.equal(late.clicks(),0);noFinal(late);
  const away=await confirmFixture();away.w.location.href='https://br143.tribalwars.com.br/game.php?screen=info_village&village=999';await away.c.open();assert.equal(away.clicks(),0);noFinal(away);
  const noClock=await confirmFixture();noClock.w.EAS.MassSnipeExecution.getCurrentServerTimeMs=undefined;await noClock.tick(SEND-50000).catch(()=>{});assert.equal(noClock.clicks(),0);assert.equal(noClock.read().confirmationIntent,undefined);noFinal(noClock);
+});
+
+
+test('SYNC_2M rejection persists full bounded clock diagnostics through reload without retry or send',async()=>{
+ const f=preparedFixture();let readings=0,mono=0;
+ f.w.performance={now:()=>++mono};
+ f.w.Timing.getCurrentServerTime=()=>{readings++;return f.clockNow();};
+ // Local clock advances inconsistently; authoritative source remains unchanged.
+ let localReads=0;f.ctx.__now=()=>f.clockNow()+(localReads++===2?900:0);
+ await f.tick(SEND-120000);
+ assert.equal(f.read().state,'BLOCKED');assert.ok(f.read().blockers.includes('CLOCK_SAMPLE_OUTLIER'));
+ const d=f.read().clockDiagnostic;assert.equal(d.samples.length,3);assert.equal(d.spreadMs,900);assert.equal(d.reason,'CLOCK_SAMPLE_OUTLIER');
+ assert.equal(d.minimumOffsetMs,-900);assert.equal(d.maximumOffsetMs,0);assert.equal(d.medianOffsetMs,0);assert.equal(d.limits.maximumSpreadMs,500);
+ assert.ok(d.samples.every(s=>s.readDurationMs===1));noSendOrAuth(f);
+ const count=readings;delete f.w.EAS.TacticalOperationSchedulerAdapter;vm.runInContext(f.code,f.ctx);
+ const api2=f.w.EAS.TacticalOperationSchedulerAdapter;
+ assert.equal(JSON.stringify(api2.preparationDiagnostic().executions[0].units[0].clockDiagnostic),JSON.stringify(d));
+ await api2.synchronizePrepared(f.eid,f.uid,f.w);assert.equal(readings,count);assert.equal(f.read().state,'BLOCKED');noSendOrAuth(f);
+});
+test('successful SYNC_2M also exposes samples after persistence',async()=>{
+ const f=await syncedFixture();const d=f.api.preparationDiagnostic().executions[0].units[0].clockDiagnostic;
+ assert.equal(d.valid,true);assert.equal(d.reason,null);assert.equal(d.samples.length,3);assert.equal(d.spreadMs,0);noSendOrAuth(f);
 });
