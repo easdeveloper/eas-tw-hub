@@ -173,7 +173,7 @@
             const stored = JSON.parse(localStorage.getItem('eas_tw_tactical_scheduler_v1') || 'null');
             const scope = `${window.game_data?.world || location.hostname}:${String(window.game_data?.player?.id || 0)}`;
             const hasAuthorizedScheduledUnit = (stored?.executions?.[scope] || []).some(execution => execution.units?.some(unit =>
-                ['SCHEDULED', 'PRECHECK_10M', 'PREPARED', 'SYNC_2M'].includes(unit.state) && unit.preparationAuthorization?.executionUnitId === unit.executionUnitId));
+                ['SCHEDULED', 'PRECHECK_10M', 'PREPARED', 'SYNC_2M', 'READY_TO_SEND', 'CONFIRMATION_READY'].includes(unit.state) && unit.preparationAuthorization?.executionUnitId === unit.executionUnitId));
             if (!hasAuthorizedScheduledUnit) return false;
             if (!window.EAS.MassSnipeExecution?.getCurrentServerTimeMs) await loadScript('services/mass-snipe-execution.js');
             await loadScript('services/tactical-operation-scheduler-adapter.js');

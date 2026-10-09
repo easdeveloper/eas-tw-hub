@@ -61,6 +61,7 @@ for(const type of ['attack','support']) test(`${type}: exact final authorization
     assert.equal(h.read().state,'UNCERTAIN');
     h.returnPage();h.observed({available:true,commands:[{id:'42',type,target:'484|527',sourceVillageId:'10',evidence:{clock:'server-wall',arrivalMs:1010001,precisionMs:1}}]});
     assert.equal(h.recover().state,'COMPLETED');assert.deepEqual(plain(h.read().completedCommandIds),['42']);
+    assert.equal(h.read().executionTiming.serverArrivalDeviationMs,1);assert.equal(h.read().executionTiming.serverRecordedSubmissionMs,null);
     assert.equal((await h.arm({dryRun:false})).armed,false);
 });
 test('dry run executes scheduler but never invokes irreversible action or consumes attempt',async()=>{
@@ -116,4 +117,15 @@ test('live target/composition changes and missing baseline stop the boundary',as
     h.fire();assert.equal(h.clicks(),0);assert.equal(h.read().state,'BLOCKED');
     const u=harness();const missing=plain(u.read());missing.outgoingBaseline=null;
     assert.equal(u.api.baselineValid(missing),false);
+});
+
+test('changed account after arming never submits',async()=>{
+ for(const field of ['world','player']){const h=harness();h.authorize();await h.arm({dryRun:false});
+  if(field==='world')h.w.game_data.world='other';else h.w.game_data.player.id='other';
+  h.fire();assert.equal(h.clicks(),0);assert.equal(h.read().state,'BLOCKED');}
+});
+
+test('armed callback at 100ms lateness blocks instead of sending a late command',async()=>{
+ const h=harness();h.authorize();assert.equal((await h.arm({dryRun:false})).armed,true);
+ h.now(1000100);[...h.timers.values()].forEach(fn=>fn());assert.equal(h.clicks(),0);assert.equal(h.read().state,'BLOCKED');
 });

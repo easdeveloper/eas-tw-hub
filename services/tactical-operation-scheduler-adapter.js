@@ -370,7 +370,56 @@
         return { valid: true, blocker: null, rows: actual, matchedCommands: actual.length };
     };
 
+    // BR143 native confirmation. No inferred rows, localized village names or submit actions.
+    const nativeUnitNames = /^(spear|sword|axe|archer|spy|light|marcher|heavy|ram|catapult|knight|snob|militia)$/;
+    const readBR143NativeRows = (doc, { sourceId, sourceCoord, targetCoord } = {}, targetWindow = doc?.defaultView) => {
+        const fail = blocker => ({ valid: false, blocker, rows: [], source: 'br143-native-train' });
+        const forms = [...doc.querySelectorAll('#command-data-form')];
+        if (forms.length !== 1 || forms[0].method.toLowerCase() !== 'post') return fail('NATIVE_NT_CONFIRMATION_FORM_MISSING');
+        const form = forms[0], game = targetWindow?.game_data?.village;
+        const source = [...form.querySelectorAll('input[name="source_village"]')];
+        if (source.length !== 1 || source[0].value !== String(sourceId) || String(game?.id) !== String(sourceId) ||
+            `${game?.x}|${game?.y}` !== sourceCoord) return fail('NATIVE_NT_SOURCE_IDENTITY_UNVERIFIED');
+        const coordinates = [...String(form.textContent || '').matchAll(/\b(\d{3}\|\d{3})\b/g)].map(match => match[1]);
+        if (!coordinates.includes(targetCoord) || coordinates.some(value => value !== targetCoord && value !== sourceCoord))
+            return fail('NATIVE_NT_TARGET_IDENTITY_UNVERIFIED');
+        const submits = [...doc.querySelectorAll('#troop_confirm_submit')];
+        if (submits.length !== 1 || submits[0].form !== form || submits[0].name !== 'submit_confirm' || submits[0].type !== 'submit')
+            return fail('NATIVE_NT_SUBMIT_CONTROL_AMBIGUOUS');
+        const submitLabel = String(submits[0].value || submits[0].textContent || '').trim();
+        if (!/^enviar ataque$/i.test(submitLabel)) return fail('NATIVE_NT_COMMAND_TYPE_UNVERIFIED');
+        const rows = [{ sourceId: String(sourceId), sourceCoord, targetCoord, commandType: 'attack', composition: {} }];
+        const seen = new Set(), containers = [], fields = [...form.querySelectorAll('input[name]')];
+        for (const input of fields) {
+            let index = 1, unit = input.name;
+            if (unit.startsWith('train[')) {
+                const match = /^train\[([2-5])\]\[([a-z]+)\]$/.exec(unit);
+                if (!match || !nativeUnitNames.test(match[2]) || input.type !== 'number') return fail('NATIVE_NT_INPUT_UNRECOGNIZED');
+                index = Number(match[1]); unit = match[2];
+                const row = input.closest('tr.units-row');
+                if (!row || !form.contains(row)) return fail('NATIVE_NT_ROW_STRUCTURE_INVALID');
+                if (!containers.includes(row)) containers.push(row);
+                if (containers.indexOf(row) + 2 !== index) return fail('NATIVE_NT_ROW_ORDER_INVALID');
+            } else if (!nativeUnitNames.test(unit)) continue;
+            else if (input.type !== 'hidden') return fail('NATIVE_NT_FIRST_ROW_INVALID');
+            // BR143 leaves unused additional number inputs empty. Only this proven
+            // representation means zero; hidden first-command fields stay strict.
+            const rawAmount = index > 1 && input.type === 'number' && input.value === '' && !input.validity?.badInput
+                ? '0' : input.value;
+            if (input.disabled || input.validity?.badInput || seen.has(`${index}:${unit}`) || !/^\d+$/.test(rawAmount) || !Number.isSafeInteger(Number(rawAmount)))
+                return fail('NATIVE_NT_INPUT_INVALID');
+            seen.add(`${index}:${unit}`);
+            while (rows.length < index) rows.push({ sourceId: String(sourceId), sourceCoord, targetCoord, commandType: 'attack', composition: {} });
+            if (Number(rawAmount)) rows[index - 1].composition[unit] = Number(rawAmount);
+        }
+        if (rows.some((row, index) => !seen.has(`${index + 1}:snob`))) return fail('NATIVE_NT_ROWS_UNRECOGNIZED');
+        const addButtons = [...form.querySelectorAll('a#troop_confirm_train.place-confirm-new-attack')];
+        return { valid: true, rows, blocker: null, source: 'br143-native-train', addButtonCount: addButtons.length,
+            submitButtonCount: 1, submitLabel, sourceId: String(sourceId), sourceCoord, targetCoord };
+    };
+
     const readNativeRows = (doc, { sourceId, sourceCoord, targetCoord: expectedTarget } = {}) => {
+        if (doc?.querySelector?.('#command-data-form')) return readBR143NativeRows(doc, { sourceId, sourceCoord, targetCoord: expectedTarget });
         const form = doc?.querySelector?.('#command-confirm-form, form[action*="action=command"], form[action*="screen=place"]');
         if (!form) return { valid: false, blocker: 'NATIVE_NT_CONFIRMATION_FORM_MISSING', rows: [], addButtonCount: 0, submitButtonCount: 0 };
         const normalizeText = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
@@ -430,6 +479,7 @@
         if (!targetWindow?.document || group?.kind !== NATIVE_TRAIN || !integer(timeoutMs) || timeoutMs <= 0 || !integer(intervalMs) || intervalMs <= 0)
             return { valid: false, blocker: 'NATIVE_NT_PREPARATION_INPUT_INVALID', clicks: 0 };
         const doc = targetWindow.document;
+        if (doc.querySelector('#command-data-form')) return { valid: false, blocker: 'NATIVE_NT_EXPLICIT_INSPECTION_REQUIRED', clicks: 0 };
         const identity = { sourceId: group.source?.id, sourceCoord: group.source?.coord, targetCoord: group.target?.coord };
         const initial = readNativeRows(doc, identity);
         if (!initial.valid) return { valid: false, blocker: initial.blocker, clicks: 0 };
@@ -683,6 +733,7 @@
             const values = [...(cell?.textContent || '').matchAll(/[\d.]+/g)].map(match => troopAmount(match[0])).filter(value => value > 0);
             if (unitName && values.length) composition[unitName] = values[values.length - 1];
         });
+        if (form.querySelectorAll('input[name^="train["]').length) return { valid: false, blocker: 'SINGLE_COMMAND_HAS_TRAIN_ROWS' };
         const expected = nonzeroComposition(unit.approvedCommand?.composition?.quantities);
         if (!same(composition, expected)) return { valid: false, blocker: 'APPROVED_COMPOSITION_MISMATCH', composition };
         const currentVillageId = identity(targetWindow?.game_data?.village?.id);
@@ -956,7 +1007,14 @@
             const controls = [...form.querySelectorAll(COMMAND_CONTROL[unit.commandType] || '')];
             if (controls.length !== 1 || controls[0].disabled) return fail('RALLY_POINT_COMMAND_CONTROL_UNAVAILABLE');
             const navigationId = unit.rallyPreparation.navigationId;
-            const intent = { status: 'NAVIGATING', navigationId, tabName: unit.rallyPreparation.tabName, startedAtMs: timing.nowMs,
+            let outgoingEvidence = null;
+            try {
+                const observed = EAS.FakesExecution?.readOutgoingCommands?.(targetWindow);
+                if (observed?.available && Array.isArray(observed.commands) && observed.commands.every(command => /^\d+$/.test(command.id)))
+                    outgoingEvidence = { identity: executionIdentity(unit), capturedAt: timing.nowMs,
+                        commandIds: [...new Set(observed.commands.map(command => command.id))] };
+            } catch { /* Missing evidence blocks final execution, not existing preparation. */ }
+            const intent = { outgoingEvidence, status: 'NAVIGATING', navigationId, tabName: unit.rallyPreparation.tabName, startedAtMs: timing.nowMs,
                 deadlineAtMs: Math.min(timing.nowMs + 20000, unit.executionSendAtMs - FINAL_CHECK_END_MS), commandType: unit.commandType,
                 source: { id: String(unit.source.id), coord: unit.source.coord }, target: { coord: unit.target.coord },
                 composition: nonzeroComposition(unit.approvedCommand.composition.quantities) };
@@ -1135,16 +1193,18 @@
         try { storedContext = JSON.parse(targetWindow.sessionStorage.getItem('eas_tactical_preparation_context') || 'null'); } catch {}
         const executionId = url?.searchParams.get('eas_tactical_execution_id') || storedContext?.executionId;
         const executionUnitId = url?.searchParams.get('eas_tactical_unit_id') || storedContext?.executionUnitId;
-        if (url?.searchParams.get('try') !== 'confirm' &&
-            (!url?.searchParams.get('eas_tactical_execution_id') || !url?.searchParams.get('eas_tactical_unit_id'))) return false;
         if (!executionId || !executionUnitId) return false;
         const execution = list().find(item => item.executionId === executionId);
         let unit = execution?.units.find(item => item.executionUnitId === executionUnitId);
+        const returnedExecution = unit && ['SUBMITTING', 'RECONCILING', 'UNCERTAIN'].includes(unit.state) &&
+            confirmedTabMatches(unit, targetWindow) && rallyPageIdentity(targetWindow, unit).sourceCorrect;
+        if (url?.searchParams.get('try') !== 'confirm' && !returnedExecution &&
+            (!url?.searchParams.get('eas_tactical_execution_id') || !url?.searchParams.get('eas_tactical_unit_id'))) return false;
         // The native confirmation URL carries no EAS navigation id; its tab is bound by the persisted confirmation intent and session context.
         const confirmationPage = url?.searchParams.get('try') === 'confirm' && unit && ['READY_TO_SEND', 'CONFIRMATION_READY', 'BLOCKED'].includes(unit.state) &&
             unit.confirmationIntent?.navigationId && unit.confirmationIntent.navigationId === unit.rallyPreparation?.navigationId &&
             targetWindow.name === unit.confirmationIntent.tabName && storedContext?.executionUnitId === executionUnitId && storedContext?.operationId === unit.operationId && storedContext?.revision === unit.revision;
-        if (!unit || !preparationAuthorizationValid(unit) || !(confirmationPage || navigationContextValid(unit, targetWindow))) return false;
+        if (!unit || !preparationAuthorizationValid(unit) || !(returnedExecution || confirmationPage || navigationContextValid(unit, targetWindow))) return false;
         unit = recoverFinalExecution(executionId, executionUnitId, targetWindow) || unit;
         const session = readSessionEvidence(targetWindow, unit);
         const panelId = 'eas-tactical-preparation-panel';
@@ -1166,6 +1226,7 @@
             actions.append(button); return button;
         };
         const finalActions = () => {
+            if (activeArms.has(`${executionId}:${executionUnitId}`) || unit.executionTiming?.dryRun) return;
             if (unit.state !== 'READY_TO_SEND' || unit.finalCheckEvidence?.fromPreparedForm === true || actions.querySelector('[data-final-execution]')) return;
             const arm = async dryRun => {
                 const result = await armFinalExecution(executionId, executionUnitId, targetWindow, { dryRun, onStatus: message => { status.textContent = message; } });
@@ -1252,7 +1313,10 @@
             const syncButton = action('Sincronizar relógio e validar final', syncAndFinal);
             syncButton.hidden = true;
         } else {
-            const describe = current => current.state === 'CONFIRMATION_READY' ? `CONFIRMATION_READY · confirmação nativa validada · PREPARADO, NÃO ENVIADO ·  · READY_TO_SEND não autoriza envio.`
+            const describe = current => current.executionTiming?.dryRun ? 'DRY RUN concluido - nenhum envio'
+                : current.state === 'READY_TO_SEND' && current.finalCheckEvidence?.fromNativeConfirmation === true
+                    ? (activeArms.has(`${executionId}:${executionUnitId}`) ? `Scheduler armado: ${current.earlySendConsent?.mode || 'escolha manual'}` : 'READY_TO_SEND - verificacao final concluida')
+                : current.state === 'CONFIRMATION_READY' ? `CONFIRMATION_READY · confirmação validada · PREPARADO, NÃO ENVIADO · FINAL_CHECK automático em T-10s.`
                 : current.state === 'BLOCKED' ? `BLOCKED: ${(current.blockers || []).join(', ')}`
                 : current.confirmationIntent ? `READY_TO_SEND · validando confirmação nativa · ` : null;
             const confirmationText = describe(unit);
@@ -1261,8 +1325,9 @@
                 const timer = targetWindow.setInterval?.(() => {
                     const current = lookup(executionId, executionUnitId);
                     if (!current || !panel.isConnected) { targetWindow.clearInterval(timer); return; }
+                    unit = current; finalActions();
                     status.textContent = describe(current) || current.state;
-                    if (['CONFIRMATION_READY', 'BLOCKED', 'CANCELLED'].includes(current.state)) targetWindow.clearInterval(timer);
+                    if (['BLOCKED', 'CANCELLED', 'UNCERTAIN', 'COMPLETED'].includes(current.state)) targetWindow.clearInterval(timer);
                 }, 1000);
             } else
             status.textContent = `${unit.state}${unit.blockers?.length ? ` · ${unit.blockers.join(', ')}` : ''}${unit.state === 'READY_TO_SEND' ? (unit.finalCheckEvidence?.fromPreparedForm === true ? ` · RALLY_PREPARED · confirmação nativa pendente · PREPARADO, NÃO ENVIADO · ${unit.commandType} · ${Object.entries(unit.finalCheckEvidence.composition || {}).map(([name, count]) => `${name} ${count}`).join(', ')} · READY_TO_SEND não autoriza envio.` : ' · escolha DRY RUN ou Autorizar envio real.') : ''}`;
@@ -1411,6 +1476,9 @@
                             if (reason) { const blocked = copy(unit); block(blocked, reason); updateStoredUnit(execution.executionId, unit.executionUnitId, blocked); }
                         }
                     }
+                } else if (unit.kind === SINGLE && (unit.state === 'CONFIRMATION_READY' ||
+                    unit.state === 'READY_TO_SEND' && unit.finalCheckEvidence?.fromNativeConfirmation === true)) {
+                    await runAutomaticFinal(execution.executionId, unit.executionUnitId, targetWindow);
                 }
             }
         });
@@ -1447,6 +1515,61 @@
     const lookup = (executionId, executionUnitId, options) => list(options).find(x => x.executionId === executionId)?.units.find(x => x.executionUnitId === executionUnitId);
     const consumedKey = unit => `eas_tw_tactical_consumed:${contextKey()}:${unit.executionId}:${unit.executionUnitId}`;
     const wasConsumed = (unit, storage) => { try { return storage.getItem(consumedKey(unit)) !== null; } catch { return true; } };
+    const earlySendIdentity = unit => ({ ...executionIdentity(unit), account: copy(unit.account) });
+    const earlySendValid = unit => Boolean(unit?.earlySendConsent?.kind === 'tactical-early-final-choice' &&
+        ['real', 'dry-run'].includes(unit.earlySendConsent.mode) && integer(unit.earlySendConsent.createdAt) &&
+        same(unit.earlySendConsent.identity, earlySendIdentity(unit)));
+    const authorizeEarlySend = (executionId, executionUnitId, mode, targetWindow = window) => {
+        const unit = lookup(executionId, executionUnitId), session = readSessionEvidence(targetWindow, unit);
+        const now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        if (!unit || unit.kind !== SINGLE || !['SCHEDULED', 'PRECHECK_10M'].includes(unit.state) ||
+            !preparationAuthorizationValid(unit) || !['real', 'dry-run'].includes(mode) || unit.attemptId || unit.finalAuthorization ||
+            !session.accountValid || !session.sessionAvailable || !integer(now) || now >= unit.executionSendAtMs) return null;
+        const saved = updateStoredUnit(executionId, executionUnitId, { ...copy(unit), earlySendConsent: {
+            kind: 'tactical-early-final-choice', mode, createdAt: now, identity: earlySendIdentity(unit) } });
+        if (saved) executionLog('EARLY_FINAL_CHOICE', saved, { mode });
+        return saved;
+    };
+    const automaticFinalRuns = new WeakMap();
+    const runAutomaticFinal = async (executionId, executionUnitId, targetWindow = window) => {
+        const key = `${executionId}:${executionUnitId}`;
+        const runs = automaticFinalRuns.get(targetWindow) || new Set(); automaticFinalRuns.set(targetWindow, runs);
+        if (runs.has(key) || activeArms.has(key)) return;
+        let unit = lookup(executionId, executionUnitId);
+        if (unit?.executionTiming?.dryRun && unit.executionTiming.actualClickMs != null) return;
+        if (!unit || unit.kind !== SINGLE || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(unit.state) ||
+            !confirmedTabMatches(unit, targetWindow)) return;
+        let now = null;
+        try { now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.() ?? null; } catch {}
+        const reject = reason => {
+            const current = lookup(executionId, executionUnitId);
+            if (!current || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(current.state)) return;
+            const blocked = copy(current); block(blocked, reason); updateStoredUnit(executionId, executionUnitId, blocked);
+            executionLog('AUTOMATIC_FINAL_BLOCKED', blocked, { reason });
+        };
+        if (!integer(now)) { reject('CLOCK_UNAVAILABLE'); return; }
+        if (now >= unit.executionSendAtMs) { reject('FINAL_SEND_DEADLINE_PASSED'); return; }
+        if (unit.executionSendAtMs - now > 10000) { recordTickDiagnostic(targetWindow, unit, now, 'WAIT_FINAL_SEND_CHECK'); return; }
+        runs.add(key);
+        try {
+            recordTickDiagnostic(targetWindow, unit, now, 'AUTOMATIC_FINAL_CHECK');
+            if (unit.state === 'CONFIRMATION_READY') {
+                const checked = await prepareFinalExecution(executionId, executionUnitId, targetWindow);
+                if (!checked.valid) { reject(checked.blocker); return; }
+                unit = checked.unit;
+            }
+            if (!earlySendValid(unit)) { reject('EARLY_FINAL_AUTHORIZATION_MISSING_OR_CHANGED'); return; }
+            const dryRun = unit.earlySendConsent.mode === 'dry-run';
+            if (!dryRun && !authorizationValid(unit)) {
+                unit = authorizeFinalSubmit(executionId, executionUnitId, targetWindow);
+                if (!unit) { reject('FINAL_AUTHORIZATION_REJECTED'); return; }
+            }
+            const result = await armFinalExecution(executionId, executionUnitId, targetWindow, { dryRun });
+            if (!result.armed && result.blocker !== 'ALREADY_ARMED' && result.blocker !== 'EXECUTION_LOCK_BUSY') reject(result.blocker);
+            else executionLog('AUTOMATIC_FINAL_ARMED', unit, { dryRun, plannedClickMs: unit.executionSendAtMs });
+        } catch { reject('AUTOMATIC_FINAL_FAILED'); }
+        finally { runs.delete(key); }
+    };
     const authorizationValid = unit => Boolean(unit?.finalAuthorization?.kind === 'tactical-final-submit' &&
         integer(unit.finalAuthorization.createdAt) && same(unit.finalAuthorization.identity, executionIdentity(unit)));
     const baselineValid = unit => Boolean(unit?.outgoingBaseline && unit.attemptId &&
@@ -1473,10 +1596,70 @@
         return saved && same(lookup(unit.executionId, unit.executionUnitId)?.outgoingBaseline, next.outgoingBaseline)
             ? { valid: true, unit: saved } : { valid: false, blocker: 'BASELINE_PERSIST_READBACK_FAILED' };
     };
+    const advanceConfirmedFinalCheck = (input, evidence) => {
+        if (input?.state !== 'CONFIRMATION_READY' || input.kind !== SINGLE || !preparationAuthorizationValid(input) ||
+            input.attemptId || input.finalAuthorization || input.confirmationIntent?.status !== 'CONFIRMED' ||
+            evidence?.fromNativeConfirmation !== true || !input.confirmationEvidence?.valid) return null;
+        const baseline = input.confirmationIntent.outgoingEvidence;
+        if (!baseline || !same(baseline.identity, executionIdentity(input)) || !Array.isArray(baseline.commandIds) ||
+            !baseline.commandIds.every(id => /^\d+$/.test(id)) || !integer(baseline.capturedAt) || baseline.capturedAt > evidence.now ||
+            typeof evidence.attemptId !== 'string' || !evidence.attemptId) return null;
+        const ready = copy(advanceFinalCheck({ ...copy(input), state: 'SYNC_2M' }, evidence));
+        if (ready.state !== 'READY_TO_SEND') return null;
+        ready.attemptId = evidence.attemptId;
+        ready.outgoingBaseline = { ...copy(baseline), attemptId: ready.attemptId };
+        return freeze(ready);
+    };
+    const ensurePreciseScheduler = async (targetWindow = window) => {
+        if (typeof EAS.MassSnipePrecise?.createScheduler === 'function') return true;
+        if (!targetWindow.EASLoader?.loadScript) return false;
+        await targetWindow.EASLoader.loadScript('services/mass-snipe-precise.js', { reason: 'tactical-explicit-final-check' });
+        return typeof EAS.MassSnipePrecise?.createScheduler === 'function';
+    };
+    const confirmedTabMatches = (unit, targetWindow) => {
+        if (!unit.confirmationIntent) return true; // Legacy explicit confirmation path.
+        let context;
+        try { context = JSON.parse(targetWindow.sessionStorage.getItem('eas_tactical_preparation_context') || 'null'); } catch { return false; }
+        return unit.confirmationIntent.status === 'CONFIRMED' && targetWindow.name === unit.confirmationIntent.tabName &&
+            context?.executionId === unit.executionId && context?.executionUnitId === unit.executionUnitId &&
+            context?.operationId === unit.operationId && context?.revision === unit.revision;
+    };
+    const prepareFinalExecution = async (executionId, executionUnitId, targetWindow = window) => {
+        const fail = blocker => ({ valid: false, blocker });
+        const initial = lookup(executionId, executionUnitId);
+        if (!initial || initial.kind !== SINGLE || initial.state !== 'CONFIRMATION_READY') return fail('FINAL_CHECK_STATE_INELIGIBLE');
+        try { if (!await ensurePreciseScheduler(targetWindow)) return fail('PRECISE_SCHEDULER_UNAVAILABLE'); }
+        catch { return fail('PRECISE_SCHEDULER_LOAD_FAILED'); }
+        const unit = lookup(executionId, executionUnitId);
+        if (!same(unit, initial)) return fail('FINAL_CHECK_STATE_CHANGED');
+        const session = readSessionEvidence(targetWindow, unit), now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        if (!session.accountValid || !session.sessionAvailable) return fail(session.accountReason || 'SESSION_UNAVAILABLE_OR_UNTRUSTED');
+        if (!confirmedTabMatches(unit, targetWindow) || session.page?.screen !== 'place' || session.page?.tryMode !== 'confirm') return fail('CONFIRMATION_CONTEXT_INVALID');
+        if (!integer(now) || now >= unit.executionSendAtMs || !unit.clockEvidence?.valid || now < unit.clockEvidence.measuredAt || now - unit.clockEvidence.measuredAt > 120000)
+            return fail('CLOCK_EVIDENCE_STALE_OR_DEADLINE_PASSED');
+        if (wasConsumed(unit, targetWindow.localStorage)) return fail('PREVIOUS_ATTEMPT_OR_UNCERTAIN_SEND');
+        const live = readSingleConfirmation(targetWindow.document, unit, targetWindow);
+        if (!live.valid) return live;
+        const duration = parseNativeDuration(targetWindow.document);
+        if (!duration.available || duration.durationMs !== unit.confirmationEvidence.nativeDurationMs) return fail('CONFIRMATION_DURATION_MISMATCH');
+        if (!unit.confirmationIntent.outgoingEvidence) return fail('OUTGOING_BASELINE_UNAVAILABLE');
+        if (!targetWindow.crypto?.randomUUID) return fail('ATTEMPT_IDENTITY_UNAVAILABLE');
+        const evidence = { ...live, now, fromNativeConfirmation: true, authorizationValid: preparationAuthorizationValid(unit),
+            sessionTrusted: true, clockEvidenceFresh: true, singleSubmitControlFound: live.submitControlFound === true,
+            attemptId: targetWindow.crypto.randomUUID() };
+        const next = advanceConfirmedFinalCheck(unit, evidence);
+        if (!next) return fail('FINAL_CHECK_EVIDENCE_INVALID');
+        const saved = updateStoredUnit(executionId, executionUnitId, next);
+        if (!saved || !baselineValid(lookup(executionId, executionUnitId))) return fail('BASELINE_PERSIST_READBACK_FAILED');
+        executionLog('FINAL_CHECK_COMPLETED', saved, { plannedClickMs: saved.executionSendAtMs, finalAuthorized: false });
+        return { valid: true, unit: saved };
+    };
+
     const authorizeFinalSubmit = (executionId, executionUnitId, targetWindow = window) => {
         const unit = lookup(executionId, executionUnitId), now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
         if (!unit || unit.state !== 'READY_TO_SEND' || unit.kind !== SINGLE || unit.finalCheckEvidence?.fromPreparedForm === true || !baselineValid(unit) ||
             !integer(now) || now >= unit.executionSendAtMs || wasConsumed(unit, targetWindow.localStorage)) return null;
+        if (!liveExecutionCheck(unit, targetWindow, { dryRun: true }).valid) return null;
         const next = copy(unit); next.finalAuthorization = { kind: 'tactical-final-submit', createdAt: now, identity: executionIdentity(unit) };
         const saved = updateStoredUnit(executionId, executionUnitId, next);
         if (saved) executionLog('FINAL_AUTHORIZED', saved);
@@ -1492,12 +1675,14 @@
             !Number.isFinite(targetWindow.Timing.getCurrentServerTime()) || !unit.clockEvidence?.valid ||
             now < unit.clockEvidence.measuredAt || now - unit.clockEvidence.measuredAt > 120000)
             return { valid: false, blocker: 'CLOCK_EVIDENCE_STALE' };
-        if (now > unit.executionSendAtMs + 1000 || atSubmit && now < unit.executionSendAtMs)
+        if (now >= unit.executionSendAtMs + 100 || atSubmit && now < unit.executionSendAtMs)
             return { valid: false, blocker: 'SUBMIT_OUTSIDE_ALLOWED_WINDOW' };
-        if (!session.sessionAvailable || session.source?.id !== String(unit.source.id) || session.source?.coord !== unit.source.coord ||
+        if (!session.accountValid || !session.sessionAvailable || !preparationAuthorizationValid(unit) || !confirmedTabMatches(unit, targetWindow) || session.source?.id !== String(unit.source.id) || session.source?.coord !== unit.source.coord ||
             session.page?.screen !== 'place' || session.page?.tryMode !== 'confirm') return { valid: false, blocker: 'LIVE_CONFIRMATION_CONTEXT_INVALID' };
         const confirmation = readSingleConfirmation(targetWindow.document, unit, targetWindow);
         if (!confirmation.valid) return confirmation;
+        if (unit.confirmationEvidence && parseNativeDuration(targetWindow.document).durationMs !== unit.confirmationEvidence.nativeDurationMs)
+            return { valid: false, blocker: 'CONFIRMATION_DURATION_MISMATCH' };
         const buttons = [...targetWindow.document.querySelectorAll('#troop_confirm_submit')];
         if (buttons.length !== 1 || buttons[0].disabled || !buttons[0].isConnected || buttons[0].getClientRects().length === 0 ||
             buttons[0].form !== targetWindow.document.querySelector('#command-confirm-form, form[action*="action=command"], form[action*="screen=place"]'))
@@ -1511,7 +1696,12 @@
         const read = () => lookup(executionId, executionUnitId);
         const initial = liveExecutionCheck(read(), targetWindow, { dryRun });
         if (!initial.valid) return { armed: false, blocker: initial.blocker };
-        if (!targetWindow.navigator?.locks?.request || !EAS.MassSnipePrecise?.createScheduler) return { armed: false, blocker: 'EXCLUSIVE_SCHEDULER_UNAVAILABLE' };
+        if (initial.now >= read().executionSendAtMs) return { armed: false, blocker: 'FINAL_SEND_DEADLINE_PASSED' };
+        try { if (!await ensurePreciseScheduler(targetWindow)) return { armed: false, blocker: 'PRECISE_SCHEDULER_UNAVAILABLE' }; }
+        catch { return { armed: false, blocker: 'PRECISE_SCHEDULER_LOAD_FAILED' }; }
+        if (activeArms.has(key)) return { armed: false, blocker: 'ALREADY_ARMED' };
+        if (!liveExecutionCheck(read(), targetWindow, { dryRun }).valid) return { armed: false, blocker: 'FINAL_CHECK_STATE_CHANGED' };
+        if (!targetWindow.navigator?.locks?.request) return { armed: false, blocker: 'EXCLUSIVE_SCHEDULER_UNAVAILABLE' };
         activeArms.set(key, true);
         let resolved = false;
         return new Promise(resolve => {
@@ -1519,7 +1709,7 @@
             targetWindow.navigator.locks.request(`eas-tactical-submit:${contextKey()}:${key}`, { ifAvailable: true }, async lock => {
                 if (!lock) { respond({ armed: false, blocker: 'EXECUTION_LOCK_BUSY' }); return; }
                 await new Promise(release => {
-                    let scheduler, selfClick = false;
+                    let scheduler, selfClick = false, clickTiming = null;
                     const notice = value => { try { onStatus(value); } catch {} };
                     const finish = () => { targetWindow.removeEventListener('pagehide', hide); initial.button.removeEventListener('click', manual, true); initial.button.form?.removeEventListener('submit', manual, true); release(); };
                     const uncertain = reason => { const unit = read(); if (!unit) return;
@@ -1554,7 +1744,17 @@
                                     return Boolean(saved && same(read()?.submitAttempt, next.submitAttempt));
                                 } catch { return false; }
                             },
-                            button: { click: () => { if (dryRun) return; selfClick = true; try { initial.button.click(); } finally { selfClick = false; } } },
+                            button: { click: () => {
+                                const current = read(), actualClickMs = targetWindow.EAS.MassSnipeExecution.getCurrentServerTimeMs();
+                                clickTiming = { dryRun, plannedClickMs: current.executionSendAtMs, actualClickMs,
+                                    localDeviationMs: actualClickMs - current.executionSendAtMs,
+                                    localWithin100Ms: Math.abs(actualClickMs - current.executionSendAtMs) < 100,
+                                    serverOutcome: 'UNCONFIRMED', serverRecordedSubmissionMs: null, serverArrivalMs: null, serverArrivalDeviationMs: null };
+                                if (!Number.isFinite(actualClickMs) || actualClickMs < current.executionSendAtMs || actualClickMs >= current.executionSendAtMs + 100)
+                                    throw new Error('SUBMIT_OUTSIDE_ALLOWED_WINDOW');
+                                if (dryRun) return;
+                                selfClick = true; try { initial.button.click(); } finally { selfClick = false; }
+                            } },
                             onCancel: reason => {
                                 const current = read(), validation = check();
                                 if (current?.state === 'READY_TO_SEND' && !validation.valid) {
@@ -1563,9 +1763,16 @@
                                 }
                                 notice(`BLOCKED · ${reason}`); finish(); },
                             onResult: result => {
-                                if (dryRun) { notice('DRY RUN concluído · nenhum envio'); executionLog('DRY_RUN_COMPLETED', read()); }
+                                const executionTiming = { ...clickTiming, schedulerDeviationMs: result.schedulerErrorMs,
+                                    clickError: Boolean(result.clickError) };
+                                executionLog(dryRun ? 'DRY_RUN_TIMING' : 'FINAL_CLICK_DISPATCH', read(), executionTiming);
+                                if (dryRun) {
+                                    const saved = updateStoredUnit(executionId, executionUnitId, { ...copy(read()), executionTiming });
+                                    notice(saved ? 'DRY RUN concluido - nenhum envio' : 'DRY RUN - falha ao persistir diagnostico');
+                                    executionLog('DRY_RUN_COMPLETED', read(), executionTiming);
+                                }
                                 else {
-                                    const next = copy(read()); next.state = 'RECONCILING';
+                                    const next = copy(read()); next.state = 'RECONCILING'; next.executionTiming = executionTiming;
                                     updateStoredUnit(executionId, executionUnitId, next);
                                     uncertain(result.clickError ? 'SUBMIT_EXCEPTION' : 'AWAITING_OUTGOING_RECONCILIATION');
                                 }
@@ -1586,6 +1793,8 @@
         if (!unit || !['SUBMITTING', 'RECONCILING', 'UNCERTAIN'].includes(unit.state) && !wasConsumed(unit, targetWindow.localStorage)) return null;
         const next = copy(unit); next.state = 'UNCERTAIN'; next.executionReason = 'OUTGOING_EVIDENCE_UNAVAILABLE';
         const page = rallyPageIdentity(targetWindow, unit);
+        const session = readSessionEvidence(targetWindow, unit);
+        if (!session.accountValid || !session.sessionAvailable) return null;
         if (unit.kind === SINGLE && baselineValid(unit) && authorizationValid(unit) &&
             same(unit.submitAttempt?.identity, executionIdentity(unit)) && unit.outgoingBaseline.capturedAt <= unit.submitAttempt?.submittedAt &&
             unit.submitAttempt?.attemptId === unit.attemptId && page.pageValid && page.sourceCorrect) {
@@ -1596,11 +1805,23 @@
                 submitServerTimeMs: unit.submitAttempt.serverEpochMs };
             const result = EAS.ArrivalExecution?.matchOutgoing?.(verification, observed || { available: false, commands: [] });
             next.outgoingReconciliation = result ? copy(result) : null;
-            if (result?.match) { next.state = 'COMPLETED'; next.executionReason = null; next.completedCommandIds = [result.match.id]; }
+            if (result?.match) {
+                next.state = 'COMPLETED'; next.executionReason = null; next.completedCommandIds = [result.match.id];
+                const arrival = result.match.evidence;
+                // Arrival is server evidence; it is not a measured server submission timestamp.
+                const expectedArrivalMs = arrival?.clock === 'unix' && Number.isFinite(unit.submitAttempt.serverEpochMs)
+                    ? unit.approvedCommand.desiredArrivalMs + unit.submitAttempt.serverEpochMs - unit.submitAttempt.submittedAt
+                    : arrival?.clock === 'server-wall' ? unit.approvedCommand.desiredArrivalMs : null;
+                next.executionTiming = { ...copy(unit.executionTiming || {}), serverOutcome: 'CONFIRMED', commandId: result.match.id,
+                    serverArrivalMs: arrival?.arrivalMs ?? null, serverClock: arrival?.clock ?? null,
+                    serverPrecisionMs: arrival?.precisionMs ?? null,
+                    serverArrivalDeviationMs: Number.isFinite(arrival?.arrivalMs) && Number.isFinite(expectedArrivalMs) ? arrival.arrivalMs - expectedArrivalMs : null,
+                    serverRecordedSubmissionMs: null };
+            }
             else next.executionReason = result?.reason || next.executionReason;
         }
         const saved = updateStoredUnit(executionId, executionUnitId, next);
-        if (saved) executionLog('RECONCILIATION', saved, { reason: next.executionReason, commandIds: next.completedCommandIds || [] });
+        if (saved) executionLog('RECONCILIATION', saved, { reason: next.executionReason, commandIds: next.completedCommandIds || [], executionTiming: next.executionTiming || null });
         return saved;
     };
 
@@ -1642,14 +1863,14 @@
             PREPARE_5M: new Set(['PREPARE_5M', 'SYNC_2M', 'BLOCKED', 'CANCELLED']),
             SYNC_2M: new Set(['SYNC_2M', 'READY_TO_SEND', 'BLOCKED', 'CANCELLED']),
             READY_TO_SEND: new Set(['READY_TO_SEND', 'CONFIRMATION_READY', 'SUBMITTING', 'UNCERTAIN', 'BLOCKED', 'CANCELLED']),
-            CONFIRMATION_READY: new Set(['BLOCKED', 'CANCELLED']),
+            CONFIRMATION_READY: new Set(['READY_TO_SEND', 'BLOCKED', 'CANCELLED']),
             SUBMITTING: new Set(['SUBMITTING', 'RECONCILING', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN']),
             RECONCILING: new Set(['RECONCILING', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN']),
             UNCERTAIN: new Set(['UNCERTAIN', 'SENT', 'COMPLETED', 'FAILED'])
         };
         if (!transitions[previous.state]?.has(nextUnit?.state)) return null;
         if (previous.state === nextUnit.state && ['PRECHECK_10M', 'PREPARE_5M', 'SYNC_2M', 'READY_TO_SEND'].includes(previous.state)) {
-            const strip = value => { const result = copy(value); for (const key of ['attemptId', 'outgoingBaseline', 'finalAuthorization', 'rallyPreparation', 'confirmationIntent']) delete result[key]; return result; };
+            const strip = value => { const result = copy(value); for (const key of ['attemptId', 'outgoingBaseline', 'finalAuthorization', 'rallyPreparation', 'confirmationIntent', 'executionTiming', 'earlySendConsent']) delete result[key]; return result; };
             if (!same(strip(previous), strip(nextUnit))) return null;
             if (previous.attemptId && (previous.attemptId !== nextUnit.attemptId || !same(previous.outgoingBaseline, nextUnit.outgoingBaseline))) return null;
         }
@@ -1658,7 +1879,8 @@
         const derive = derivations[nextUnit?.state];
         const derivationEvidence = { PRECHECK_10M: nextUnit?.precheckEvidence, PREPARE_5M: nextUnit?.preparationEvidence, SYNC_2M: nextUnit?.syncEvidence }[nextUnit?.state];
         if (derive && previous.state !== nextUnit.state && !same(derive(previous, derivationEvidence), nextUnit)) return null;
-        if (nextUnit?.state === 'READY_TO_SEND' && previous.state !== 'READY_TO_SEND' && !same(advanceFinalCheck(previous, nextUnit.finalCheckEvidence), nextUnit)) return null;
+        if (nextUnit?.state === 'READY_TO_SEND' && previous.state !== 'READY_TO_SEND' &&
+            !same(previous.state === 'CONFIRMATION_READY' ? advanceConfirmedFinalCheck(previous, nextUnit.finalCheckEvidence) : advanceFinalCheck(previous, nextUnit.finalCheckEvidence), nextUnit)) return null;
         if (nextUnit?.state === 'CONFIRMATION_READY' && !same(advanceConfirmationReady(previous, nextUnit.confirmationEvidence), nextUnit)) return null;
         execution.units[unitIndex] = copy(nextUnit);
         execution.state = execution.units.every(unit => unit.state === 'COMPLETED') ? 'COMPLETED' : execution.units.every(unit => ['PREPARED', 'READY_TO_SEND', 'CONFIRMATION_READY', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN', 'CANCELLED', 'BLOCKED'].includes(unit.state))
@@ -1670,6 +1892,90 @@
         try { if (typeof window !== 'undefined') window.dispatchEvent(new window.CustomEvent('eas:tactical-preparation-updated', { detail: { executionId, executionUnitId, state: saved.state } })); } catch {}
         return saved;
     };
+    // Explicit, once-only inspection of a stored frozen train on an already open confirmation page.
+    // Remains BLOCKED for scheduling. No preparation/final-send authorization or attempt is created.
+    const inspectNativeTrain = async (executionId, executionUnitId, targetWindow = window, options = {}) => {
+        const fail = blocker => ({ valid: false, blocker, mode: 'inspection-only', timingApproved: false });
+        if (!targetWindow.navigator?.locks?.request) return fail('NATIVE_NT_INSPECTION_LOCK_UNAVAILABLE');
+        return targetWindow.navigator.locks.request('eas-tactical-native-inspection', { ifAvailable: true }, async lock => {
+            if (!lock) return fail('NATIVE_NT_INSPECTION_ALREADY_RUNNING');
+            const get = () => list(options).find(item => item.executionId === executionId)?.units.find(item => item.executionUnitId === executionUnitId);
+            let unit = get();
+            if (!unit || unit.kind !== NATIVE_TRAIN || unit.state !== 'BLOCKED' || unit.attemptId || unit.finalAuthorization ||
+                unit.blockers?.length !== 1 || unit.blockers[0] !== 'NATIVE_NT_NATIVE_TIMING_UNPROVEN' || unit.nativeInspection ||
+                ![2, 3, 4, 5].includes(unit.expectedCommands)) return fail('NATIVE_NT_INSPECTION_INELIGIBLE');
+            const approved = unit.approvedChildren;
+            if (approved.length !== unit.expectedCommands || approved.some((child, index) => child.trainIndex !== index + 1 ||
+                child.commandType !== 'attack' || child.source?.id !== unit.source?.id || child.source?.coord !== unit.source?.coord ||
+                child.target?.coord !== unit.target?.coord || child.composition?.quantities?.snob !== 1 ||
+                Object.entries(child.composition?.quantities || {}).some(([name, value]) => !nativeUnitNames.test(name) || !Number.isSafeInteger(value) || value < 0)))
+                return fail('NATIVE_NT_APPROVED_COMPOSITION_INVALID');
+            const doc = targetWindow.document;
+            const read = () => readBR143NativeRows(doc, { sourceId: unit.source.id, sourceCoord: unit.source.coord, targetCoord: unit.target.coord }, targetWindow);
+            const sessionValid = () => {
+                const session = readSessionEvidence(targetWindow, unit);
+                return session.accountValid && session.sessionAvailable && session.page.screen === 'place' && session.page.tryMode === 'confirm';
+            };
+            if (!sessionValid()) return fail('NATIVE_NT_INSPECTION_SESSION_INVALID');
+            const initial = read();
+            if (!initial.valid || initial.rows.length !== 1) return fail(initial.blocker || 'NATIVE_NT_INITIAL_ROW_COUNT_MISMATCH');
+            const startedAt = Date.now();
+            unit = updateStoredUnit(executionId, executionUnitId, { ...unit, nativeInspection: {
+                mode: 'inspection-only', status: 'INSPECTING', startedAt, timingApproved: false,
+                inferredStructure: unit.expectedCommands === 5, clicks: 0
+            } }, options);
+            if (!unit) return fail('NATIVE_NT_INSPECTION_PERSIST_FAILED');
+            let clicks = 0;
+            const stillValid = () => sessionValid() && get()?.state === 'BLOCKED' && get()?.nativeInspection?.startedAt === startedAt &&
+                get()?.nativeInspection?.status === 'INSPECTING';
+            let result;
+            try {
+                for (let index = 2; index <= unit.expectedCommands; index += 1) {
+                    if (!stillValid()) throw new Error('NATIVE_NT_INSPECTION_INVALIDATED');
+                    const before = read(), controls = [...doc.querySelectorAll('#command-data-form a#troop_confirm_train.place-confirm-new-attack')];
+                    if (!before.valid || before.rows.length !== index - 1 || controls.length !== 1 || controls[0].getAttribute('aria-disabled') === 'true')
+                        throw new Error(before.blocker || 'NATIVE_NT_ADD_CONTROL_UNAVAILABLE');
+                    controls[0].click(); clicks += 1;
+                    const deadline = Date.now() + 5000;
+                    while (true) {
+                        if (!stillValid()) throw new Error('NATIVE_NT_INSPECTION_INVALIDATED');
+                        const current = read();
+                        if (!current.valid || current.rows.length > index) throw new Error(current.blocker || 'NATIVE_NT_UNEXPECTED_EXTRA_ROW');
+                        if (current.rows.length === index) break;
+                        if (Date.now() >= deadline) throw new Error('NATIVE_NT_ROW_CREATION_TIMEOUT');
+                        await new Promise(resolve => targetWindow.setTimeout(resolve, 50));
+                    }
+                }
+                // All native redistribution is finished before applying any approved allocation.
+                const form = doc.querySelector('#command-data-form'), changes = [];
+                approved.forEach((child, index) => {
+                    const fields = [...form.querySelectorAll('input[name]')].filter(input => index === 0 ? nativeUnitNames.test(input.name) : input.name.startsWith(`train[${index + 1}][`));
+                    const quantities = child.composition.quantities;
+                    for (const name of Object.keys(nonzeroComposition(quantities))) {
+                        const fieldName = index === 0 ? name : `train[${index + 1}][${name}]`;
+                        if (!fields.some(input => input.name === fieldName)) throw new Error('NATIVE_NT_APPROVED_UNIT_FIELD_MISSING');
+                    }
+                    fields.forEach(input => changes.push([input, quantities[index === 0 ? input.name : input.name.match(/\[([a-z]+)\]$/)[1]] || 0]));
+                });
+                for (const [input, amount] of changes) {
+                    if (!stillValid()) throw new Error('NATIVE_NT_INSPECTION_INVALIDATED');
+                    setInputValue(input, amount, targetWindow);
+                }
+                await new Promise(resolve => targetWindow.setTimeout(resolve, 0));
+                if (!stillValid()) throw new Error('NATIVE_NT_INSPECTION_INVALIDATED');
+                const page = read();
+                result = page.valid ? { ...reconcileNativeNobleRows(unit, page.rows), page } : page;
+            } catch (error) { result = fail(error.message?.startsWith('NATIVE_NT_') ? error.message : 'NATIVE_NT_INSPECTION_FAILED'); }
+            const current = get();
+            if (!stillValid()) return fail('NATIVE_NT_INSPECTION_INVALIDATED');
+            const report = { mode: 'inspection-only', status: result.valid ? 'STRUCTURE_VALIDATED' : 'FAILED', startedAt,
+                finishedAt: Date.now(), timingApproved: false, inferredStructure: unit.expectedCommands === 5,
+                clicks, blocker: result.blocker || null, rows: copy(result.rows || []).slice(0, 5) };
+            if (!updateStoredUnit(executionId, executionUnitId, { ...current, nativeInspection: report }, options)) return fail('NATIVE_NT_INSPECTION_PERSIST_FAILED');
+            return { ...result, ...report };
+        });
+    };
+
     const preparationAuthorizationValid = unit => {
         const auth = unit?.preparationAuthorization;
         return Boolean(auth?.authorizationKind === 'tactical-preflight-only' && auth.actor === 'user' &&
@@ -1712,11 +2018,14 @@
                 lastPreflightReason: unit.lastPreflight?.reason ?? null, lastPreflightAt: unit.lastPreflight?.at ?? null,
                 preflightAuthorization: { present: Boolean(unit.preparationAuthorization), valid: preparationAuthorizationValid(unit),
                     authorizedAt: unit.preparationAuthorization?.authorizedAt ?? null },
+                earlySendConsent: { present: Boolean(unit.earlySendConsent), valid: earlySendValid(unit), mode: unit.earlySendConsent?.mode || null },
                 finalSubmitAuthorization: { present: Boolean(unit.finalAuthorization), valid: authorizationValid(unit) },
                 source: { id: unit.source?.id ?? null, coord: unit.source?.coord ?? null },
                 target: { id: unit.target?.villageId ?? unit.target?.id ?? null, coord: unit.target?.coord ?? null },
                 scheduledSubmitAtMs: unit.executionSendAtMs ?? null, nativeSubmitAtMs: unit.nativeSubmitAtMs ?? null,
                 clockDiagnostic: exposedClockDiagnostic(unit.clockDiagnostic),
+                nativeInspection: copy(unit.nativeInspection || null),
+                executionTiming: copy(unit.executionTiming || null),
                 rallyPreparation: copy(unit.rallyPreparation || null),
                 blockers: [...(unit.blockers || [])],
                 attempt: { present: Boolean(unit.attemptId), started: Boolean(unit.submitAttempt),
@@ -1750,7 +2059,7 @@
 
     if (typeof window !== 'undefined') window.EASTacticalNativeTimingDebug = () => nativeTimingDiagnostic(window);
     Object.assign(EAS.TacticalOperationSchedulerAdapter = {}, {
-        nativeTimingDiagnostic, authorizationValid, baselineValid, captureExecutionBaseline, authorizeFinalSubmit, liveExecutionCheck, armFinalExecution, recoverFinalExecution,
+        authorizeEarlySend, earlySendValid, runAutomaticFinal, prepareFinalExecution, advanceConfirmedFinalCheck, ensurePreciseScheduler, inspectNativeTrain, readBR143NativeRows, nativeTimingDiagnostic, authorizationValid, baselineValid, captureExecutionBaseline, authorizeFinalSubmit, liveExecutionCheck, armFinalExecution, recoverFinalExecution,
         VERSION, STORAGE_KEY, SINGLE, NATIVE_TRAIN, formatServerTimestamp, formatExecutionUnitLabel, formatApprovedChildLabel,
         deriveExecutionUnits, mapTrainTiming, authorizePreparation,
         advancePrecheck10m, advancePrepare5m, evaluateClockSamples, advanceSync2m, advanceFinalCheck,

@@ -134,10 +134,12 @@ test('tick-driven popup block is persisted once, not retried, and controller rel
  const api2=f.w.EAS.TacticalOperationSchedulerAdapter;api2.initializeSchedulerHooks(f.w);f.now(SEND-280000);await f.listeners.get('eas:scheduler-tick')();
  assert.equal(opens,1);assert.equal(f.tabs.length,0);assert.equal(f.read().finalAuthorization,undefined);
 });
-function preparedFixture({tab=true,support=false}={}){
+function preparedFixture({tab=true,support=false,earlyMode=null}={}){
  const f=tickFixture(),root=JSON.parse(f.values.get(f.api.STORAGE_KEY)),u=root.executions['br143:7'][0].units[0];
  const nav='navigation-prepared',name=`eas-tactical-preparation-${nav}`;
- if(support){u.commandType='support';u.approvedCommand.commandType='support';}u.state='PREPARED';u.rallyPreparation={status:'PREPARED',navigationId:nav,tabName:name,executionId:f.eid,executionUnitId:f.uid,evidence:{}};
+ if(support){u.commandType='support';u.approvedCommand.commandType='support';}
+ if(earlyMode){f.values.set(f.api.STORAGE_KEY,JSON.stringify(root));assert.ok(f.api.authorizeEarlySend(f.eid,f.uid,earlyMode,f.w));u.earlySendConsent=f.read().earlySendConsent;}
+ u.state='PREPARED';u.rallyPreparation={status:'PREPARED',navigationId:nav,tabName:name,executionId:f.eid,executionUnitId:f.uid,evidence:{}};
  u.nextCheckpoint='SYNC_2M';u.nextCheckpointAtMs=SEND-120000;f.values.set(f.api.STORAGE_KEY,JSON.stringify(root));
  const st={target:true},inputs={axe:{value:'5930'},light:{value:'3117'},spear:{value:''}};let clicks=0,submits=0;
  const attackBtn={disabled:false,clicks:0,click(){clicks++;}},form={querySelectorAll:s=>{if(s.includes('#target_attack'))return support||st.noAttack?[]:st.twoAttack?[attackBtn,{}]:[attackBtn];if(s.includes('#target_support'))return support?[attackBtn]:[];const n=/name="(\w+)"/.exec(s)?.[1];return inputs[n]?[inputs[n]]:[];},submit(){submits++;}};
@@ -305,7 +307,7 @@ for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'}: READY_TO_
 });
 for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'}: confirmation page shows no stale BLOCKED and the panel follows persisted state`,async()=>{
  const f=await confirmFixture({support});await f.c.open();f.c.go();
- const mk=()=>({children:[],style:{},dataset:{},addEventListener(){},append(...n){this.children.push(...n);},after(){},remove(){},get isConnected(){return true;}});
+ const mk=()=>({children:[],style:{},dataset:{},querySelector(){return null;},addEventListener(){},append(...n){this.children.push(...n);},after(){},remove(){},get isConnected(){return true;}});
  const body=mk(),made=[];const d=f.w.document;
  d.readyState='complete';d.getElementById=()=>null;d.createElement=()=>{const e=mk();made.push(e);return e;};d.body=body;
  f.w.setInterval=()=>1;f.w.clearInterval=()=>{};
@@ -368,4 +370,72 @@ test('SYNC_2M rejection persists full bounded clock diagnostics through reload w
 test('successful SYNC_2M also exposes samples after persistence',async()=>{
  const f=await syncedFixture();const d=f.api.preparationDiagnostic().executions[0].units[0].clockDiagnostic;
  assert.equal(d.valid,true);assert.equal(d.reason,null);assert.equal(d.samples.length,3);assert.equal(d.spreadMs,0);noSendOrAuth(f);
+});
+
+
+async function finalReadyFixture(support=false, available=true, earlyMode=null) {
+ const f=await confirmFixture({support,earlyMode});
+ f.w.EAS.FakesExecution={readOutgoingCommands:()=>({available,commands:[],reason:available?null:'DOM_UNAVAILABLE'})};
+ await f.c.open();f.c.go();await f.tick(SEND-45000);
+ assert.equal(f.read().state,'CONFIRMATION_READY');
+ const form=f.w.document.querySelector('#command-confirm-form'),oldQuery=f.w.document.querySelector;
+ const button=form.querySelectorAll('button')[0];button.isConnected=true;button.getClientRects=()=>[1];button.addEventListener=button.removeEventListener=()=>{};
+ form.addEventListener=form.removeEventListener=()=>{};
+ f.w.document.querySelector=s=>s.includes('command-confirm-form')?form:oldQuery(s);
+ const oldAll=f.w.document.querySelectorAll;f.w.document.querySelectorAll=s=>s==='#troop_confirm_submit'?[button]:oldAll(s);
+ f.w.EAS.Selectors={};f.w.EAS.Adapters={};let loads=0;
+ f.w.EASLoader={loadScript:async path=>{loads++;assert.equal(path,'services/mass-snipe-precise.js');vm.runInContext(fs.readFileSync(path,'utf8'),f.ctx);}};
+ let locked=false;f.w.navigator={locks:{request:async(_key,_opts,fn)=>{if(locked)return fn(null);locked=true;try{return await fn({})}finally{locked=false}}}};
+ const callbacks=[];f.w.setTimeout=fn=>{callbacks.push(fn);return callbacks.length};f.w.clearTimeout=()=>{};
+ f.w.removeEventListener=()=>{};f.w.performance={now:()=>f.clockNow()};
+ return Object.assign(f,{button,loads:()=>loads,fire:()=>{f.now(SEND);callbacks.splice(0).forEach(fn=>fn());}});
+}
+for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'} automatic preparation -> explicit FINAL_CHECK -> shared precise dry run`,async()=>{
+ const f=await finalReadyFixture(support);const baseline=JSON.stringify(f.read().confirmationIntent.outgoingEvidence);
+ const checked=await f.api.prepareFinalExecution(f.eid,f.uid,f.w);
+ assert.equal(checked.valid,true,checked.blocker);assert.equal(f.read().state,'READY_TO_SEND');assert.equal(f.loads(),1);
+ assert.equal(f.read().finalAuthorization,undefined);assert.ok(f.api.baselineValid(f.read()));
+ assert.equal(JSON.stringify(f.read().confirmationIntent.outgoingEvidence),baseline);
+ assert.equal((await f.api.armFinalExecution(f.eid,f.uid,f.w,{dryRun:false})).blocker,'FINAL_AUTHORIZATION_REQUIRED');
+ const armed=await f.api.armFinalExecution(f.eid,f.uid,f.w,{dryRun:true});assert.equal(armed.armed,true,armed.blocker);
+ f.fire();assert.equal(f.c.finalClicks,0);assert.equal(f.read().executionTiming.dryRun,true);assert.equal(f.read().executionTiming.localDeviationMs,0);
+ assert.equal(f.read().state,'READY_TO_SEND');assert.equal(f.read().finalAuthorization,undefined);
+});
+for(const support of [false,true])test(`${support?'SUPPORT':'ATTACK'} new final flow requires explicit authorization and clicks only once`,async()=>{
+ const f=await finalReadyFixture(support);assert.equal((await f.api.prepareFinalExecution(f.eid,f.uid,f.w)).valid,true);
+ assert.ok(f.api.authorizeFinalSubmit(f.eid,f.uid,f.w));
+ assert.equal((await f.api.armFinalExecution(f.eid,f.uid,f.w,{dryRun:false})).armed,true);
+ f.fire();f.fire();assert.equal(f.c.finalClicks,1);assert.equal(f.read().state,'UNCERTAIN');
+ assert.equal(f.read().executionTiming.localWithin100Ms,true);assert.equal(f.read().executionTiming.serverOutcome,'UNCONFIRMED');
+ assert.equal((await f.api.armFinalExecution(f.eid,f.uid,f.w,{dryRun:false})).armed,false);
+});
+test('new final flow cannot invent unavailable baseline or accept a wrong account/tab',async()=>{
+ const missing=await finalReadyFixture(false,false);assert.equal((await missing.api.prepareFinalExecution(missing.eid,missing.uid,missing.w)).blocker,'OUTGOING_BASELINE_UNAVAILABLE');assert.equal(missing.read().attemptId,undefined);
+ for(const change of [f=>f.w.game_data.player.id=999,f=>f.w.game_data.world='other',f=>f.w.name='other']){
+  const f=await finalReadyFixture();change(f);assert.equal((await f.api.prepareFinalExecution(f.eid,f.uid,f.w)).valid,false);assert.equal(f.read().attemptId,undefined);
+ }
+});
+
+for(const support of [false,true])for(const mode of ['real','dry-run'])test(`${support?'SUPPORT':'ATTACK'} early ${mode}: checkpoint arms without final manual intervention`,async()=>{
+ const f=await finalReadyFixture(support,true,mode);assert.ok(f.api.earlySendValid(f.read()));
+ await f.tick(SEND-10001);assert.equal(f.read().state,'CONFIRMATION_READY');
+ await f.tick(SEND-10000);assert.equal(f.read().state,'READY_TO_SEND',JSON.stringify(f.read().blockers));
+ assert.equal(Boolean(f.read().finalAuthorization),mode==='real');
+ await f.tick(SEND-9000);f.fire();f.fire();
+ assert.equal(f.c.finalClicks,mode==='real'?1:0);assert.equal(f.read().executionTiming.localDeviationMs,0);
+ assert.equal(f.read().state,mode==='real'?'UNCERTAIN':'READY_TO_SEND');
+ await f.tick(SEND+2000);assert.equal(f.c.finalClicks,mode==='real'?1:0);
+});
+test('automatic final check blocks expired deadline and missing early consent, never catches up',async()=>{
+ const late=await finalReadyFixture(false,true,'real');await late.tick(SEND+1);
+ assert.equal(late.read().state,'BLOCKED');assert.ok(late.read().blockers.includes('FINAL_SEND_DEADLINE_PASSED'));assert.equal(late.c.finalClicks,0);assert.equal(late.read().attemptId,undefined);
+ const noAuth=await finalReadyFixture();await noAuth.tick(SEND-10000);assert.equal(noAuth.read().state,'BLOCKED');assert.ok(noAuth.read().blockers.includes('EARLY_FINAL_AUTHORIZATION_MISSING_OR_CHANGED'));assert.equal(noAuth.c.finalClicks,0);
+});
+test('early consent binds account and immutable command, and cannot authorize NT',()=>{
+ const f=fixture();const saved=f.api.authorizeEarlySend(f.eid,f.uid,'real',f.w);assert.ok(saved);
+ for(const mutate of [u=>u.account.playerId='x',u=>u.revision++,u=>u.source.id='x',u=>u.target.coord='111|222',u=>u.commandType='support',u=>u.approvedCommand.composition.quantities.axe++,u=>u.executionSendAtMs++]){
+  const changed=JSON.parse(JSON.stringify(saved));mutate(changed);assert.equal(f.api.earlySendValid(changed),false);
+ }
+ f.w.game_data.world='other';assert.equal(f.api.authorizeEarlySend(f.eid,f.uid,'real',f.w),null);
+ f.w.game_data.world='br143';const root=JSON.parse(f.values.get(f.api.STORAGE_KEY));root.executions['br143:7'][0].units[0].kind='native-noble-train';f.values.set(f.api.STORAGE_KEY,JSON.stringify(root));assert.equal(f.api.authorizeEarlySend(f.eid,f.uid,'real',f.w),null);
 });

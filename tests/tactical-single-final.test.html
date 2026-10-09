@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre><div id="fixture"></div>
+<script>
+let now=950000;window.game_data={world:'br-test',player:{id:'7'},village:{id:'10',x:500,y:500}};
+window.EAS={Selectors:{},Adapters:{},World:{getWorldName:()=> 'br-test',getPlayer:()=>({id:'7'})},Utils:{parseCoordinate:coordinate=>({coordinate})},MassSnipeExecution:{getCurrentServerTimeMs:()=>now}};
+window.Timing={getCurrentServerTime:()=>now};
+</script>
+<script src="../services/arrival-execution.js"></script><script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>
+(async()=>{
+ if(document.readyState!=='complete')await new Promise(r=>window.addEventListener('load',r,{once:true}));
+ const failures=[];let assertions=0,loads=0;const check=(v,m)=>{assertions++;if(!v)failures.push(m)};
+ const api=EAS.TacticalOperationSchedulerAdapter;
+ const loader={loadScript:()=>{loads++;return new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='../services/mass-snipe-precise.js';s.onload=resolve;s.onerror=reject;document.head.append(s)})}};
+ for(const type of ['attack','support'])for(const dryRun of [true,false]){
+  now=950000;localStorage.removeItem(api.STORAGE_KEY);const callbacks=[],hooks=new Map();let clicks=0;
+  document.querySelector('#fixture').innerHTML=`<form id="command-data-form" method="POST" action="?screen=place&action=command"><p>Destino (484|527)</p><input type="hidden" name="source_village" value="10"><input type="hidden" name="axe" value="1"><table><tr><td>Dura&#231;&#227;o: </td><td>00:00:10</td></tr></table><input id="troop_confirm_submit" name="submit_confirm" type="submit" value="Enviar ${type==='attack'?'ataque':'apoio'}"></form>`;
+  const form=document.querySelector('form');form.onsubmit=e=>{e.preventDefault();clicks++};
+  const cmd={slotId:'one',parentSlotId:'one',commandType:type,source:{id:'10',coord:'500|500'},target:{coord:'484|527'},composition:{quantities:{axe:1}},sendAtMs:1000000,desiredArrivalMs:1010000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
+  const ex=api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:type+dryRun,revision:1,validation:{valid:true},commands:[cmd]},{createdAt:1}).execution;
+  const eid=ex.executionId,uid=ex.units[0].executionUnitId;api.authorizeStoredUnit(eid,uid,{authorizedAt:1});
+  check(Boolean(api.authorizeEarlySend(eid,uid,dryRun?'dry-run':'real',{document,game_data,EAS,location:{href:'https://br143.tribalwars.com.br/game.php?screen=overview'}})),`${type} early choice persisted`);
+  const root=JSON.parse(localStorage.getItem(api.STORAGE_KEY)),u=root.executions['br-test:7'][0].units[0];
+  // Fixture begins at the real persisted confirmation boundary; earlier preparation is covered by Node/browser precheck tests.
+  u.state='CONFIRMATION_READY';u.clockEvidence={valid:true,measuredAt:950000};u.confirmationEvidence={valid:true,nativeDurationMs:10000};
+  const identity={operationId:u.operationId,revision:u.revision,executionId:eid,executionUnitId:uid,kind:u.kind,source:u.source,target:u.target,commandType:type,approved:u.approvedCommand,submitAtMs:u.executionSendAtMs,nativeSubmitAtMs:null};
+  u.confirmationIntent={status:'CONFIRMED',tabName:'prepared-tab',outgoingEvidence:{identity,capturedAt:949000,commandIds:[]}};
+  localStorage.setItem(api.STORAGE_KEY,JSON.stringify(root));
+  const context=JSON.stringify({executionId:eid,executionUnitId:uid,operationId:u.operationId,revision:u.revision});
+  const w={document,game_data,EAS,EASLoader:loader,Timing,localStorage,crypto,navigator,name:'prepared-tab',sessionStorage:{getItem:()=>context},
+   location:{href:'https://br143.tribalwars.com.br/game.php?screen=place&try=confirm&village=10'},performance:{now:()=>now},
+   addEventListener:(name,fn)=>name==='eas:scheduler-tick'?hooks.set(name,fn):window.addEventListener(name,fn),removeEventListener:(...a)=>window.removeEventListener(...a),
+   setTimeout:fn=>{callbacks.push(fn);return callbacks.length},clearTimeout:()=>{}};
+  const read=()=>api.list()[0].units[0];
+  api.initializeSchedulerHooks(w);now=990000;await hooks.get('eas:scheduler-tick')();
+  check(read().state==='READY_TO_SEND',`${type} automatic final check`);
+  check(Boolean(read().finalAuthorization)===!dryRun,`${type} authorization matches early choice`);
+  check(api.baselineValid(read()),`${type} persisted baseline`);
+  check((await api.armFinalExecution(eid,uid,w,{dryRun})).blocker==='ALREADY_ARMED','tick already armed without manual call');
+  now=1000000;const tasks=callbacks.splice(0);tasks.forEach(fn=>fn());tasks.forEach(fn=>fn());
+  check(clicks===(dryRun?0:1),`${type} expected click count`);
+  check(read().executionTiming?.localDeviationMs===0,`${type} local metric`);
+  check(read().state===(dryRun?'READY_TO_SEND':'UNCERTAIN'),`${type} dry vs unconfirmed`);
+  check(read().executionTiming?.serverOutcome==='UNCONFIRMED','no fabricated server confirmation');
+  if(!dryRun){w.location.href=w.location.href.replace('&try=confirm','');EAS.FakesExecution={readOutgoingCommands:()=>({available:true,commands:[{id:'42',type,sourceVillageId:'10',target:'484|527',evidence:{clock:'server-wall',arrivalMs:1010001,precisionMs:1}}]})};
+   check(api.recoverFinalExecution(eid,uid,w)?.state==='COMPLETED',`${type} server reconciliation`);
+   check(read().executionTiming?.serverArrivalDeviationMs===1,`${type} server arrival metric`);
+   check(!(await api.armFinalExecution(eid,uid,w,{dryRun:false})).armed,'completed never resends');
+  }
+  await new Promise(r=>setTimeout(r,0));
+ }
+ check(loads===1,'precision module lazy loaded once');document.title=failures.length?'FAIL':'PASS';document.querySelector('#result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
+})().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack});
+</script>

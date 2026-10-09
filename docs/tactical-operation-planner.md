@@ -26,6 +26,12 @@ Caller-supplied `externalConflicts` with matching `slotId` or `sourceId` appear 
 
 ## NT4 remains explicit and pending
 
+Historical Phase 1 scope below. For the subsequent Native NT2–NT5 structural
+validation outcome, see the [Native NT validation matrix](tactical-native-inspection.md#structural-validation-matrix).
+NT2–NT4 were validated directly in BR143; NT5 was accepted by structural
+equivalence only, without a real-game test. Native timing and final sending remain
+blocked; this does not change the Phase 1 historical contract.
+
 Four noble slots can represent one snob each. Missing offsets or `slotPolicy.nt4Confirmed !== true` block validation. This flag acknowledges an externally reviewed policy; it does not distribute escorts, siege units or remainders. No spacing is generated. Escort distribution, siege placement, remainder handling and spacing policy remain unresolved. NT5 is unsupported.
 
 ## Phase 2 remaining work

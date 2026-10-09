@@ -1,0 +1,88 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre><div id="fixture"></div>
+<script>window.EAS={World:{getWorldName:()=> 'br143',getPlayer:()=>({id:7})}};</script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>
+(async()=>{
+const api=EAS.TacticalOperationSchedulerAdapter, failures=[];let assertions=0, submits=0;
+const check=(value,label)=>{assertions++;if(!value)failures.push(label)};
+window.game_data={world:'br143',player:{id:7},village:{id:'10',x:500,y:500}};
+const w={document,game_data,EAS,location:{href:'https://br143.tribalwars.com.br/game.php?village=10&screen=place&try=confirm'},navigator,HTMLInputElement,Event,setTimeout:setTimeout.bind(window)};
+const storage=()=>{const m=new Map();return {getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,v)}};
+function fixture(){
+ document.querySelector('#fixture').innerHTML=`<form id="command-data-form" method="POST" action="?screen=place&action=command"><p>Destino (484|527)</p><input type="hidden" name="source_village" value="10"><input type="hidden" name="axe" value="1000"><input type="hidden" name="light" value="1000"><input type="hidden" name="snob" value="1"><table><tbody id="rows"></tbody></table><a id="troop_confirm_train" class="place-confirm-new-attack" href="#">Adicionar ataque</a><input type="submit" id="troop_confirm_submit" name="submit_confirm" value="Enviar ataque"></form>`;
+ document.querySelector('form').onsubmit=e=>{e.preventDefault();submits++};
+ let count=1;
+ document.querySelector('#troop_confirm_train').onclick=e=>{e.preventDefault();count++;
+ document.querySelector('#rows').insertAdjacentHTML('beforeend',`<tr class="units-row">${['axe','light','snob'].map(u=>`<td><input type="number" name="train[${count}][${u}]" value="0"></td>`).join('')}</tr>`);
+ // Actual BR143 redistribution: 5010/1990 over all additional rows.
+ for(let i=2;i<=count;i++)for(const [u,total]of Object.entries({axe:5010,light:1990}))document.querySelector(`[name="train[${i}][${u}]"]`).value=Math.floor(total/(count-1))+(i===count?total%(count-1):0);
+ for(let i=2;i<=count;i++)document.querySelector(`[name="train[${i}][snob]"]`).value=1;
+ };
+}
+function snapshot(n){return {snapshotKind:'tactical-approved-operation',version:1,operationId:'op'+n,revision:1,validation:{valid:true},commands:Array.from({length:n},(_,i)=>({slotId:'nt:'+i,parentSlotId:'nt',trainIndex:i+1,trainSize:n,commandType:'attack',validationStatus:'ready',blockers:[],source:{id:'10',coord:'500|500'},target:{coord:'484|527'},composition:{quantities:{axe:100+i,light:90+i,snob:1}},sendAtMs:890000,desiredArrivalMs:900000+i*100,travelTimeMs:10000+i*100}))}}
+// BR143 NT2: first attack hidden fields; two units-row (first display + train[2]).
+fixture();
+document.querySelector('#rows').innerHTML='<tr class="units-row"><td>Primeiro ataque</td></tr>';
+const realUnits=['spear','sword','axe','spy','light','heavy','ram','catapult','knight','snob'];
+document.querySelector('#troop_confirm_train').onclick=e=>{
+ e.preventDefault();
+ document.querySelector('#rows').insertAdjacentHTML('beforeend',`<tr class="units-row">${realUnits.map(u=>`<td><input type="number" name="train[2][${u}]" value="${({axe:3005,light:1495,snob:1})[u]??''}"></td>`).join('')}</tr>`);
+};
+const realSnapshot=snapshot(2);realSnapshot.commands[1].composition.quantities={axe:3005,light:1495,snob:1};
+const realOptions={storage:storage(),scope:'br143:7'},realExecution=api.enqueue(realSnapshot,realOptions).execution;
+const realResult=await api.inspectNativeTrain(realExecution.executionId,realExecution.units[0].executionUnitId,w,realOptions);
+check(realResult.valid&&realResult.status==='STRUCTURE_VALIDATED','BR143 NT2 empty unused number fields are zero');
+check(realResult.clicks===1,'BR143 NT2 exactly one native addition');
+check(document.querySelectorAll('tr.units-row').length===2,'BR143 has first display row and additional row');
+check(document.querySelectorAll('input[name^="train[2]"]').length===10,'BR143 has ten additional unit inputs');
+check(realResult.rows?.[1]?.composition.axe===3005&&realResult.rows?.[1]?.composition.light===1495&&realResult.rows?.[1]?.composition.snob===1,'BR143 approved second composition read back');
+const readReal=()=>api.readBR143NativeRows(document,{sourceId:'10',sourceCoord:'500|500',targetCoord:'484|527'});
+const emptyField=document.querySelector('[name="train[2][spear]"]');
+emptyField.value='';check(readReal().valid,'empty additional field is valid zero');
+for(const value of ['-1','1.5','1e3','9007199254740992']){
+ emptyField.value=value;check(readReal().blocker==='NATIVE_NT_INPUT_INVALID',`invalid numeric representation ${value} blocks`);
+}
+emptyField.value='';emptyField.disabled=true;check(readReal().blocker==='NATIVE_NT_INPUT_INVALID','disabled empty field blocks');emptyField.disabled=false;
+emptyField.parentNode.append(emptyField.cloneNode());check(readReal().blocker==='NATIVE_NT_INPUT_INVALID','duplicate empty field blocks');emptyField.parentNode.lastChild.remove();
+const firstHidden=document.querySelector('input[name="axe"]');firstHidden.value='';check(readReal().blocker==='NATIVE_NT_INPUT_INVALID','empty first hidden field remains unproven');
+firstHidden.value='1.000';check(readReal().blocker==='NATIVE_NT_INPUT_INVALID','localized hidden quantity not silently coerced');
+for(const n of [2,3,4,5]){
+ fixture();const options={storage:storage(),scope:'br143:7'},execution=api.enqueue(snapshot(n),options).execution,unit=execution.units[0];
+ const result=await api.inspectNativeTrain(execution.executionId,unit.executionUnitId,w,options);
+ check(result.valid,`NT${n} valid: ${result.blocker}`);check(result.rows?.length===n,`NT${n} complete count`);check(result.clicks===n-1,`NT${n} exactly N-1 additions`);
+ check(result.rows?.every((r,i)=>r.composition.axe===100+i&&r.composition.light===90+i&&r.composition.snob===1),`NT${n} reapplied after redistribution`);
+ const saved=api.list(options)[0].units[0];
+ check(saved.state==='BLOCKED'&&saved.blockers.includes('NATIVE_NT_NATIVE_TIMING_UNPROVEN'),`NT${n} timing blocker retained`);
+ check(!saved.attemptId&&!saved.finalAuthorization&&!saved.preparationAuthorization,`NT${n} no send or preparation authorization`);
+ check(saved.nativeInspection.status==='STRUCTURE_VALIDATED'&&saved.nativeInspection.timingApproved===false,`NT${n} inspection persisted`);
+ check((await api.inspectNativeTrain(execution.executionId,unit.executionUnitId,w,options)).blocker==='NATIVE_NT_INSPECTION_INELIGIBLE',`NT${n} reload/repeat no retry`);
+ const field=document.querySelector('[name="train[2][axe]"]');field.value=999;
+ check(!api.parseNativeConfirmation(document,unit).valid,`NT${n} divergence`);field.value=101;
+ const row=field.closest('tr'),parent=row.parentNode,next=row.nextSibling;row.remove();
+ check(!api.parseNativeConfirmation(document,unit).valid,`NT${n} missing row`);parent.insertBefore(row,next);
+ parent.append(row.cloneNode(true));check(!api.parseNativeConfirmation(document,unit).valid,`NT${n} extra row`);parent.lastChild.remove();
+ if(n>2){parent.append(row);check(!api.parseNativeConfirmation(document,unit).valid,`NT${n} row order`);parent.insertBefore(row,parent.firstChild)}
+ document.querySelector('[name="source_village"]').value='11';check(!api.parseNativeConfirmation(document,unit).valid,`NT${n} source mismatch`);
+ document.querySelector('[name="source_village"]').value='10';document.querySelector('form p').textContent='Destino (111|222)';check(!api.parseNativeConfirmation(document,unit).valid,`NT${n} target mismatch`);
+}
+fixture();const options={storage:storage(),scope:'br143:7'},ex=api.enqueue(snapshot(2),options).execution,u=ex.units[0];
+document.querySelector('[name=snob]').remove();check(!(await api.inspectNativeTrain(ex.executionId,u.executionUnitId,w,options)).valid,'incomplete native DOM blocks');
+
+fixture();w.game_data={...game_data,world:'wrong'};
+check((await api.inspectNativeTrain(ex.executionId,u.executionUnitId,w,options)).blocker==='NATIVE_NT_INSPECTION_SESSION_INVALID','wrong world blocks');w.game_data=game_data;
+const badOptions={storage:storage(),scope:'br143:7'},bad=api.enqueue(snapshot(3),badOptions).execution;
+document.querySelector('[name="train[2][axe]"]')?.remove();
+const nativeAdd=document.querySelector('#troop_confirm_train').onclick;
+document.querySelector('#troop_confirm_train').onclick=e=>{nativeAdd(e);document.querySelector('[name="train[2][snob]"]').remove()};
+check(!(await api.inspectNativeTrain(bad.executionId,bad.units[0].executionUnitId,w,badOptions)).valid,'incomplete added row blocks');
+check(api.list(badOptions)[0].units[0].nativeInspection.status==='FAILED','failure persists');
+check((await api.inspectNativeTrain(bad.executionId,bad.units[0].executionUnitId,w,badOptions)).blocker==='NATIVE_NT_INSPECTION_INELIGIBLE','failure cannot retry');
+fixture();const concurrentOptions={storage:storage(),scope:'br143:7'},ce=api.enqueue(snapshot(4),concurrentOptions).execution;
+const parallel=await Promise.all([api.inspectNativeTrain(ce.executionId,ce.units[0].executionUnitId,w,concurrentOptions),api.inspectNativeTrain(ce.executionId,ce.units[0].executionUnitId,w,concurrentOptions)]);
+check(parallel.filter(x=>x.valid).length===1,'concurrent inspection runs once');
+check(document.querySelectorAll('tr.units-row').length===3,'concurrent inspection no extra rows');
+const persisted=api.list(concurrentOptions)[0];check(JSON.stringify(persisted.approvedSnapshot)===JSON.stringify(snapshot(4)),'frozen approval unchanged');
+check(submits===0,'zero final submit');
+document.title=failures.length?'FAIL':'PASS';document.querySelector('#result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
+})().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack});
+</script>

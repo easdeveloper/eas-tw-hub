@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+(async()=>{
+ const failures=[];let assertions=0;
+ const check=(x,label)=>{assertions++;if(!x)failures.push(label)};
+ localStorage.clear();sessionStorage.clear();
+ const frame=document.createElement('iframe');document.body.append(frame);
+ await new Promise((resolve,reject)=>{frame.onload=resolve;frame.onerror=reject;frame.src='fixtures/loader/idle-local-page.html?screen=place&try=confirm&village=675'});
+ const w=frame.contentWindow;
+ for(let i=0;i<50&&!w.fixtureState.ready&&!w.fixtureState.errors.length;i++)await new Promise(r=>setTimeout(r,20));
+ check(w.fixtureState.ready===1,'bootstrap completed');
+ check(!w.EAS.TacticalOperationSchedulerAdapter,'manual confirmation does not eagerly load adapter');
+ const beforeStorage=JSON.stringify({...w.localStorage}),beforeSession=JSON.stringify({...w.sessionStorage});
+ const beforeFactories=w.EASLoaderDebug().counts.factoryExecutions;
+ const first=w.EASLoader.loadScript('services/tactical-operation-scheduler-adapter.js',{reason:'manual-native-inspection-api'});
+ const second=w.EASLoader.loadScript('services/tactical-operation-scheduler-adapter.js');
+ check(first===second,'concurrent demand shares promise');await Promise.all([first,second]);
+ const api=w.EAS.TacticalOperationSchedulerAdapter;
+ check(typeof api?.list==='function','list exposed');check(typeof api?.inspectNativeTrain==='function','inspection exposed');
+ check(api.list().length===0,'read-only list works without opening a module');
+ await w.EASLoader.loadScript('services/tactical-operation-scheduler-adapter.js');
+ check(w.EAS.TacticalOperationSchedulerAdapter===api,'same singleton on subsequent demand');
+ check(w.EASLoaderDebug().counts.factoryExecutions===beforeFactories+1,'one factory execution');
+ check(JSON.stringify({...w.localStorage})===beforeStorage,'no persistent operation changes');
+ check(JSON.stringify({...w.sessionStorage})===beforeSession,'no session changes');
+ check(w.fixtureState.fetches===0,'no fetch or POST');check(w.fixtureState.scripts.length===0,'no script injections');
+ check(w.fixtureState.errors.length===0,'no bootstrap errors');
+ w.fixtureDispose();frame.remove();document.title=failures.length?'FAIL':'PASS';document.querySelector('#result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
+})().catch(e=>{document.title='FAIL';document.querySelector('#result').textContent=e.stack});
+</script>
