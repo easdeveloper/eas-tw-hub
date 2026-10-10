@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>BR143 native ATTACK confirmation clock fixture</title><body id="ds_body">
+<form id="command-data-form" method="post" action="?screen=place&amp;action=command">
+ <p>Destino (507|471)</p><input type="hidden" name="source_village" value="675"><input type="hidden" name="axe" value="1">
+ <table><tr><td>Duracao:</td><td>00:00:10</td></tr></table><input id="troop_confirm_submit" type="submit" name="submit_confirm" value="Enviar ataque">
+</form>
+<footer>Hora do servidor: <span id="serverTime"></span> <span id="serverDate"></span></footer>
+<script>
+window.game_data={world:'br143',player:{id:7,villages:1},village:{id:675,x:511,y:443,name:'Source'},units:['axe']};
+window.fixtureState={fetches:0,ready:0,errors:[],finalClicks:0};
+window.Timing={getCurrentServerTime:()=>parent.preciseServerNow+10800000};
+window.renderClock=()=>{const d=new Date(parent.preciseServerNow),p=n=>String(n).padStart(2,'0');document.getElementById('serverDate').textContent=`${p(d.getUTCDate())}/${p(d.getUTCMonth()+1)}/${d.getUTCFullYear()}`;document.getElementById('serverTime').textContent=`${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;};
+renderClock();
+window.fetch=async()=>{fixtureState.fetches++;throw Error('Unexpected HTTP');};
+window.alert=message=>fixtureState.errors.push('alert: '+message);
+addEventListener('error',event=>fixtureState.errors.push(event.message));
+addEventListener('eas-tw-hub-error',event=>fixtureState.errors.push(event.detail.message));
+addEventListener('eas-tw-hub-ready',()=>fixtureState.ready++);
+if(parent.clockContext)sessionStorage.setItem('eas_tactical_preparation_context',JSON.stringify(parent.clockContext));else sessionStorage.removeItem('eas_tactical_preparation_context');
+document.getElementById('command-data-form').onsubmit=event=>{event.preventDefault();fixtureState.finalClicks++;};
+</script><script src="../../../local-test/eas-tw-local.user.js"></script>

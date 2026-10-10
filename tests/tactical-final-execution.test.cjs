@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const plain = x => JSON.parse(JSON.stringify(x));
-function harness(type = 'attack', beforeIds = []) {
+function harness(type = 'attack', beforeIds = [], automatic = false) {
     let now = 500000, clicks = 0, uuid = 0, bot = false, observed = { available: true, commands: beforeIds.map(id => ({ id })) }, lock = false;
     const values = new Map(), timers = new Map(), listeners = new Map(); let serial = 0;
     const storage = { getItem: k => values.get(k) ?? null, setItem: (k,v) => values.set(k,v) };
@@ -28,11 +28,11 @@ function harness(type = 'attack', beforeIds = []) {
     for(const path of ['services/mass-snipe-precise.js','services/arrival-execution.js','services/tactical-operation-scheduler-adapter.js']) vm.runInContext(fs.readFileSync(path,'utf8'),ctx);
     const api=EAS.TacticalOperationSchedulerAdapter;
     const command={slotId:'one',parentSlotId:'one',commandType:type,source:{id:'10',coord:'500|500'},target:{coord:'484|527'},composition:{quantities:{axe:1}},sendAtMs:1000000,desiredArrivalMs:1010000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
-    const queued=api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'op',revision:1,validation:{valid:true},commands:[command]},{createdAt:1});
+    const queued=api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'op',revision:1,validation:{valid:true},commands:[command]},{createdAt:1,authorizeAutomaticAttack:automatic,targetWindow:w});
     const executionId=queued.execution.executionId,id=queued.execution.units[0].executionUnitId;
     const read=()=>api.list()[0].units[0];
     const save=unit=>api.updateStoredUnit(executionId,id,unit);
-    let unit=api.authorizeStoredUnit(executionId,id,{authorizedAt:1});
+    let unit=automatic ? read() : api.authorizeStoredUnit(executionId,id,{authorizedAt:1});
     unit=save(api.advancePrecheck10m(unit,{now,sessionAvailable:true,accountValid:true,loggedIn:true,source:command.source,target:command.target}));
     now=800000;
     assert.equal(api.captureExecutionBaseline(unit,w).valid,true);
@@ -43,7 +43,7 @@ function harness(type = 'attack', beforeIds = []) {
     unit=save(api.advanceFinalCheck(unit,{now,authorizationValid:true,sessionTrusted:true,sourceCorrect:true,targetCorrect:true,commandTypeCorrect:true,compositionMatches:true,confirmationContextValid:true,clockEvidenceFresh:true,singleSubmitControlFound:true}));
     w.location.href += '&try=confirm';
     return {api,w,read,save,executionId,id,button,values,timers,ctx,
-        clicks:()=>clicks,now:value=>now=value,bot:value=>bot=value,observed:value=>observed=value,
+        snapshot:queued.execution.approvedSnapshot, clicks:()=>clicks,now:value=>now=value,bot:value=>bot=value,observed:value=>observed=value,
         authorize:()=>api.authorizeFinalSubmit(executionId,id,w),
         arm:options=>api.armFinalExecution(executionId,id,w,options),
         fire:()=>{now=1000000;const callbacks=[...timers.values()];timers.clear();callbacks.forEach(fn=>fn());return callbacks;},
@@ -128,4 +128,25 @@ test('changed account after arming never submits',async()=>{
 test('armed callback at 100ms lateness blocks instead of sending a late command',async()=>{
  const h=harness();h.authorize();assert.equal((await h.arm({dryRun:false})).armed,true);
  h.now(1000100);[...h.timers.values()].forEach(fn=>fn());assert.equal(h.clicks(),0);assert.equal(h.read().state,'BLOCKED');
+});
+
+test('creation consent is atomic, bound to immutable attack data, and duplicates never grant consent',()=>{
+ const h=harness('attack',[],true),u=h.read();
+ assert.equal(h.api.earlySendValid(u),true);
+ assert.equal(u.earlySendConsent.origin,'explicit-operation-creation');
+ assert.equal(u.earlySendConsent.mode,'real');
+ for(const mutate of [x=>x.account.playerId='8',x=>x.revision++,x=>x.source.id='11',x=>x.target.coord='1|1',x=>x.approvedCommand.composition.quantities.axe++,x=>x.executionSendAtMs++]){
+  const changed=plain(u);mutate(changed);assert.equal(h.api.earlySendValid(changed),false);
+ }
+ const old=harness();assert.equal(old.api.earlySendValid(old.read()),false);
+ const result=old.api.enqueue(old.snapshot,{createdAt:2,authorizeAutomaticAttack:true,targetWindow:old.w});
+ assert.equal(result.duplicate,true);assert.equal(old.api.earlySendValid(old.read()),false);
+ for(const type of ['support','attack']){
+  const blocked=harness(type);blocked.now(1000000);
+  const result=blocked.api.enqueue({...plain(blocked.snapshot),operationId:'expired'},{authorizeAutomaticAttack:true,targetWindow:blocked.w});
+  assert.equal(result.created,false);assert.equal(blocked.api.list().length,1);assert.equal(blocked.clicks(),0);
+ }
+ const bad=harness();bad.w.game_data.player.id='8';
+ assert.equal(bad.api.enqueue({...plain(bad.snapshot),operationId:'wrong-account'},{authorizeAutomaticAttack:true,targetWindow:bad.w}).created,false);
+ assert.equal(bad.api.list().length,1);
 });

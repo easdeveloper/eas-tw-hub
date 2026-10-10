@@ -86,6 +86,7 @@
         const controller = EAS.TacticalOperationController;
         const review = controller.buildFinalReview(state.draft, { unitOrder: EAS.Data?.Troops?.getUnits?.() || [] });
         state.finalReview = review; state.approvedSnapshot = null;
+        const automaticAttack = review.commands.length > 0 && review.commands.every(c => c.commandType === 'attack' && !c.trainIndex);
         const container = root.parentElement, scrollTop = container.scrollTop;
         const view = document.createElement('section'); view.dataset.finalReview = '';
         const commandLabel = c => c.trainIndex ? `NT${c.trainIndex}/${c.trainSize}` : c.commandType === 'support' ? 'SUPPORT' : 'ATTACK';
@@ -97,15 +98,33 @@
             <h3>Totais de tropas</h3><p>${review.unitOrder.filter(unit => Object.hasOwn(review.totals, unit) && review.totals[unit] !== 0).map(unit => `${escapeHtml(UNIT_LABELS[unit] || unit)}: ${review.totals[unit] ?? 'Indispon\u00edvel'}`).join(' | ')}</p>
             <h3>VALIDA\u00c7\u00c3O</h3><p>${review.validation.ready}/${review.counts.commands} comandos READY<br>Composi\u00e7\u00f5es confirmadas: ${review.validation.compositionsConfirmed ? 'Sim' : 'N\u00e3o'}<br>Evid\u00eancia de tropas v\u00e1lida: ${review.validation.troopEvidenceValid ? 'Sim' : 'N\u00e3o comprovada'}<br>Saldo conhecido sem sobrealoca\u00e7\u00e3o: ${review.validation.noOverAllocation ? 'Sim' : 'N\u00e3o comprovado'}<br>Timing dispon\u00edvel: ${review.validation.timingAvailable ? 'Sim' : 'N\u00e3o'}<br>${escapeHtml(review.validation.blockers.join(', ') || 'Nenhum blocker')}</p>
             <button type="button" data-final-back>\u2190 Voltar e editar</button><button type="button" data-final-approve ${review.validation.valid ? '' : 'disabled'}>Aprovar opera\u00e7\u00e3o</button><p data-final-status>Somente revis\u00e3o. Nenhum comando ser\u00e1 criado.</p>`;
+        if (automaticAttack) {
+            view.querySelector('[data-final-approve]').textContent = 'Confirmar e autorizar ataque real autom\u00e1tico';
+            view.querySelector('[data-final-status]').textContent = 'Ao confirmar, autorizo o envio REAL autom\u00e1tico dos ataques, com as origens, destinos, tropas e hor\u00e1rios acima. Ap\u00f3s a cria\u00e7\u00e3o, todas as etapas e o clique nativo de envio ser\u00e3o autom\u00e1ticos.';
+        }
         root.hidden = true; root.style.display = 'none'; container.append(view);
         view.querySelector('[data-final-back]').onclick = () => {
             state.finalReview = null; state.approvedSnapshot = null; view.remove(); root.hidden = false; root.style.display = ''; container.scrollTop = scrollTop;
         };
-        view.querySelector('[data-final-approve]').onclick = () => {
+        view.querySelector('[data-final-approve]').onclick = async () => {
             const snapshot = controller.approveFinalReview(state.draft, review);
             state.approvedSnapshot = snapshot;
             view.querySelector('[data-final-status]').textContent = snapshot ? 'Opera\u00e7\u00e3o aprovada em mem\u00f3ria. Nenhum comando criado.' : 'Revis\u00e3o desatualizada ou bloqueada. Volte e gere uma nova revis\u00e3o.';
             view.querySelector('[data-final-approve]').disabled = true;
+            if (snapshot && automaticAttack) {
+                try {
+                    if (!EAS.TacticalOperationSchedulerAdapter) await window.EASLoader.loadScript('services/tactical-operation-scheduler-adapter.js');
+                    const adapter = EAS.TacticalOperationSchedulerAdapter;
+                    const result = adapter.enqueue(snapshot, { authorizeAutomaticAttack: true, targetWindow: window });
+                    adapter.initializeSchedulerHooks(window);
+                    if (!EAS.MissionScheduler) await window.EASLoader.loadScript('services/mission-scheduler.js');
+                    EAS.MissionScheduler.initialize(window);
+                    view.querySelector('[data-final-status]').textContent = result.created
+                        ? 'ATTACK criado e autorizado: execu\u00e7\u00e3o real autom\u00e1tica no hor\u00e1rio aprovado. Acompanhe status e eventuais erros nas opera\u00e7\u00f5es.'
+                        : result.duplicate ? 'Opera\u00e7\u00e3o j\u00e1 existente. Nenhuma nova autoriza\u00e7\u00e3o foi concedida.' : `Cria\u00e7\u00e3o bloqueada: ${result.blockers.join(', ')}`;
+                } catch (error) { view.querySelector('[data-final-status]').textContent = `Cria\u00e7\u00e3o bloqueada: ${error?.message || 'erro inesperado'}`; }
+                return;
+            }
             if (snapshot) {
                 const queueButton = document.createElement('button');
                 queueButton.type = 'button';

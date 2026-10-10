@@ -1,0 +1,77 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+window.preciseServerNow=Date.UTC(2026,9,10,12,0,0)+0.875;
+window.clockContext=null;
+window.game_data={world:'br143',player:{id:7},village:{id:675,x:511,y:443}};
+window.EAS={World:{getWorldName:()=> 'br143',getPlayer:()=>({id:7})},Utils:{parseCoordinate:c=>({coordinate:c})},MassSnipeExecution:{getCurrentServerTimeMs:()=>preciseServerNow}};
+</script><script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>
+(async()=>{
+ if(document.readyState!=='complete')await new Promise(r=>window.addEventListener('load',r,{once:true}));
+ const failures=[];let assertions=0;
+ const check=(v,m)=>{assertions++;if(!v)failures.push(m)};
+ const wait=async fn=>{for(let i=0;i<150;i++){if(fn())return;await new Promise(r=>setTimeout(r,20));}throw Error('Timeout: '+fn);};
+ const main=EAS.TacticalOperationSchedulerAdapter;
+ const mark=text=>document.getElementById('result').textContent=text;
+ for(const mode of ['full-bootstrap','lazy-clock-recovery']){
+  mark(mode+': start');
+  localStorage.clear();clockContext=null;preciseServerNow=Date.UTC(2026,9,10,12,0,0)+0.875;
+  const sendAt=Math.floor(preciseServerNow)+30000;
+  const create=()=>{
+   const command={slotId:'one',parentSlotId:'one',commandType:'attack',source:{id:'675',coord:'511|443'},target:{coord:'507|471'},composition:{quantities:{axe:1}},sendAtMs:sendAt,desiredArrivalMs:sendAt+10000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
+   const queued=main.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'clock-'+mode,revision:1,validation:{valid:true},target:command.target,commands:[command]},{createdAt:1,authorizeAutomaticAttack:true,targetWindow:window});
+   check(queued.created,'authorized operation created: '+mode);
+   const ex=queued.execution,id=ex.units[0].executionUnitId,root=JSON.parse(localStorage.getItem(main.STORAGE_KEY)),u=root.executions['br143:7'][0].units[0];
+   const identity=JSON.parse(JSON.stringify(u.earlySendConsent.identity));delete identity.account;
+   u.state='CONFIRMATION_READY';u.clockEvidence={valid:true,measuredAt:sendAt-120000,source:'Timing.getCurrentServerTime+World.getServerDateTime'};
+   u.confirmationEvidence={valid:true,nativeDurationMs:10000};u.confirmationIntent={status:'CONFIRMED',navigationId:'clock-navigation',tabName:'clock-'+mode,outgoingEvidence:{identity,capturedAt:sendAt-50000,commandIds:[]}};
+   u.rallyPreparation={status:'PREPARED',navigationId:'clock-navigation',tabName:'clock-'+mode};
+   localStorage.setItem(main.STORAGE_KEY,JSON.stringify(root));
+   clockContext={executionId:ex.executionId,executionUnitId:id,operationId:u.operationId,revision:u.revision};
+   return clockContext;
+  };
+  let context=mode==='full-bootstrap'?create():null;
+  const frame=document.createElement('iframe');frame.name='clock-'+mode;frame.style.cssText='width:900px;height:400px';document.body.append(frame);
+  frame.src='fixtures/loader/tactical-attack-confirmation-clock.html?screen=place&try=confirm&village=675';
+  mark(mode+': bootstrap');
+  await wait(()=>frame.contentWindow.fixtureState?.ready || frame.contentWindow.fixtureState?.errors.length);
+  const w=frame.contentWindow;check(w.fixtureState.errors.length===0,'actual local bundle bootstraps without error: '+JSON.stringify(w.fixtureState.errors));
+  if(mode==='lazy-clock-recovery'){
+   check(!w.EAS.MassSnipeExecution?.getCurrentServerTimeMs,'missing source reproduced on the native confirmation route before recovery');
+   context=create();w.sessionStorage.setItem('eas_tactical_preparation_context',JSON.stringify(context));
+   await w.EASLoader.loadScript('services/tactical-operation-scheduler-adapter.js');
+  }else{
+   check(w.__EAS_TW_RUNTIME_RESUMED__?.type==='tactical-preparation','confirmation without EAS URL parameters resumes from persisted tab context');
+   check(typeof w.EAS.World.getServerDateTime==='function' && typeof w.EAS.MassSnipeExecution.getCurrentServerTimeMs==='function','bootstrap includes World and MassSnipe clock modules');
+   check(typeof w.EAS.MassSnipePrecise?.createScheduler==='function','bootstrap includes precise scheduler');
+  }
+  const api=w.EAS.TacticalOperationSchedulerAdapter,read=()=>main.list()[0].units[0];
+  const localNow=w.Date.now;w.Date.now=()=>localNow()+365*86400000;
+  mark(mode+': final checkpoint '+preciseServerNow);
+  await api.runAutomaticFinal(context.executionId,context.executionUnitId,w);
+  mark(mode+': checkpoint done '+read().state);
+  check(read().state==='CONFIRMATION_READY','T-30 fractional server clock waits instead of CLOCK_UNAVAILABLE');
+  const clock=api.readAttackFinalClock(w);
+  check(clock.available && clock.rawNowMs===preciseServerNow && clock.nowMs===Math.floor(preciseServerNow),'source is recovered and lifecycle milliseconds validated');
+  check(clock.diagnostic.fractionalMs===0.875 && clock.diagnostic.appliedOffsetMs===-10800000,'real provider preserves fractions and server timezone offset');
+  check(!Number.isSafeInteger(clock.rawNowMs),'reproduces the old CLOCK_UNAVAILABLE predicate with a valid clock');
+  check(!read().attemptId && w.fixtureState.finalClicks===0,'no early final check or submit');
+  const timers=new Map();let serial=0;
+  w.setTimeout=fn=>{timers.set(++serial,fn);return serial};w.clearTimeout=id=>timers.delete(id);
+  Object.defineProperty(w.performance,'now',{value:()=>preciseServerNow});
+  preciseServerNow=sendAt-10000+0.875;w.renderClock();
+  mark(mode+': final checkpoint '+preciseServerNow);
+  await api.runAutomaticFinal(context.executionId,context.executionUnitId,w);
+  mark(mode+': checkpoint done '+read().state);
+  check(read().state==='READY_TO_SEND' && !!read().finalAuthorization,'FINAL_CHECK and real scheduler arm automatically');
+  const fire=()=>{const jobs=[...timers.values()];timers.clear();jobs.forEach(fn=>fn());return jobs};
+  preciseServerNow=sendAt-0.125;w.renderClock();fire();check(w.fixtureState.finalClicks===0,'never sends before scheduled time');
+  preciseServerNow=sendAt+0.625;w.renderClock();const jobs=fire();jobs.forEach(fn=>fn());
+  check(w.fixtureState.finalClicks===1,'one automatic native final click without human intervention');
+  check(read().executionTiming?.localDeviationMs===0.625,'scheduler retains sub-millisecond evidence; no rounding of final clock');
+  check(w.fixtureState.fetches===0,'no real HTTP attack or other request');
+  w.EAS.MissionScheduler.stop(w);frame.remove();await new Promise(r=>setTimeout(r,0));
+ }
+ document.title=failures.length?'FAIL':'PASS';document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
+})().catch(e=>{document.title='FAIL';document.getElementById('result').textContent=e.stack});
+</script>

@@ -12,9 +12,10 @@
   for(let n=0;n<50&&!w.fixtureState.ready&&!w.fixtureState.errors.length;n++)await wait(20);
   equal(w.fixtureState.errors,[],screen+' errors');equal(w.fixtureState.ready,1,screen+' one ready event');
   const before=w.EASLoaderDebug();
-    equal([before.counts.loaderStarts,before.counts.indexStarts,before.counts.loadScriptCalls,before.counts.scriptsInjected,before.counts.factoryExecutions],[1,1,36,0,37],screen+' deterministic bootstrap');
+    equal([before.counts.loaderStarts,before.counts.indexStarts,before.counts.loadScriptCalls,before.counts.scriptsInjected,before.counts.factoryExecutions],[1,1,37,0,38],screen+' deterministic bootstrap');
   equal(w.fixtureState.scripts,[],screen+' no EAS script elements');
-    equal([before.counts.scriptsCreated,before.counts.scriptsLoaded,before.counts.bootstrapCompleted],[0,37,1],screen+' complete lifecycle without fabricated script creation');
+    equal([before.counts.scriptsCreated,before.counts.scriptsLoaded,before.counts.bootstrapCompleted],[0,38,1],screen+' complete lifecycle without fabricated script creation');
+  equal(before.events.some(event=>event.event==='factory-executed'&&['services/mass-snipe-execution.js','services/mass-snipe-precise.js','services/tactical-operation-scheduler-adapter.js'].includes(event.asset)),false,screen+' idle bootstrap does not load tactical execution clocks');
   equal(before.events.some(event=>event.event==='script-loaded'&&event.transport==='embedded-static-function'),true,'local execution identified');
   equal(w.fixtureState.fetches,0,screen+' no HTTP scans');
   equal(before.events.filter(event=>event.event==='factory-executed').every(event=>/^sha256:[a-f0-9]{64}$/.test(event.contentHash)&&event.sameContentProcessedBefore===false),true,'source hashes identify first executions');
@@ -26,7 +27,7 @@
   equal(first===w.EASLoader.loadScript('core/units.js'),true,'same dependency shares promise');await first;
   await wait(150);
   const after=w.EASLoaderDebug();
-    equal([after.counts.loaderStarts,after.counts.indexStarts,after.counts.scriptsInjected,after.counts.factoryExecutions],[1,1,0,37],screen+' remains stable after duplicates');
+    equal([after.counts.loaderStarts,after.counts.indexStarts,after.counts.scriptsInjected,after.counts.factoryExecutions],[1,1,0,38],screen+' remains stable after duplicates');
   const assets=after.events.filter(x=>x.event==='factory-executed').map(x=>x.asset);
   equal(assets.length,new Set(assets).size,'each factory once');
   equal(w.fixtureState.fetches,0,'still no scans');equal(w.fixtureState.ready,1,'no second ready');
@@ -39,7 +40,7 @@
   // Lazy module registration still works without injecting a script or opening it.
   await Promise.all([w.EASLoader.loadScript('modules/fakes.js'),w.EASLoader.loadScript('modules/fakes.js')]);
   equal(typeof w.EAS.Modules.Fakes.open,'function','lazy module registered');
-  equal(w.EASLoaderDebug().counts.factoryExecutions,38,'lazy module executed once');
+  equal(w.EASLoaderDebug().counts.factoryExecutions,39,'lazy module executed once');
   equal(w.fixtureState.fetches,0,'lazy registration makes no requests');
   equal(w.fixtureState.scripts.length,0,'lazy registration injects no scripts');
   results.push({screen,session:after.session,counts:after.counts,resources});w.fixtureDispose();

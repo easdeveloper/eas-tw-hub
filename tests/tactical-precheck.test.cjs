@@ -439,3 +439,87 @@ test('early consent binds account and immutable command, and cannot authorize NT
  f.w.game_data.world='other';assert.equal(f.api.authorizeEarlySend(f.eid,f.uid,'real',f.w),null);
  f.w.game_data.world='br143';const root=JSON.parse(f.values.get(f.api.STORAGE_KEY));root.executions['br143:7'][0].units[0].kind='native-noble-train';f.values.set(f.api.STORAGE_KEY,JSON.stringify(root));assert.equal(f.api.authorizeEarlySend(f.eid,f.uid,'real',f.w),null);
 });
+
+test('BR143 ATTACK: fractional server milliseconds on native confirmation are available at T-30, FINAL_CHECK and final click',async()=>{
+ const f=await finalReadyFixture(false,true,'real');
+ const original=f.w.EAS.MassSnipeExecution.getCurrentServerTimeMs;
+ f.w.EAS.MassSnipeExecution.getCurrentServerTimeMs=()=>original()+0.875;
+ f.w.Timing.getCurrentServerTime=f.w.EAS.MassSnipeExecution.getCurrentServerTimeMs;
+ await f.tick(SEND-30000);
+ assert.equal(f.read().state,'CONFIRMATION_READY',JSON.stringify(f.read().blockers));
+ await f.tick(SEND-10000);
+ assert.equal(f.read().state,'READY_TO_SEND',JSON.stringify(f.read().blockers));
+ assert.ok(f.read().finalAuthorization);
+ f.fire();
+ assert.equal(f.c.finalClicks,1);
+ assert.equal(f.read().executionTiming.localDeviationMs,0.875,'precision is preserved at the real click boundary');
+});
+
+function realConfirmationClock(f,{missingProvider=false,missingWorld=false}={}){
+ const query=f.w.document.querySelector;
+ f.w.document.querySelector=selector=>{
+  const date=new Date(f.clockNow()),pad=n=>String(n).padStart(2,'0');
+  if(selector==='#serverDate')return {textContent:`${pad(date.getUTCDate())}/${pad(date.getUTCMonth()+1)}/${date.getUTCFullYear()}`};
+  if(selector==='#serverTime')return {textContent:`${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`};
+  return query(selector);
+ };
+ f.ctx.document=f.w.document;f.ctx.location=f.w.location;
+ // BR143's displayed calendar is UTC-3, while native Timing carries fractions.
+ f.w.Timing={getCurrentServerTime:()=>f.clockNow()+10800000+0.875};
+ for(const path of ['core/utils.js','core/world.js','services/mass-snipe-execution.js'])vm.runInContext(fs.readFileSync(path,'utf8'),f.ctx);
+ if(missingProvider)delete f.w.EAS.MassSnipeExecution;
+ if(missingWorld)delete f.w.EAS.World.getServerDateTime;
+ const loaded=[];
+ f.w.EASLoader.loadScript=async path=>{loaded.push(path);vm.runInContext(fs.readFileSync(path,'utf8'),f.ctx);};
+ return loaded;
+}
+
+for(const missingWorld of [false,true])test(`BR143 native confirmation: recover missing ${missingWorld?'World reader':'MassSnipeExecution'} with real DOM/Timing provider, never client time`,async()=>{
+ const f=await finalReadyFixture(false,true,'real'),loaded=realConfirmationClock(f,{missingProvider:!missingWorld,missingWorld});
+ f.ctx.__now=()=>f.clockNow()+365*86400000;
+ await f.tick(SEND-30000);
+ assert.equal(f.read().state,'CONFIRMATION_READY',JSON.stringify(f.read().blockers));
+ assert.deepEqual(loaded,missingWorld?['core/world.js']:['services/mass-snipe-execution.js']);
+ const clock=f.api.readAttackFinalClock(f.w);
+ assert.equal(clock.available,true);assert.equal(clock.nowMs,SEND-30000);assert.equal(clock.rawNowMs,SEND-30000+0.875);
+ assert.equal(clock.diagnostic.domWallTimeMs,SEND-30000);assert.equal(clock.diagnostic.appliedOffsetMs,-10800000);
+ await f.tick(SEND-10000);assert.equal(f.read().state,'READY_TO_SEND',JSON.stringify(f.read().blockers));
+ assert.equal(f.read().finalAuthorization.createdAt,SEND-10000);
+ f.fire();f.fire();assert.equal(f.c.finalClicks,1);assert.equal(f.read().executionTiming.localDeviationMs,0.875);
+});
+
+test('visible server clock without native precise Timing remains blocked; unavailable modules never fall back to client time',async()=>{
+ for(const mutate of [f=>{delete f.w.Timing;},f=>{f.w.Timing.getCurrentServerTime=()=>NaN;},f=>{f.w.Timing.getCurrentServerTime=()=>{throw Error('native timing absent')};},
+  f=>{delete f.w.EAS.MassSnipeExecution;delete f.w.EASLoader;},f=>{delete f.w.EAS.MassSnipeExecution;f.w.EASLoader.loadScript=async()=>{throw Error('load failed')};}]){
+  const f=await finalReadyFixture(false,true,'real');realConfirmationClock(f);mutate(f);
+  await f.tick(SEND-30000);assert.equal(f.read().state,'BLOCKED');assert.ok(f.read().blockers.includes('CLOCK_UNAVAILABLE'));
+  const diagnostic=f.events.find(e=>e.event==='AUTOMATIC_FINAL_BLOCKED').data.clock;
+  assert.ok(diagnostic.reason);assert.equal(f.read().attemptId,undefined);assert.equal(f.read().finalAuthorization,undefined);assert.equal(f.c.finalClicks,0);
+ }
+});
+
+test('native precise clock lost after arming blocks the automatic ATTACK before the final click',async()=>{
+ const f=await finalReadyFixture(false,true,'real');realConfirmationClock(f);await f.tick(SEND-10000);
+ assert.ok(f.read().finalAuthorization);delete f.w.Timing;f.fire();
+ assert.equal(f.c.finalClicks,0);assert.equal(f.read().state,'BLOCKED');
+});
+
+test('concurrent ATTACK confirmation ticks recover the clock once and arm one scheduler',async()=>{
+ const f=await finalReadyFixture(false,true,'real'),loaded=realConfirmationClock(f,{missingProvider:true});
+ f.now(SEND-10000);
+ await Promise.all(Array.from({length:3},()=>f.api.runAutomaticFinal(f.eid,f.uid,f.w)));
+ assert.equal(f.read().state,'READY_TO_SEND',JSON.stringify(f.read().blockers));
+ assert.equal(loaded.filter(path=>path==='services/mass-snipe-execution.js').length,1);
+ assert.ok(f.read().finalAuthorization);f.fire();f.fire();assert.equal(f.c.finalClicks,1);
+});
+
+test('missing or invalid native server calendar is never reconstructed from the client clock',async()=>{
+ for(const calendar of [null,{textContent:'31/02/2026'}]){
+  const f=await finalReadyFixture(false,true,'real');realConfirmationClock(f);
+  const query=f.w.document.querySelector;
+  f.w.document.querySelector=selector=>selector==='#serverDate'?calendar:query(selector);
+  await f.tick(SEND-30000);
+  assert.equal(f.read().state,'BLOCKED');assert.equal(f.c.finalClicks,0);
+  assert.equal(f.api.readAttackFinalClock(f.w).diagnostic.reason,'TIMING_PROVIDER_ERROR');
+ }
+});

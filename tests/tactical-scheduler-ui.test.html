@@ -79,13 +79,14 @@ window.open = url => { openedUrl = String(url); return { focus() {} }; };
   check(win.body.textContent.includes('500|500 → 484|527'), 'execution unit shows approved source, target, and timing');
   check(EAS.MissionScheduler.load().missions.length === 0, 'Tactical queue is not stored as a legacy Scheduler mission');
   check(win.body.textContent.includes('Autorizar preparação'), 'preparation requires a separate explicit authorization');
-  win.body.querySelector('[data-tactical-authorize]').click();
+  check(!win.body.querySelector('[data-tactical-unit]').querySelector('button'), 'ATTACK has no intermediate authorization or preparation buttons');
+  EAS.TacticalOperationSchedulerAdapter.authorizeStoredUnit(queued.execution.executionId, queued.execution.units[0].executionUnitId, {authorizedAt:now});
   check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].preparationAuthorization.authorizationKind === 'tactical-preflight-only', 'authorization is scoped to preflight only');
   check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].preparationAuthorization.executionUnitId === queued.execution.units[0].executionUnitId, 'authorization is scoped to exactly one execution unit');
-  win.body.querySelector('[data-tactical-precheck]').click();
+  EAS.TacticalOperationSchedulerAdapter.runStoredPrecheck(queued.execution.executionId, queued.execution.units[0].executionUnitId, window);
   check(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0].state === 'PRECHECK_10M', 'T-10 session and source/target precheck advances lifecycle');
   setServerNow(approvedCommand.sendAtMs - 200000);
-  win.body.querySelector('[data-tactical-open]').click();
+  await EAS.TacticalOperationSchedulerAdapter.openRallyPoint(EAS.TacticalOperationSchedulerAdapter.list()[0].units[0],window);
   await new Promise(resolve => setTimeout(resolve, 20));
   check(openedUrl && openedUrl.includes('screen=place') && openedUrl.includes('village=10'), 'T-5 opens the approved source Rally Point');
   check(openedUrl.includes('eas_tactical_execution_id=') && openedUrl.includes('eas_tactical_unit_id='), 'Rally Point tab is bound to its exact execution unit');
@@ -110,6 +111,12 @@ window.open = url => { openedUrl = String(url); return { focus() {} }; };
   check([...win.body.querySelectorAll('details.tactical-operation-group')].every(group => group.querySelector('[data-tactical-unit]') && !group.querySelector('details.tactical-operation-group')), 'no empty or nested operation headers');
   check(EAS.TacticalOperationSchedulerAdapter.list()[0].units.length === 1, 'single ATTACK is one stored unit, not two');
   let cancellations = 0;
+  for (const execution of EAS.TacticalOperationSchedulerAdapter.listActive()) for (const unit of execution.units) {
+    if (unit.kind==='single-command' && unit.commandType==='attack') {
+      EAS.TacticalOperationSchedulerAdapter.cancelStoredUnit(execution.executionId,unit.executionUnitId);cancellations++;
+    }
+  }
+  await new Promise(resolve=>setTimeout(resolve,0));
   while (win.body.querySelector('[data-tactical-cancel]') && cancellations < 10) {
     win.body.querySelector('[data-tactical-cancel]').click(); cancellations += 1;
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -118,6 +125,15 @@ window.open = url => { openedUrl = String(url); return { focus() {} }; };
   check(EAS.TacticalOperationSchedulerAdapter.list().flatMap(execution => execution.units).length === 6 &&
     EAS.TacticalOperationSchedulerAdapter.list().flatMap(execution => execution.units).every(unit => unit.state === 'CANCELLED'), 'cancelled groups survive reload storage without independent NT children');
   check(win.body.querySelectorAll('[data-tactical-operation-group]').length === 0, 'empty cancelled operation parents disappear after rerender');
+  const completed = EAS.TacticalOperationSchedulerAdapter.enqueue({...snapshot,operationId:'completed-attack'}, {createdAt:99});
+  const stored=JSON.parse(localStorage.getItem(EAS.TacticalOperationSchedulerAdapter.STORAGE_KEY));
+  const done=stored.executions['br-test:7'].find(execution=>execution.executionId===completed.execution.executionId).units[0];
+  done.state='COMPLETED';done.completedCommandIds=['42'];done.executionTiming={commandId:'42',localDeviationMs:0};
+  localStorage.setItem(EAS.TacticalOperationSchedulerAdapter.STORAGE_KEY,JSON.stringify(stored));
+  window.dispatchEvent(new CustomEvent('eas:tactical-preparation-updated'));await new Promise(resolve=>setTimeout(resolve,0));
+  const completedCard=win.body.querySelector(`[data-tactical-execution="${completed.execution.executionId}"]`);
+  check(completedCard?.textContent.includes('Command ID: 42') && completedCard.textContent.includes('Desvio local: 0 ms'), 'completed automatic attack keeps its result and millisecond metric visible');
+  check(completedCard && !completedCard.querySelector('button'), 'completed ATTACK remains status only');
   document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
   document.title = failures.length ? 'FAIL' : 'PASS';
 })().catch(error => { document.getElementById('result').textContent = `ERROR ${error?.stack || error}`; document.title = 'FAIL'; });

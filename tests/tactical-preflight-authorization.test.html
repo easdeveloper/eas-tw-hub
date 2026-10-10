@@ -42,7 +42,7 @@ window.open = url => { openedUrl = String(url); return { focus() {} }; };
  localStorage.removeItem(api.STORAGE_KEY);
  setServerNow(100000);
  EAS.MassSnipeExecution.getCurrentServerTimeMs=()=>100000.875;
- const cmd={slotId:'attack',parentSlotId:'attack',source:{id:'10',coord:'516|458'},target:{coord:'507|471'},commandType:'attack',composition:{quantities:{axe:5930,light:3117}},sendAtMs:1000000,desiredArrivalMs:1010000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
+ const cmd={slotId:'attack',parentSlotId:'attack',source:{id:'10',coord:'516|458'},target:{coord:'507|471'},commandType:'support',composition:{quantities:{axe:5930,light:3117}},sendAtMs:1000000,desiredArrivalMs:1010000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
  const queued=api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'br143',revision:1,target:cmd.target,validation:{valid:true},commands:[cmd]},{createdAt:1});
  const read=()=>api.list()[0].units[0];
  check(!read().preparationAuthorization,'authorization initially absent');

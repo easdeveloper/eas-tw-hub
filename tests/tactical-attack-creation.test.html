@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>PASS</title></head><body>
+<pre id="result">running</pre>
+<script>
+window.onerror = (message, source, line, column, error) => { document.getElementById('result').textContent = `ERROR ${message}\n${error?.stack || ''}`; document.title = 'FAIL'; };
+const forbidden = new Proxy({}, { get() { throw new Error('Execution boundary accessed'); } });
+const candidate = { source: { id: '1', coord: '500|500', name: 'Source' }, ownHome: { spear: 100, ram: 20 }, evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { spear: { durationMs: 1000, trusted: true }, ram: { durationMs: 3000, trusted: true } }, eligibility: 'eligible', blockingReasons: [], warnings: [] };
+const candidateTwo = { ...candidate, source: { id: '2', coord: '499|500', name: 'Second Source' }, ownHome: { ...candidate.ownHome } };
+const realUnits = ['spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob', 'militia'];
+const realCandidate = { source: { id: '75186', coord: '510|491', name: 'Source 75186' }, ownHome: Object.fromEntries(realUnits.map(unit => [unit, unit === 'heavy' ? 200 : 0])), evidence: { trusted: true, complete: true, fresh: true }, travelDurations: { heavy: { durationMs: 102347000, trusted: true } }, eligibility: 'eligible', blockingReasons: [], warnings: [] };
+let failAnalysis = false, analysisCalls = 0, lastTarget = null;
+window.EAS = { Modules: {}, MissionScheduler: forbidden, ScheduledMissionExecution: forbidden, FakesExecution: forbidden, SupportExecution: forbidden, Runtime: forbidden,
+  TacticalOperationData: { analyzeTarget: async options => { analysisCalls += 1; lastTarget = options.target; if (failAnalysis) throw new Error('fixture analysis failure'); return { status: 'complete', partial: false, reason: null, failureStage: null, errorCode: null, errorMessage: null, target: { villageId: '9', coord: '501|501', name: 'Target', playerId: '7' }, sourcesDiscovered: 3, candidates: [candidate, candidateTwo, realCandidate], startedAt: 1, finishedAt: 2, summary: { completeTroops: 3, blockedTroops: 0, mapInfoSuccess: 3, mapInfoFailed: 0, mapInfoPending: 0 } }; } },
+  World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }), getServerDateTime: () => ({ available: true, year: 2026, month: 10, day: 5, hours: 0, minutes: 0, seconds: 0, milliseconds: 0 }) },
+  Utils: { createServerDateTime: (date, time) => { const d = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(date); const t = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(time); return d && t ? { year: +d[3], month: +d[2], day: +d[1], hours: +t[1], minutes: +t[2], seconds: +t[3], milliseconds: +(t[4] || '0') } : null; } },
+  UI: { createWindow: ({ id, title, width }) => { document.getElementById(id)?.remove(); const element = document.createElement('section'); element.id = id; element.innerHTML = `<h1>${title}</h1><div class="eas-window__body"></div>`; document.body.append(element); return { element, body: element.querySelector('.eas-window__body'), close: () => element.remove() }; } } };
+window.__executionApiReads = 0;
+</script>
+<script src="../services/tactical-operation-planner.js"></script>
+<script src="../services/tactical-operation-controller.js"></script>
+<script src="../services/tactical-operation-drafts.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script>localStorage.removeItem(EAS.TacticalOperationSchedulerAdapter.STORAGE_KEY);</script>
+<script src="../modules/tactical-operation-planner.js"></script>
+<script>
+(async()=>{
+ if(document.readyState!=='complete') await new Promise(r=>window.addEventListener('load',r,{once:true}));
+ const failures=[];let assertions=0,starts=0;
+ const check=(v,m)=>{assertions++;if(!v)failures.push(m)};
+ window.game_data={world:'br-test',player:{id:7},village:{id:'1',x:500,y:500}};
+ EAS.MassSnipeExecution={getCurrentServerTimeMs:()=>Date.UTC(2026,9,5)+0.75};
+ EAS.MissionScheduler={initialize:()=>{starts++}};
+ const api=EAS.TacticalOperationSchedulerAdapter;
+ const win=await EAS.Modules.TacticalOperationPlanner.open(),root=win.body.querySelector('.tactical-operation-planner');
+ root.querySelector('[data-op-target-input]').value='501|501';root.querySelector('[data-op-date]').value='06/10/2026';root.querySelector('[data-op-time]').value='08:00:00.000';
+ const done=new Promise(r=>root.addEventListener('tactical-operation-analysis-finished',r,{once:true}));root.querySelector('[data-op-analyze]').click();await done;
+ const id=EAS.Modules.TacticalOperationPlanner.getState().draft.operation.slots[0].id;
+ let role=root.querySelector(`[data-role="${id}"]`);role.value='attack';role.dispatchEvent(new Event('change',{bubbles:true}));
+ root.querySelector(`[data-custom="${id}"]`).click();const troop=[...root.querySelectorAll('[data-quantity]')].find(x=>x.dataset.unit==='spear');troop.value='10';troop.dispatchEvent(new Event('change',{bubbles:true}));root.querySelector(`[data-confirm="${id}"]`).click();
+ root.querySelector('[data-op-review]').click();const view=win.body.querySelector('[data-final-review]'),button=view.querySelector('[data-final-approve]');
+ check(button.textContent.includes('autorizar ataque real'), 'creation action explicitly authorizes a real attack');
+ check(view.querySelector('[data-final-status]').textContent.includes('envio REAL'), 'visible consent describes real automatic execution');
+ check(api.list().length===0, 'viewing review never grants consent or creates an execution');
+ await button.onclick();const execution=api.list()[0],unit=execution?.units[0];
+ check(api.list().length===1 && api.preparationAuthorizationValid(unit), 'one creation click atomically persists preparation');
+ check(api.earlySendValid(unit) && unit.earlySendConsent.origin==='explicit-operation-creation', 'same creation click persists exact real-send consent');
+ check(starts===1, 'creation starts scheduler ticking without another user action');
+ check(!view.querySelector('[data-final-queue]'), 'no separate enqueue or authorization button');
+ check(button.disabled && view.querySelector('[data-final-status]').textContent.includes('criado e autorizado'), 'creation becomes status only');
+ document.title=failures.length?'FAIL':'PASS';document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
+})().catch(e=>{document.title='FAIL';document.getElementById('result').textContent=e.stack});
+</script></body></html>

@@ -175,8 +175,22 @@
             const hasAuthorizedScheduledUnit = (stored?.executions?.[scope] || []).some(execution => execution.units?.some(unit =>
                 ['SCHEDULED', 'PRECHECK_10M', 'PREPARED', 'SYNC_2M', 'READY_TO_SEND', 'CONFIRMATION_READY'].includes(unit.state) && unit.preparationAuthorization?.executionUnitId === unit.executionUnitId));
             if (!hasAuthorizedScheduledUnit) return false;
+            const page = new URL(location.href);
+            let confirmationContext = null;
+            try { confirmationContext = JSON.parse(sessionStorage.getItem('eas_tactical_preparation_context') || 'null'); } catch {}
+            const attackConfirmation = page.searchParams.get('screen') === 'place' && page.searchParams.get('try') === 'confirm' &&
+                (stored?.executions?.[scope] || []).some(execution => execution.units?.some(unit =>
+                    unit.kind === 'single-command' && unit.commandType === 'attack' && ['READY_TO_SEND', 'CONFIRMATION_READY'].includes(unit.state) &&
+                    unit.executionId === confirmationContext?.executionId && unit.executionUnitId === confirmationContext?.executionUnitId &&
+                    unit.confirmationIntent?.tabName === window.name &&
+                    unit.preparationAuthorization?.executionUnitId === unit.executionUnitId));
+            if (attackConfirmation && !window.EAS.World?.getServerDateTime) {
+                if (!window.EAS.Utils?.createServerDateTime) await loadScript('core/utils.js');
+                await loadScript('core/world.js');
+            }
             if (!window.EAS.MassSnipeExecution?.getCurrentServerTimeMs) await loadScript('services/mass-snipe-execution.js');
             await loadScript('services/tactical-operation-scheduler-adapter.js');
+            if (attackConfirmation) await window.EAS.TacticalOperationSchedulerAdapter.ensureAttackFinalClock(window);
             if (!window.EAS.Place?.ensureCommandTarget) await loadScript('services/place.js');
             if (!window.EAS.MissionScheduler?.initialize) await loadScript('services/mission-scheduler.js');
             window.EAS.MissionScheduler.initialize(window);
@@ -294,8 +308,13 @@
             if (url.searchParams.get('screen') === 'place' && tacticalPreparationRequested) {
                 if (!window.EAS.Place?.ensureCommandTarget) await loadScript('services/place.js');
                 await loadScript('services/tactical-operation-scheduler-adapter.js');
+                const scope = `${window.game_data?.world || location.hostname}:${String(window.game_data?.player?.id || 0)}`;
+                const attackConfirmation = url.searchParams.get('try') === 'confirm' && window.EAS.TacticalOperationSchedulerAdapter.list({ scope }).some(execution =>
+                    execution.executionId === tacticalPreparationContext?.executionId && execution.units.some(unit =>
+                        unit.executionUnitId === tacticalPreparationContext?.executionUnitId && unit.kind === 'single-command' && unit.commandType === 'attack'));
+                if (attackConfirmation) await window.EAS.TacticalOperationSchedulerAdapter.ensureAttackFinalClock(window);
                 if (!window.EAS.MassSnipeExecution?.getCurrentServerTimeMs) await loadScript('services/mass-snipe-execution.js');
-                if (!window.EAS.MassSnipePrecise) await loadScript('services/mass-snipe-precise.js');
+                if (attackConfirmation ? typeof window.EAS.MassSnipePrecise?.createScheduler !== 'function' : !window.EAS.MassSnipePrecise) await loadScript('services/mass-snipe-precise.js');
                 if (!window.EAS.FakesExecution?.readOutgoingCommands) await loadScript('services/fakes-execution.js');
                 if (!window.EAS.ArrivalExecution) await loadScript('services/arrival-execution.js');
                 const initialized = window.EAS.TacticalOperationSchedulerAdapter?.initializePreparationPage?.(window);

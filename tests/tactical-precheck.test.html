@@ -42,7 +42,7 @@ window.open = url => { openedUrl = String(url); return { focus() {} }; };
  game_data.village={id:10,x:516,y:458};let clock=CHECK-1000;
  EAS.MassSnipeExecution.getCurrentServerTimeMs=()=>clock;
  EAS.World.getServerNowTimestamp=()=>clock-9*3600000;
- const cmd={slotId:'2065-26',parentSlotId:'2065-26',source:{id:'10',coord:'516|458'},target:{coord:'507|471'},commandType:'attack',composition:{quantities:{axe:5930,light:3117}},sendAtMs:SEND,desiredArrivalMs:SEND+10000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
+ const cmd={slotId:'2065-26',parentSlotId:'2065-26',source:{id:'10',coord:'516|458'},target:{coord:'507|471'},commandType:'support',composition:{quantities:{axe:5930,light:3117}},sendAtMs:SEND,desiredArrivalMs:SEND+10000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
  const snapshot={snapshotKind:'tactical-approved-operation',version:1,operationId:'tactical-operation-1791345973844',revision:7,target:cmd.target,validation:{valid:true},commands:[cmd]};
  const queue=api.enqueue(snapshot,{createdAt:1}),eid=queue.execution.executionId,uid=queue.execution.units[0].executionUnitId;
  api.authorizeStoredUnit(eid,uid,{authorizedAt:1791335243434});

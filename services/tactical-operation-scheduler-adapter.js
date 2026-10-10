@@ -1225,7 +1225,9 @@
             button.addEventListener('click', async () => { button.disabled = true; try { await handler(); } catch (error) { status.textContent = `BLOCKED: ${error?.message || 'PREPARATION_FAILED'}`; } finally { button.disabled = false; } });
             actions.append(button); return button;
         };
+        const automaticAttack = unit.kind === SINGLE && unit.commandType === 'attack';
         const finalActions = () => {
+            if (automaticAttack) return;
             if (activeArms.has(`${executionId}:${executionUnitId}`) || unit.executionTiming?.dryRun) return;
             if (unit.state !== 'READY_TO_SEND' || unit.finalCheckEvidence?.fromPreparedForm === true || actions.querySelector('[data-final-execution]')) return;
             const arm = async dryRun => {
@@ -1285,13 +1287,13 @@
                 refreshUnit(prepared.unit);
                 return prepared;
             };
-            action('Aplicar composição aprovada', applyPrepared);
+            if (!automaticAttack) action('Aplicar composição aprovada', applyPrepared);
             // Automatic preparation stops here. No confirmation/submit control is exposed.
             const timingNow = readAuthoritativeNowMs(targetWindow);
             const autoDue = dueState(unit, timingNow.available ? timingNow.nowMs : null, 300000, 120000, 'PREPARATION_WINDOW_MISSED');
             if (autoDue.notDue) status.textContent = 'Aguardando T-5 para preparar automaticamente.';
             else applyPrepared().catch(error => { status.textContent = `BLOCKED: ${error?.message || 'PREPARATION_FAILED'}`; });
-        } else if (url.searchParams.get('try') === 'confirm' && unit.state === 'PRECHECK_10M') {
+        } else if (url.searchParams.get('try') === 'confirm' && unit.state === 'PRECHECK_10M' && !automaticAttack) {
             action(unit.kind === NATIVE_TRAIN ? `Criar e validar ${unit.expectedCommands} ataques nativos` : 'Validar comando aprovado', async () => {
                 let evidence;
                 if (unit.kind === NATIVE_TRAIN) {
@@ -1332,9 +1334,9 @@
             } else
             status.textContent = `${unit.state}${unit.blockers?.length ? ` · ${unit.blockers.join(', ')}` : ''}${unit.state === 'READY_TO_SEND' ? (unit.finalCheckEvidence?.fromPreparedForm === true ? ` · RALLY_PREPARED · confirmação nativa pendente · PREPARADO, NÃO ENVIADO · ${unit.commandType} · ${Object.entries(unit.finalCheckEvidence.composition || {}).map(([name, count]) => `${name} ${count}`).join(', ')} · READY_TO_SEND não autoriza envio.` : ' · escolha DRY RUN ou Autorizar envio real.') : ''}`;
         }
-        if (unit.state === 'PREPARE_5M' && url.searchParams.get('try') === 'confirm') action('Sincronizar relógio e validar final', syncAndFinal);
+        if (!automaticAttack && unit.state === 'PREPARE_5M' && url.searchParams.get('try') === 'confirm') action('Sincronizar relógio e validar final', syncAndFinal);
         finalActions();
-        if (unit.state === 'UNCERTAIN') action('Reconciliar novamente, sem reenviar', () => {
+        if (!automaticAttack && unit.state === 'UNCERTAIN') action('Reconciliar novamente, sem reenviar', () => {
             unit = recoverFinalExecution(executionId, executionUnitId, targetWindow) || unit;
             status.textContent = `${unit.state} - ${unit.completedCommandIds?.join(', ') || unit.executionReason || ''}`;
         });
@@ -1374,7 +1376,7 @@
     const TICK_DIAGNOSTICS_KEY = 'eas_tw_tactical_tick_diagnostic_v1';
     const controllerIds = new WeakMap();
     // Safe controller-liveness evidence: no tokens, only timing/identity of this document's scheduler hook.
-    const recordTickDiagnostic = (targetWindow, unit, now, decision) => {
+    const recordTickDiagnostic = (targetWindow, unit, now, decision, finalClock = null) => {
         try {
             const storage = targetWindow.localStorage, wallMs = Date.now();
             if (!controllerIds.has(targetWindow)) controllerIds.set(targetWindow, targetWindow.crypto?.randomUUID?.() || `controller-${wallMs}`);
@@ -1388,6 +1390,7 @@
                 village: url.searchParams.get('village'), screen: url.searchParams.get('screen'), visibility: targetWindow.document?.visibilityState ?? null,
                 lastTickWallMs: wallMs, lastServerNow: Number.isFinite(now) ? now : null,
                 remainingMs: Number.isFinite(now) ? unit.executionSendAtMs - now : null, state: unit.state, decision,
+                ...(finalClock ? { finalClock: copy(finalClock) } : {}),
                 maxTickGapMs: Math.max(sameController ? previous.maxTickGapMs || 0 : 0, gap || 0),
                 firstTickAtRemainingMs: previous.firstTickAtRemainingMs ?? (Number.isFinite(now) ? unit.executionSendAtMs - now : null) };
             const keys = Object.keys(all);
@@ -1531,6 +1534,57 @@
         return saved;
     };
     const automaticFinalRuns = new WeakMap();
+    const singleAttack = unit => unit?.kind === SINGLE && unit.commandType === 'attack';
+    // Lifecycle/audit fields are integer milliseconds; the precise scheduler must
+    // keep the original Timing-backed value, including its fractional part.
+    const readAttackFinalClock = (targetWindow = window) => {
+        let rawNowMs = null, nativeNowMs = null, observation = null, reason = null;
+        const provider = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs;
+        try {
+            if (typeof provider !== 'function') reason = 'TIMING_PROVIDER_UNAVAILABLE';
+            else rawNowMs = provider.call(targetWindow.EAS.MassSnipeExecution, value => { observation = value; });
+        } catch { reason = 'TIMING_PROVIDER_ERROR'; }
+        if (!reason && (typeof rawNowMs !== 'number' || !Number.isFinite(rawNowMs) || !integer(Math.floor(rawNowMs)))) reason = 'TIMING_VALUE_INVALID';
+        try {
+            if (typeof targetWindow.Timing?.getCurrentServerTime !== 'function') reason ||= 'NATIVE_TIMING_UNAVAILABLE';
+            else nativeNowMs = Number.isFinite(observation?.rawTimingMs) ? observation.rawTimingMs : targetWindow.Timing.getCurrentServerTime();
+        } catch { reason ||= 'NATIVE_TIMING_ERROR'; }
+        if (!Number.isFinite(nativeNowMs)) reason ||= 'NATIVE_TIMING_INVALID';
+        const nowMs = !reason ? Math.floor(rawNowMs) : null;
+        const diagnostic = { reason, source: 'MassSnipeExecution.getCurrentServerTimeMs+Timing.getCurrentServerTime',
+            providerAvailable: typeof provider === 'function', worldReaderAvailable: typeof targetWindow.EAS?.World?.getServerDateTime === 'function',
+            nativeTimingAvailable: typeof targetWindow.Timing?.getCurrentServerTime === 'function',
+            rawNowMs: Number.isFinite(rawNowMs) ? rawNowMs : null, nowMs,
+            fractionalMs: Number.isFinite(rawNowMs) ? rawNowMs - Math.floor(rawNowMs) : null,
+            rawTimingMs: Number.isFinite(nativeNowMs) ? nativeNowMs : null,
+            domWallTimeMs: Number.isFinite(observation?.domWallTimeMs) ? observation.domWallTimeMs : null,
+            appliedOffsetMs: Number.isFinite(observation?.appliedOffsetMs) ? observation.appliedOffsetMs : null };
+        return { available: !reason, nowMs, rawNowMs, diagnostic };
+    };
+    const attackClockLoads = new WeakMap();
+    const ensureAttackFinalClock = async (targetWindow = window) => {
+        const initial = readAttackFinalClock(targetWindow);
+        if (initial.available || !targetWindow.EASLoader?.loadScript) return initial;
+        if (typeof targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs === 'function' &&
+            typeof targetWindow.EAS?.World?.getServerDateTime === 'function') return initial;
+        if (!attackClockLoads.has(targetWindow)) {
+            const load = (async () => {
+                if (!targetWindow.EASLoader?.loadScript) return;
+                if (typeof targetWindow.EAS?.World?.getServerDateTime !== 'function') {
+                    if (typeof targetWindow.EAS?.Utils?.createServerDateTime !== 'function') await targetWindow.EASLoader.loadScript('core/utils.js', { reason: 'attack-confirmation-clock' });
+                    await targetWindow.EASLoader.loadScript('core/world.js', { reason: 'attack-confirmation-clock' });
+                }
+                if (typeof targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs !== 'function')
+                    await targetWindow.EASLoader.loadScript('services/mass-snipe-execution.js', { reason: 'attack-confirmation-clock' });
+            })();
+            attackClockLoads.set(targetWindow, load);
+        }
+        try { await attackClockLoads.get(targetWindow); }
+        catch { return { available: false, nowMs: null, diagnostic: { reason: 'ATTACK_CLOCK_MODULE_LOAD_FAILED' } }; }
+        return readAttackFinalClock(targetWindow);
+    };
+    const finalNowMs = (unit, targetWindow) => singleAttack(unit) ? readAttackFinalClock(targetWindow).nowMs
+        : targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
     const runAutomaticFinal = async (executionId, executionUnitId, targetWindow = window) => {
         const key = `${executionId}:${executionUnitId}`;
         const runs = automaticFinalRuns.get(targetWindow) || new Set(); automaticFinalRuns.set(targetWindow, runs);
@@ -1539,20 +1593,26 @@
         if (unit?.executionTiming?.dryRun && unit.executionTiming.actualClickMs != null) return;
         if (!unit || unit.kind !== SINGLE || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(unit.state) ||
             !confirmedTabMatches(unit, targetWindow)) return;
-        let now = null;
-        try { now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.() ?? null; } catch {}
+        let now = null, clock = null;
+        if (singleAttack(unit)) {
+            clock = await ensureAttackFinalClock(targetWindow);
+            unit = lookup(executionId, executionUnitId);
+            if (!unit || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(unit.state) || !confirmedTabMatches(unit, targetWindow)) return;
+            if (runs.has(key) || activeArms.has(key)) return;
+            now = clock.nowMs;
+        } else try { now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.() ?? null; } catch {}
         const reject = reason => {
             const current = lookup(executionId, executionUnitId);
             if (!current || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(current.state)) return;
             const blocked = copy(current); block(blocked, reason); updateStoredUnit(executionId, executionUnitId, blocked);
-            executionLog('AUTOMATIC_FINAL_BLOCKED', blocked, { reason });
+            executionLog('AUTOMATIC_FINAL_BLOCKED', blocked, { reason, ...(clock ? { clock: clock.diagnostic } : {}) });
         };
-        if (!integer(now)) { reject('CLOCK_UNAVAILABLE'); return; }
+        if (!integer(now)) { recordTickDiagnostic(targetWindow, unit, now, 'CLOCK_UNAVAILABLE', clock?.diagnostic); reject('CLOCK_UNAVAILABLE'); return; }
         if (now >= unit.executionSendAtMs) { reject('FINAL_SEND_DEADLINE_PASSED'); return; }
-        if (unit.executionSendAtMs - now > 10000) { recordTickDiagnostic(targetWindow, unit, now, 'WAIT_FINAL_SEND_CHECK'); return; }
+        if (unit.executionSendAtMs - now > 10000) { recordTickDiagnostic(targetWindow, unit, now, 'WAIT_FINAL_SEND_CHECK', clock?.diagnostic); return; }
         runs.add(key);
         try {
-            recordTickDiagnostic(targetWindow, unit, now, 'AUTOMATIC_FINAL_CHECK');
+            recordTickDiagnostic(targetWindow, unit, now, 'AUTOMATIC_FINAL_CHECK', clock?.diagnostic);
             if (unit.state === 'CONFIRMATION_READY') {
                 const checked = await prepareFinalExecution(executionId, executionUnitId, targetWindow);
                 if (!checked.valid) { reject(checked.blocker); return; }
@@ -1628,11 +1688,12 @@
         const fail = blocker => ({ valid: false, blocker });
         const initial = lookup(executionId, executionUnitId);
         if (!initial || initial.kind !== SINGLE || initial.state !== 'CONFIRMATION_READY') return fail('FINAL_CHECK_STATE_INELIGIBLE');
+        if (singleAttack(initial) && !(await ensureAttackFinalClock(targetWindow)).available) return fail('CLOCK_UNAVAILABLE');
         try { if (!await ensurePreciseScheduler(targetWindow)) return fail('PRECISE_SCHEDULER_UNAVAILABLE'); }
         catch { return fail('PRECISE_SCHEDULER_LOAD_FAILED'); }
         const unit = lookup(executionId, executionUnitId);
         if (!same(unit, initial)) return fail('FINAL_CHECK_STATE_CHANGED');
-        const session = readSessionEvidence(targetWindow, unit), now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        const session = readSessionEvidence(targetWindow, unit), now = finalNowMs(unit, targetWindow);
         if (!session.accountValid || !session.sessionAvailable) return fail(session.accountReason || 'SESSION_UNAVAILABLE_OR_UNTRUSTED');
         if (!confirmedTabMatches(unit, targetWindow) || session.page?.screen !== 'place' || session.page?.tryMode !== 'confirm') return fail('CONFIRMATION_CONTEXT_INVALID');
         if (!integer(now) || now >= unit.executionSendAtMs || !unit.clockEvidence?.valid || now < unit.clockEvidence.measuredAt || now - unit.clockEvidence.measuredAt > 120000)
@@ -1656,7 +1717,7 @@
     };
 
     const authorizeFinalSubmit = (executionId, executionUnitId, targetWindow = window) => {
-        const unit = lookup(executionId, executionUnitId), now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        const unit = lookup(executionId, executionUnitId), now = finalNowMs(unit, targetWindow);
         if (!unit || unit.state !== 'READY_TO_SEND' || unit.kind !== SINGLE || unit.finalCheckEvidence?.fromPreparedForm === true || !baselineValid(unit) ||
             !integer(now) || now >= unit.executionSendAtMs || wasConsumed(unit, targetWindow.localStorage)) return null;
         if (!liveExecutionCheck(unit, targetWindow, { dryRun: true }).valid) return null;
@@ -1670,9 +1731,10 @@
         if (!dryRun && !authorizationValid(unit)) return { valid: false, blocker: 'FINAL_AUTHORIZATION_REQUIRED' };
         if (!baselineValid(unit) || wasConsumed(unit, targetWindow.localStorage)) return { valid: false, blocker: 'BASELINE_MISSING_OR_ATTEMPT_CONSUMED' };
         const session = readSessionEvidence(targetWindow, unit);
-        const now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
-        if (!integer(now) || typeof targetWindow.Timing?.getCurrentServerTime !== 'function' ||
-            !Number.isFinite(targetWindow.Timing.getCurrentServerTime()) || !unit.clockEvidence?.valid ||
+        const attackClock = singleAttack(unit) ? readAttackFinalClock(targetWindow) : null;
+        const now = attackClock ? attackClock.nowMs : targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        if (!integer(now) || (!attackClock && (typeof targetWindow.Timing?.getCurrentServerTime !== 'function' ||
+            !Number.isFinite(targetWindow.Timing.getCurrentServerTime()))) || !unit.clockEvidence?.valid ||
             now < unit.clockEvidence.measuredAt || now - unit.clockEvidence.measuredAt > 120000)
             return { valid: false, blocker: 'CLOCK_EVIDENCE_STALE' };
         if (now >= unit.executionSendAtMs + 100 || atSubmit && now < unit.executionSendAtMs)
@@ -1831,15 +1893,31 @@
     const listActive = (options = {}) => list(options).map(execution => ({ ...execution,
         units: execution.units.filter(unit => !['CANCELLED', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN'].includes(unit.state))
     })).filter(execution => execution.units.length > 0);
-    const enqueue = (snapshot, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey(), createdAt = Date.now() } = {}) => {
+    const enqueue = (snapshot, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey(), createdAt = Date.now(), authorizeAutomaticAttack = false, targetWindow = typeof window === 'undefined' ? null : window } = {}) => {
         const derived = deriveExecutionUnits(snapshot);
         if (!derived.units.length || !integer(createdAt)) return { created: false, blockers: derived.blockers.length ? derived.blockers : ['EXECUTION_UNITS_EMPTY'], execution: null };
         const executionId = unitId(snapshot, `schedule:${createdAt}`);
-        const scheduledUnits = derived.units.map(unit => ({ ...copy(unit), executionId, account: accountFromScope(scope) }));
+        let scheduledUnits = derived.units.map(unit => ({ ...copy(unit), executionId, account: accountFromScope(scope) }));
+        if (authorizeAutomaticAttack === true) {
+            const timing = readAuthoritativeNowMs(targetWindow), now = timing.available ? timing.nowMs : null;
+            if (!integer(now) || scheduledUnits.some(unit => unit.kind !== SINGLE || unit.commandType !== 'attack' || unit.state !== 'SCHEDULED' || now >= unit.executionSendAtMs))
+                return { created: false, blockers: ['AUTOMATIC_ATTACK_CREATION_INVALID'], execution: null };
+            for (const unit of scheduledUnits) {
+                const session = readSessionEvidence(targetWindow, unit);
+                if (!session.accountValid || !session.sessionAvailable)
+                    return { created: false, blockers: ['AUTOMATIC_ATTACK_SESSION_INVALID'], execution: null };
+            }
+            scheduledUnits = scheduledUnits.map(unit => {
+                const authorized = copy(authorizePreparation(unit, { authorizedAt: now }));
+                authorized.earlySendConsent = { kind: 'tactical-early-final-choice', mode: 'real', createdAt: now,
+                    origin: 'explicit-operation-creation', identity: earlySendIdentity(authorized) };
+                return authorized;
+            });
+        }
         const execution = freeze({ executionId, snapshotIdentity: derived.snapshotIdentity,
             approvedSnapshot: copy(snapshot), createdAt, state: 'SCHEDULED', units: scheduledUnits });
         const store = createStore(storage), root = store.read();
-        const existing = (root.executions[scope] || []).find(item => item.executionId === execution.executionId);
+        const existing = (root.executions[scope] || []).find(item => item.executionId === execution.executionId || (authorizeAutomaticAttack === true && same(item.snapshotIdentity, execution.snapshotIdentity)));
         if (existing) return { created: false, duplicate: true, blockers: [], execution: freeze(copy(existing)) };
         root.executions[scope] = [...(root.executions[scope] || []), execution];
         return store.write(root) ? { created: true, blockers: derived.blockers, execution } : { created: false, blockers: ['TACTICAL_SCHEDULER_STORAGE_FAILED'], execution: null };
@@ -2059,7 +2137,7 @@
 
     if (typeof window !== 'undefined') window.EASTacticalNativeTimingDebug = () => nativeTimingDiagnostic(window);
     Object.assign(EAS.TacticalOperationSchedulerAdapter = {}, {
-        authorizeEarlySend, earlySendValid, runAutomaticFinal, prepareFinalExecution, advanceConfirmedFinalCheck, ensurePreciseScheduler, inspectNativeTrain, readBR143NativeRows, nativeTimingDiagnostic, authorizationValid, baselineValid, captureExecutionBaseline, authorizeFinalSubmit, liveExecutionCheck, armFinalExecution, recoverFinalExecution,
+        authorizeEarlySend, earlySendValid, runAutomaticFinal, prepareFinalExecution, advanceConfirmedFinalCheck, ensurePreciseScheduler, ensureAttackFinalClock, readAttackFinalClock, inspectNativeTrain, readBR143NativeRows, nativeTimingDiagnostic, authorizationValid, baselineValid, captureExecutionBaseline, authorizeFinalSubmit, liveExecutionCheck, armFinalExecution, recoverFinalExecution,
         VERSION, STORAGE_KEY, SINGLE, NATIVE_TRAIN, formatServerTimestamp, formatExecutionUnitLabel, formatApprovedChildLabel,
         deriveExecutionUnits, mapTrainTiming, authorizePreparation,
         advancePrecheck10m, advancePrepare5m, evaluateClockSamples, advanceSync2m, advanceFinalCheck,
