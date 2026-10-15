@@ -62,7 +62,7 @@
         if (previous && Number(previous[valueKey]) !== Number(rule[valueKey])) {
             history.push({ previousValue: previous[valueKey], newValue: rule[valueKey], changedAt: now });
         }
-        return { ...previous, ...rule, detectedAt: previous?.detectedAt || now, lastConfirmedAt: now, history };
+        return { ...previous, ...rule, detectedAt: previous?.detectedAt || now, lastConfirmedAt: now, history: history.filter(entry=>entry.changedAt>now-86400000).slice(-30) };
     };
 
     const getWorldRules = (world = getWorld()) => {

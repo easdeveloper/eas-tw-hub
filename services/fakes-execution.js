@@ -70,7 +70,7 @@
         }
     };
 
-    const saveContext = (context) => {
+    const saveContext = (context, retry = true) => {
         try {
             localStorage.setItem(EXECUTION_STORAGE_KEY, JSON.stringify(context));
             if (context?.preset === 'fake_nt') {
@@ -79,17 +79,17 @@
             if (context?.preset === 'anti_snipe') {
                 localStorage.setItem('eas_tw_fake_anti_snipe_execution', JSON.stringify(context));
             }
-            return true;
+            return localStorage.getItem(EXECUTION_STORAGE_KEY) === JSON.stringify(context);
         } catch {
+            if (retry) { EAS.Storage?.lifecycle?.releaseOptional?.(); return saveContext(context, false); }
             return false;
         }
     };
 
     const removeContext = () => {
         try {
-            localStorage.removeItem(EXECUTION_STORAGE_KEY);
-            localStorage.removeItem('eas_tw_fake_nt_execution');
-            localStorage.removeItem('eas_tw_fake_anti_snipe_execution');
+            const context = readContext();
+            if (context) return saveContext({ ...context, stopped: true, paused: true, finishedAt: context.finishedAt || Date.now() });
         } catch {
             // The panel can still be closed when browser storage is unavailable.
         }
@@ -1004,8 +1004,10 @@
                 entry.confirmationAttempt.completedAt = Date.now();
                 // The baseline is needed only until reconciliation. Keep attempt identity
                 // and matched ID for auditing without storing every old ID for every fake.
-                if (entry.confirmationAttempt.outgoingSnapshot) delete entry.confirmationAttempt.outgoingSnapshot.beforeCommandIds;
-                delete entry.outgoingBefore;
+                if(entry.confirmationAttempt.outgoingCommandId) {
+                    delete entry.confirmationAttempt.outgoingSnapshot;
+                    for (const field of ['troops','units','outgoingBefore','diagnostic','diagnosticEvents']) delete entry[field];
+                }
             }
             diagnosticLog('COMMAND_COMPLETE', context, { outgoingCommandId: entry.confirmationAttempt?.outgoingCommandId });
             console.log?.('[EAS][FAKE][QUEUE] command completed', { oldCommandId: commandKey, confirmationAttempt: JSON.parse(JSON.stringify(entry.confirmationAttempt || null)) });
@@ -1233,78 +1235,20 @@
             errors: count('error'), remaining: queue.filter((entry) => !TERMINAL_STATES.includes(entry.status)).length };
     };
 
-    const summaryText = (value) => typeof value === 'string' ? value.slice(0, 240) : null;
-    const compactExecutionSummary = (context, terminalContext, stopped) => {
-        const errors = context.errors || [];
-        const results = (context.queue || []).map((entry, index) => {
-            const commandRef = getCommandKey(entry, index);
-            const error = [...errors].reverse().find((item) => item.commandKey === commandRef) || null;
-            const attempt = entry.confirmationAttempt || null;
-            const unresolvedAttempt = ['confirming', 'submitted'].includes(attempt?.state) ||
-                (entry.status === 'completed' && attempt && attempt.state !== 'completed');
-            const attempted = ['attacking', 'forwarding', 'confirm-page', 'confirming', 'submitted'].includes(entry.status) ||
-                ['attacking', 'forwarding', 'confirm-page', 'confirming', 'submitted'].includes(error?.state) ||
-                Boolean(unresolvedAttempt);
-            const outcome = attempted ? 'uncertain' : TERMINAL_STATES.includes(entry.status) ? entry.status : error ? 'error' : 'not-run';
-            const result = {
-                commandRef, sourceVillageId: String(entry.sourceVillageId || entry.villageId || ''),
-                targetVillageId: entry.targetVillageId ?? null, target: summaryText(entry.target), outcome
-            };
-            const executedCommandType = summaryText(entry.executedCommandType);
-            const reconciled = attempt?.state === 'completed' && Boolean(attempt?.outgoingCommandId);
-            const outgoingCommandId = reconciled ? summaryText(attempt.outgoingCommandId) : null;
-            const completedAt = reconciled && Number.isFinite(attempt.completedAt) ? attempt.completedAt : null;
-            if (executedCommandType) result.executedCommandType = executedCommandType;
-            if (outgoingCommandId) result.outgoingCommandId = outgoingCommandId;
-            if (completedAt !== null) result.completedAt = completedAt;
-            if (error || entry.status === 'error') {
-                result.error = {
-                    code: summaryText(error?.code || error?.type || entry.errorCode),
-                    reason: summaryText(error?.reason || error?.message || entry.error),
-                    detectedAt: Number.isFinite(error?.detectedAt) ? error.detectedAt : null
-                };
-            }
-            return { result, unresolved: attempted ? { entry, commandRef, attempt, error } : null };
-        });
-        const unresolvedEvidence = results.flatMap(({ unresolved }) => {
-            if (!unresolved) return [];
-            const { entry, commandRef, attempt, error } = unresolved;
-            const snapshot = attempt?.outgoingSnapshot;
-            const beforeCommandIds = Array.isArray(snapshot?.beforeCommandIds) ? [...snapshot.beforeCommandIds] : null;
-            const evidence = {
-                commandRef, sourceVillageId: String(entry.sourceVillageId || entry.villageId || ''),
-                targetVillageId: entry.targetVillageId ?? null, target: summaryText(entry.target),
-                attemptState: summaryText(attempt?.state),
-                attemptAt: Number.isFinite(attempt?.startedAt) ? attempt.startedAt :
-                    Number.isFinite(entry.preparationWait?.startedAt) ? entry.preparationWait.startedAt :
-                    Number.isFinite(error?.detectedAt) ? error.detectedAt : null,
-                snapshotCapturedAt: Number.isFinite(snapshot?.capturedAt) ? snapshot.capturedAt : null,
-                beforeCommandIds,
-                reason: summaryText(error?.reason || error?.message || entry.error || 'Execution stopped before reconciliation completed.')
-            };
-            return [evidence];
-        });
-        return {
-            summaryKind: 'fakes-execution-summary', version: 2,
-            createdAt: Number.isFinite(context.createdAt) ? context.createdAt : null,
-            finishedAt: terminalContext.finishedAt,
-            elapsedMs: Math.max(0, terminalContext.finishedAt - (context.createdAt || terminalContext.finishedAt)),
-            stopped, ...(stopped ? { stopReason: 'USER_STOP' } : {}),
-            preset: summaryText(context.preset), commandType: summaryText(context.commandType),
-            counts: executionCounts(context), results: results.map(({ result }) => result), unresolvedEvidence
-        };
-    };
-
     const finishExecution = (context, targetWindow, stopped = false) => {
         targetWindow.__easFakesAuto?.stop();
-        const terminalContext = { ...context, counts: executionCounts(context), finishedAt: Date.now(), stopped };
-        // Persist the terminal state first, so a stopped run cannot resume on reload.
-        if (!saveContext(terminalContext)) return false;
-        const summary = compactExecutionSummary(context, terminalContext, stopped);
-        try { localStorage.setItem(SUMMARY_STORAGE_KEY, JSON.stringify(summary)); }
-        catch { return false; }
-        targetWindow.__easFakesAuto?.stop();
-        removeContext();
+        const terminalContext = { ...context, lifecycleVersion: 1, counts: executionCounts(context), finishedAt: context.finishedAt || Date.now(), stopped };
+        const summary = { counts: executionCounts(context), elapsedMs: Math.max(0,terminalContext.finishedAt-(context.createdAt||terminalContext.finishedAt)) };
+        if (!EAS.Storage?.lifecycle?.proof(EXECUTION_STORAGE_KEY,terminalContext)) {
+            // Stopped/failed/uncertain states still need a durable resume guard.
+            if (!context.finishedAt && !saveContext(terminalContext)) return false;
+            return false;
+        }
+        // The last reconciled command is already durable. Success cleanup requires
+        // no larger terminal write and no additional archive under full quota.
+        const durable = readContext();
+        if (!durable || JSON.stringify(normalizeContext(durable)) !== JSON.stringify(normalizeContext(context))) return false;
+        if (EAS.Storage.lifecycle.retire(EXECUTION_STORAGE_KEY,durable,{finishedAt:terminalContext.finishedAt}).status !== 'REMOVED') return false;
         diagnosticLog('EXECUTION_COMPLETE', context, { stopped });
         const doc = targetWindow.document;
         const panel = doc.createElement('aside');
@@ -2119,8 +2063,11 @@
     };
 
     EAS.FakesExecution.start = (context) => {
+        try { if(localStorage.getItem(EXECUTION_STORAGE_KEY)!==null) return Promise.resolve(false); }
+        catch { return Promise.resolve(false); }
         const execution = normalizeContext({
             ...context,
+            lifecycleVersion: 1,
             autoMode: true,
             executionTab: null,
             forwardingIndex: null,
@@ -2147,6 +2094,8 @@
     EAS.FakesExecution.initialize = () => {
         const context = readContext();
 
+        // Legacy storage recovery is explicit through StorageMigration, never bootstrap.
+
         if (context?.autoMode) return resumeAutomatic(window);
         return context && isMatchingPlace(context, window)
             ? mountPanel(window)
@@ -2159,6 +2108,8 @@
     };
     EAS.FakesExecution.automaticControl = automaticControl;
     EAS.FakesExecution.executionCounts = executionCounts;
+    EAS.FakesExecution.buildStorageSummary = context => ({lifecycleVersion:1,counts:executionCounts(context),expiresAt:Date.now()+86400000});
+    EAS.FakesExecution.compactFinished = (options = {}) => EAS.Storage?.lifecycle?.cleanLegacy?.(options)?.find(row=>row.key===EXECUTION_STORAGE_KEY) || {status:'BLOCKED',reason:'EXPLICIT_BACKUP_REQUIRED'};
     EAS.FakesExecution.resumeConfirmation = resumeConfirmation;
     EAS.FakesExecution.readOutgoingCommands = readOutgoingCommands;
     EAS.FakesExecution.snapshotSourceEvidence = snapshotSourceEvidence;

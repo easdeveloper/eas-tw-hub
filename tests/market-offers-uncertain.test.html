@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<form method="post" action="?screen=market&mode=own_offer&village=9"><input name="sell" value="1000"><input name="buy" value="1000"><input name="multi" value="2"><input name="max_time" value="15"><button type="submit">Criar</button></form><table id="own_offers_table"></table>
+<script>
+history.replaceState(null,'','?screen=market&mode=own_offer&village=9');window.game_data={world:'br143',player:{id:7},village:{id:9}};
+let clicks=0;document.querySelector('form').onsubmit=e=>{e.preventDefault();clicks++};
+const villages=['9','10'].map(villageId=>({villageId,villageName:villageId,villageCoord:'500|500',available:true,resources:{wood:999999,stone:999999,iron:999999},merchants:{available:100,total:100},activeOfferList:[]}));
+window.EAS={Modules:{},Data:{Market:{get:()=>({updatedAt:Date.now(),merchantCapacity:1000}),getAll:()=>villages,getById:id=>villages.find(v=>v.villageId===id)}},
+ Utils:{formatNumber:String,formatDateTime:()=>'-',escapeHtml:String},UI:{
+ createWindow:({id})=>{document.getElementById(id)?.remove();const element=document.createElement('section');element.id=id;element.innerHTML='<div></div>';document.body.append(element);return{element,body:element.firstChild,close:()=>element.remove()}},
+ createInput:options=>Object.assign(document.createElement('input'),options),createField:({input})=>input,
+ createButton:({text,onClick})=>{const b=document.createElement('button');b.textContent=text;b.onclick=onClick;return b},showStatus:({target,message})=>target.textContent=message},
+ MarketEngine:{calculateMerchantsRequired:()=>2,getAvailableResources:v=>v.resources,getProjectedResources:v=>v.resources,calculateGlobalResources:()=>({}),calculateResourceImbalance:()=>({percentages:{wood:0,stone:0,iron:0}}),getMerchantCapacity:()=>1000,
+ buildGlobalOfferSuggestions:()=>({suggestions:[],villagePlans:[],summary:{},uncovered:{}})}};
+</script><script src="../core/storage.js"></script><script src="../services/market-offers-execution.js"></script><script src="../modules/market-smart-offers.js"></script>
+<script>
+(async()=>{try{
+ await new Promise(resolve=>document.readyState==='complete'?resolve():window.addEventListener('load',resolve,{once:true}));
+ let assertions=0;const check=(v,label)=>{assertions++;if(!v)throw Error(label)},api=EAS.MarketOffersExecution;
+ const item=api.normalizeItem({id:'38',villageId:'9',villageName:'9',villageCoord:'500|500',offerResource:'iron',requestResource:'wood',offerAmount:1000,requestAmount:1000,repeatCount:2,maxTravelHours:15,status:'skipped'});
+ const identity=JSON.stringify([item.id,'9','iron','wood',1000,1000,2,15]);
+ const c={version:3,executionId:'old',state:'completed',finishedAt:20,currentIndex:1,batchAuthorization:{authorizedAt:1},queue:[item]};
+ item.attempt={attemptId:'attempt-38',executionId:'old',itemId:'38',sourceVillageId:'9',itemIdentity:identity,state:'manually-skipped',submitAt:10,
+ beforeSnapshot:{available:true,offerIds:[],executionId:'old',itemId:'38',sourceVillageId:'9',itemIdentity:identity,attemptId:'attempt-38'}};
+ item.manualResolution={outcome:'error',action:'mark-error-and-skip',executionId:'old',itemId:'38',attemptId:'attempt-38'};
+ localStorage.setItem(api.STORAGE_KEY,JSON.stringify(c));check(api.prepareNewExecution().allowed,'minimal evidence persisted');check(!localStorage.getItem(api.STORAGE_KEY),'full context removed');
+ check(api.readUncertainAttempts()[0].state==='uncertain','absence is not success');
+ const suggestion=id=>({...item,id:'new-'+id,villageId:id,status:'Pronta',selected:true,attempt:null,manualResolution:null});
+ EAS.MarketEngine.buildGlobalOfferSuggestions=()=>({suggestions:['9','10'].map(suggestion),villagePlans:[],summary:{},uncovered:{}});
+ EAS.Modules.MarketSmartOffers.open();const panel=document.getElementById('eas-market-offers');
+ check(panel.textContent.includes('Tentativa incerta nesta aldeia'),'uncertain village explained');
+ const selected=[...panel.querySelectorAll('[data-selected]')];check(selected.length===2,'both villages analyzed');check(!selected[0].checked,'uncertain village not selected');check(selected[1].checked,'independent village stays selected');
+ const result=api.submitPreparedOffer({context:{},item:suggestion('9'),prepared:{submit:document.querySelector('form button')},commit:()=>{throw Error('must not commit')}});
+ check(!result.sent&&clicks===0,'uncertain attempt never submits');check(!api.checkUncertainQueue([suggestion('10')]),'independent work permitted');
+ EAS.Storage.lifecycle.maintain();check(api.readUncertainAttempts().length===1,'maintenance protects dedup evidence');
+ document.title='PASS';document.getElementById('result').textContent=`PASS — ${assertions} assertions`;
+}catch(error){document.title='FAIL';document.getElementById('result').textContent='FAIL '+error.stack}})();
+</script>

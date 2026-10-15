@@ -276,7 +276,7 @@
         const root = win.body.querySelector('.tactical-operation-planner');
         root.innerHTML = `<div class="tactical-operation-header"><div><h2>Operação Tática</h2><p data-op-target>Analise uma alvo antes de revisar.</p></div><button type="button" data-op-close>Fechar</button></div>
             <div class="tactical-operation-controls"><label>Alvo<input data-op-target-input placeholder="484|527" value=""></label><label>Nome do jogador<input data-op-player-input placeholder="chargboy"></label><label>Data do servidor<input data-op-date placeholder="DD/MM/AAAA"></label><label>Hora do servidor<input data-op-time placeholder="HH:MM:SS.mmm"></label><button type="button" data-op-analyze>Analisar alvo</button></div>
-            <div class="tactical-operation-drafts" data-op-drafts><label>Nome do rascunho<input data-draft-name maxlength="80" placeholder="Operação" value=""></label><button type="button" data-draft-save disabled>Salvar rascunho</button><label>Rascunhos salvos<select data-draft-select><option value="">Selecione</option></select></label><button type="button" data-draft-load disabled>Carregar rascunho</button><button type="button" data-draft-delete disabled>Excluir rascunho</button><span data-draft-status></span></div>
+            <button type="button" data-enable-drafts>Habilitar rascunhos nesta sessão</button><div class="tactical-operation-drafts" data-op-drafts hidden><label>Nome do rascunho<input data-draft-name maxlength="80" placeholder="Operação" value=""></label><button type="button" data-draft-save disabled>Salvar rascunho</button><label>Rascunhos salvos<select data-draft-select><option value="">Selecione</option></select></label><button type="button" data-draft-load disabled>Carregar rascunho</button><button type="button" data-draft-delete disabled>Excluir rascunho</button><span data-draft-status></span></div>
             <div class="tactical-operation-filters"><button type="button" data-filter="ALL" class="eas-button--active">Todos</button><button type="button" data-filter="OFFENSIVE">Ofensivas</button><button type="button" data-filter="DEFENSIVE">Defensivas</button><button type="button" data-filter="HAS_NOBLE">Com nobre</button><button type="button" data-filter="SELECTED">Selecionadas</button></div>
             <div class="tactical-operation-summary"><strong data-op-summary>Sem análise</strong><span data-op-status class="eas-status eas-status--info">A execução não é iniciada.</span></div>
             <div class="tactical-operation-review"><button type="button" data-op-review disabled>Aprovar revisão</button></div>
@@ -287,6 +287,7 @@
             root.querySelector('[data-op-target-input]').value = targetContext.coord;
             root.querySelector('[data-op-player-input]').value = targetContext.playerName || '';
         }
+        root.querySelector('[data-enable-drafts]').onclick = event => { root.querySelector('[data-op-drafts]').hidden = false; event.currentTarget.hidden = true; };
         const draftSelect = root.querySelector('[data-draft-select]'), draftStatus = root.querySelector('[data-draft-status]');
         const refreshDraftList = selectedId => {
             const records = EAS.TacticalOperationDrafts.list();

@@ -40,7 +40,8 @@
     };
     rt.stopLocal = stopLocal;
     const persist = context => {
-        if (!api.save(context)) throw Error('STORAGE_WRITE_FAILED');
+        if (!api.save(context)) { rt.storageFailure = { at: Date.now(), executionId: context.executionId }; throw Error(api.lastSaveFailure || 'STORAGE_WRITE_FAILED'); }
+        rt.storageFailure = null;
         const restored = api.read();
         if (JSON.stringify(restored) !== JSON.stringify(context)) throw Error('STORAGE_READBACK_FAILED');
         return restored;
@@ -96,13 +97,17 @@
     const finish = (context, item, result) => {
         stopLocal(); item.status = 'created'; item.createdAt = Date.now(); item.offerId = result.offerId || null;
         item.confirmation = result; item.attempt.state = 'completed';
+        if (item.offerId && !item.attempt.failureEvidence) {
+            delete item.attempt.beforeSnapshot;
+            delete item.diagnostic; delete item.diagnosticEvents;
+        }
         context.currentIndex++; context.nextAt = Date.now() + DELAY;
         if (context.currentIndex === context.queue.length) { context.endedAt = Date.now(); context.finishedAt = context.endedAt; context.state = 'completed'; }
         else context.state = 'running';
         persist(context); // Commit before cache/history/UI: none can authorize a second submission.
-        if (context.endedAt) { try { api.archiveBatch?.(context); } catch { /* Optional history cannot change a committed result. */ } }
         log('MARKET_ITEM_COMPLETED', context, item, { result: result.evidence });
         try { api.commitBatchResult?.(context, item, result, w); } catch { if (!context.endedAt) return pause(context, 'error', 'CACHE_PROMOTION_FAILED'); }
+        if (context.endedAt) { try { api.archiveBatch?.(context); } catch { /* Resolved cleanup never authorizes another submission. */ } }
         log(context.endedAt ? 'MARKET_QUEUE_COMPLETED' : 'MARKET_QUEUE_ADVANCE', context, current(context));
         render(context);
         if (!context.endedAt && unchanged(context)) schedule(DELAY);
@@ -118,6 +123,8 @@
         if (plan(context) !== context.batchAuthorization.plan) return pause(context, 'error', 'AUTHORIZED_QUEUE_CHANGED');
         const item = current(context);
         if (!item) return pause(context, 'error', 'CURRENT_ITEM_MISSING');
+        const conflict = api.checkUncertainQueue?.([item]);
+        if (conflict) return pause(context, 'uncertain', conflict);
         if (item.manualResolution || item.attempt?.revokedAt) {
             stopLocal(); context.paused = true; context.state = 'error'; context.pauseReason = 'MANUALLY_RESOLVED_ATTEMPT';
             persist(context); render(context); return false;
@@ -235,6 +242,7 @@
         const context = api.read(), item = context && current(context);
         if (!owned(context) || !active(context) || context.state === 'uncertain' || item?.attempt?.submitAt || w.EASRateLimit?.check()) return false;
         context.paused = false; context.state = 'running'; context.pauseReason = null;
+        if (item?.error === 'STORAGE_WRITE_FAILED' && !item.attempt?.submitAt) item.error = null;
         if (item) item.status = 'pending'; persist(context); resume(); return true;
     };
     const skip = () => {
@@ -281,14 +289,16 @@
         return rt.busy;
     };
     const start = input => {
-        const existing = api.read();
-        if (existing && !api.isExecutionFinished(existing)) throw Error('EXISTING_MARKET_EXECUTION');
         if ((!w.EASLocalBuild?.execute && !w.EASTWUserscriptLoader) || !w.navigator?.locks?.request) throw Error('PERSISTENT_USERSCRIPT_REQUIRED');
         if (w.EASRateLimit?.check()) throw Error('RATE_LIMITED');
         const executionId = `market-batch:${Date.now()}:${Math.random()}`;
         const queue = (input.queue || []).map((entry, index) => api.normalizeItem({ ...entry, id: `${executionId}:${index}`,
             maxTravelHours: entry.maxTravelHours || input.smartOfferConfig?.maxTravelHours, status: 'pending', attempt: null }));
         if (!queue.length) throw Error('EMPTY_QUEUE');
+        const readiness = api.prepareNewExecution();
+        if (!readiness.allowed) throw Error(readiness.reason);
+        const conflict = api.checkUncertainQueue?.(queue);
+        if (conflict) throw Error(conflict);
         const context = { version: api.EXECUTION_VERSION, executionId, executionTab: `eas-market-batch:${executionId}`,
             startedAt: Date.now(), createdAt: Date.now(), currentIndex: 0, queue, state: 'running', paused: false, revision: 0,
             smartOfferConfig: input.smartOfferConfig || {}, calculationMode: 'per-village',

@@ -133,7 +133,7 @@ window.open = url => { openedUrl = String(url); return { focus() {} }; };
   window.dispatchEvent(new CustomEvent('eas:tactical-preparation-updated'));await new Promise(resolve=>setTimeout(resolve,0));
   const completedCard=win.body.querySelector(`[data-tactical-execution="${completed.execution.executionId}"]`);
   check(completedCard?.textContent.includes('Command ID: 42') && completedCard.textContent.includes('Desvio local: 0 ms'), 'completed automatic attack keeps its result and millisecond metric visible');
-  check(completedCard && !completedCard.querySelector('button'), 'completed ATTACK remains status only');
+  check(completedCard?.querySelector('[data-delete-result]')?.disabled === true, 'completed ATTACK without reconciliation proof refuses deletion');
   document.getElementById('result').textContent = failures.length ? `FAIL\n${failures.join('\n')}` : `PASS — ${assertions} assertions`;
   document.title = failures.length ? 'FAIL' : 'PASS';
 })().catch(error => { document.getElementById('result').textContent = `ERROR ${error?.stack || error}`; document.title = 'FAIL'; });

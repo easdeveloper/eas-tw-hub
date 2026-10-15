@@ -58,7 +58,7 @@ function fixture(size = 3, startTime = 100000, options = {}) {
     }
     write({autoMode:true,executionTab:'auto-tab',createdAt:now,currentIndex:0,forwardingIndex:null,commandType:'attack',
         troopsPerTarget:{spear:1},queue:Array.from({length:size},(_,i)=>({villageId:9+i%2,target:'501|501',status:'pending'})),prepared:[],completed:[],skipped:[],errors:[]});
-    navigate();vm.createContext(sandbox);vm.runInContext(source,sandbox);
+    navigate();vm.createContext(sandbox);vm.runInContext(fs.readFileSync('core/storage.js','utf8'),sandbox);vm.runInContext(source,sandbox);
     const api=()=>sandbox.EAS.FakesExecution;
     const tick=()=>{assert.ok(timers.size,'timer expected');const [id,t]=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];timers.delete(id);now=t.at;t.fn();};
     const reload=stage=>{navigate(stage,read()?.queue[read().currentIndex]?.villageId||9);vm.runInContext(source,sandbox);api().initialize();};
@@ -96,10 +96,9 @@ test('730 authorized commands execute sequentially, with one preparation/attack/
         f.success();if(i<729){assert.equal(f.read().completed.length,i+1);f.next();}
     }
     assert.equal(f.read(),null);assert.deepEqual(f.counts(),{preparations:730,attacks:730,confirmations:730});
-    assert.deepEqual(f.summary().counts,{total:730,completed:730,skipped:0,errors:0,remaining:0});
-    assert.equal(f.summary().results.length,730);assert.equal(f.timers.size,0);
-    const {v2Bytes,legacyEquivalentBytes}=f.summarySizes();
-    console.log('FAKES_SUMMARY_V2_SIZE '+JSON.stringify({legacyEquivalentBytes,v2Bytes,reductionPercent:Number((100*(1-v2Bytes/legacyEquivalentBytes)).toFixed(2))}));
+    assert.equal(f.summary(),null);
+    assert.equal(f.timers.size,0);
+
 });
 for(const state of ['preparing','prepared']) test(`reload during ${state} pauses without repeating preparation`,()=>{
     const f=fixture();const c=f.read();c.queue[0].status=state;f.write(c);f.reload('place');f.tick();
@@ -128,41 +127,25 @@ test('changing prepared troops pauses rather than sending a different command',(
 test('disabled confirmation waits and clicks once when enabled',()=>{
     const f=fixture();f.run();f.tick();f.tick();f.navigate('confirm');f.confirm().disabled=true;f.run();f.tick();assert.equal(f.counts().confirmations,0);f.confirm().disabled=false;f.tick();assert.equal(f.counts().confirmations,1);
 });
-test('completed commands are never resent',()=>{
-    const f=fixture(1);const c=f.read();c.queue[0].status='completed';c.completed=['0:9:501|501'];f.write(c);f.run();f.tick();f.tick();assert.equal(f.counts().attacks,0);assert.equal(f.read(),null);
+test('completed commands without reconciliation proof are retained and never resent',()=>{
+    const f=fixture(1);const c=f.read();c.queue[0].status='completed';c.completed=['0:9:501|501'];f.write(c);f.run();f.tick();f.tick();assert.equal(f.counts().attacks,0);assert.ok(f.read());assert.equal(f.summary(),null);f.reload();assert.equal(f.counts().attacks,0);assert.ok(f.read());
 });
-test('empty queue finishes and retains summary',()=>{const f=fixture(0);f.run();f.tick();assert.equal(f.read(),null);assert.equal(f.summary().counts.total,0);});
+test('empty queue finishes without a persisted summary',()=>{const f=fixture(0);f.run();f.tick();assert.equal(f.read(),null);assert.equal(f.summary(),null);});
 test('stop cancels the pending action and preserves audit',()=>{
-    const f=fixture();f.run();f.tick();f.api().automaticControl(f.window,'stop');assert.equal(f.timers.size,0);assert.equal(f.read(),null);assert.equal(f.run(),false);assert.equal(f.counts().attacks,0);assert.equal(f.summary().stopped,true);
+    const f=fixture();f.run();f.tick();f.api().automaticControl(f.window,'stop');assert.equal(f.timers.size,0);assert.ok(f.read());assert.equal(f.read().stopped,true);assert.equal(f.run(),false);assert.equal(f.counts().attacks,0);assert.equal(f.summary(),null);
 });
-test('Summary V2 is an explicit history-only projection with compact successful outcomes',()=>{
-    const f=fixture(1);f.run();f.tick();f.tick();f.confirmation();f.success();
-    const summary=f.summary();
-    assert.equal(summary.summaryKind,'fakes-execution-summary');assert.equal(summary.version,2);
-    assert.equal(summary.counts.completed,1);assert.equal(summary.stopped,false);
-    assert.equal(summary.finishedAt>0,true);assert.equal(summary.createdAt,100000);assert.equal(summary.elapsedMs,summary.finishedAt-summary.createdAt);
-    assert.equal(summary.results.length,1);assert.equal(summary.results[0].outcome,'completed');
-    assert.equal(summary.results[0].sourceVillageId,'9');assert.equal(summary.results[0].target,'501|501');
-    assert.ok(summary.results[0].outgoingCommandId);assert.deepEqual(summary.unresolvedEvidence,[]);
-    for(const field of ['autoMode','executionTab','forwardingIndex','forwardingCommandType','forwardingStartedAt','currentIndex','continueQueue','paused','queue','troopsPerTarget','selectedVillageIds'])assert.equal(Object.hasOwn(summary,field),false,field);
-    assert.equal(JSON.stringify(summary).includes('outgoingSnapshot'),false);
-    assert.equal(JSON.stringify(summary).includes('auto-tab'),false);
+test('successful outcomes leave no persisted result',()=>{
+ const f=fixture(1);f.run();f.tick();f.tick();f.confirmation();f.success();const summary=f.summary();
+ assert.equal(f.read(),null);assert.equal(summary,null);assert.deepEqual(f.counts(),{preparations:1,attacks:1,confirmations:1});
+
 });
-test('stopped unresolved attempt retains baseline evidence without execution tokens',()=>{
-    const f=fixture(1);f.run();f.tick();f.tick();
-    const activeBefore=f.read().queue[0];assert.ok(activeBefore.confirmationAttempt.outgoingSnapshot.beforeCommandIds);
-    assert.equal(f.counts().attacks,1);
-    const baseline=[...activeBefore.confirmationAttempt.outgoingSnapshot.beforeCommandIds];
-    f.api().automaticControl(f.window,'stop');
-    const summary=f.summary(),evidence=summary.unresolvedEvidence[0];
-    assert.equal(summary.stopped,true);assert.equal(summary.stopReason,'USER_STOP');
-    assert.equal(summary.results[0].outcome,'uncertain');
-    assert.equal(evidence.commandRef,'0:9:501|501');assert.equal(evidence.sourceVillageId,'9');
-    assert.equal(evidence.attemptState,'preparing');assert.deepEqual(evidence.beforeCommandIds,baseline);
-    assert.ok(evidence.attemptAt);assert.ok(evidence.snapshotCapturedAt);assert.ok(evidence.reason);
-    for(const field of ['executionTab','executionId','attemptId','outgoingSnapshot','forwardingIndex'])assert.equal(Object.hasOwn(evidence,field),false,field);
-    assert.equal(JSON.stringify(summary).includes('auto-tab'),false);
+
+test('stopped unresolved attempt retains full baseline, identity and authorization in active context',()=>{
+ const f=fixture(1);f.run();f.tick();f.tick();const before=f.read().queue[0].confirmationAttempt;
+ f.api().automaticControl(f.window,'stop');assert.equal(f.summary(),null);assert.deepEqual(f.read().queue[0].confirmationAttempt,before);
+ assert.equal(f.read().stopped,true);assert.equal(f.counts().attacks,1);
 });
+
 test('Summary V2 write failure retains terminal active context and cannot resume or resend',()=>{
     const f=fixture(1,100000,{summaryWriteFailure:true});f.run();f.tick();f.tick();
     assert.equal(f.counts().attacks,1);
@@ -176,7 +159,7 @@ test('Summary V2 write failure retains terminal active context and cannot resume
 });
 test('skip and error-skip continue at next command and keep counters correct',()=>{
     const f=fixture();f.run();f.api().automaticControl(f.window,'skip');f.next();f.api().automaticControl(f.window,'error');f.next();f.tick();f.tick();f.confirmation();f.success();
-    assert.deepEqual(f.summary().counts,{total:3,completed:1,skipped:1,errors:1,remaining:0});assert.equal(f.summary().results[1].error.reason,'Erro marcado pelo usuário.');assert.equal(f.counts().attacks,1);
+    assert.equal(f.summary(),null);assert.equal(f.read().counts.completed,1);assert.equal(f.read().errors.length,1);assert.equal(f.counts().attacks,1);
 });
 test('active command cannot be skipped until paused for explicit recovery',()=>{
     const f=fixture();f.run();f.tick();f.tick();assert.equal(f.api().automaticControl(f.window,'skip'),false);assert.equal(f.read().currentIndex,0);
@@ -185,6 +168,7 @@ test('manual tab never acquires an automatic execution',()=>{const f=fixture();f
 
 test('start authorizes AUTO once and binds the village window before the first preparation',async()=>{
     const f=fixture(1);
+    f.storage.delete(KEY); // A fresh authorized execution, without a previous active run.
     f.sandbox.setInterval=f.sandbox.setTimeout;f.sandbox.clearInterval=f.sandbox.clearTimeout;
     f.sandbox.EAS.Place.openVillagePlace=()=>f.window;
     const opening=f.api().start({queue:[{villageId:9,target:'501|501',status:'pending'}],troopsPerTarget:{spear:1},commandType:'attack'});
@@ -192,19 +176,17 @@ test('start authorizes AUTO once and binds the village window before the first p
     f.tick();assert.equal(await opening,true);f.tick();f.tick();assert.equal(f.counts().attacks,1);
 });
 test('start with an empty authorized queue completes without opening a village',async()=>{
-    const f=fixture();assert.equal(await f.api().start({queue:[]}),true);assert.equal(f.read(),null);assert.equal(f.summary().counts.total,0);
-    assert.equal(f.summary().summaryKind,'fakes-execution-summary');assert.equal(f.summary().results.length,0);
+    const f=fixture();f.storage.delete(KEY);assert.equal(await f.api().start({queue:[]}),true);assert.equal(f.read(),null);assert.equal(f.summary(),null);
+
 });
-test('last command error completes with an error audit and no send',()=>{
-    const f=fixture(1);f.run();f.tick();f.unit().value=9;f.tick();assert.equal(f.read(),null);assert.equal(f.summary().counts.errors,1);assert.equal(f.summary().results[0].outcome,'error');assert.equal(f.summary().results[0].error.reason,'Campos preparados foram alterados. Verifique tropas e alvo.');assert.equal(f.counts().attacks,0);
+test('last command error preserves failed item and blocks sends',()=>{
+ const f=fixture(1);f.run();f.tick();f.unit().value=9;f.tick();assert.ok(f.read());assert.equal(f.read().counts.errors,1);assert.equal(f.summary(),null);assert.equal(f.counts().attacks,0);
 });
-test('legacy V1 summary is left untouched until a later successful run overwrites the slot',()=>{
-    const f=fixture(0);const legacy={queue:[{status:'legacy'}],autoMode:true};
-    f.storage.set('eas_tw_fakes_execution_summary',JSON.stringify(legacy));
-    f.run();f.tick();
-    assert.equal(f.summary().summaryKind,'fakes-execution-summary');assert.equal(f.summary().version,2);
-    assert.equal(Object.hasOwn(f.summary(),'queue'),false);
+
+test('legacy V1 summary remains byte-for-byte unchanged after successful retirement',()=>{
+ const f=fixture(0),legacy={queue:[{status:'legacy'}],autoMode:true};f.storage.set('eas_tw_fakes_execution_summary',JSON.stringify(legacy));f.run();f.tick();assert.deepEqual(f.summary(),legacy);assert.equal(f.read(),null);
 });
+
 test('a new execution invalidates the previous controller before any action',()=>{
     const f=fixture();f.run();const c=f.read();c.executionTab='replacement';f.write(c);f.tick();assert.equal(f.counts().preparations,0);assert.equal(f.timers.size,0);
 });
@@ -241,7 +223,7 @@ test('three commands rearm confirmation through cached bootstrap; duplicate comm
         if(i<2){f.navigate('place',9,true);await bootstrap();}
     }
     assert.equal(f.counts().confirmations,3);assert.equal(new Set(attempts).size,3);
-    assert.equal(f.read(),null);assert.ok(f.summary().results.every(entry=>entry.outcome==='completed'&&entry.outgoingCommandId));
+    assert.equal(f.read(),null);assert.equal(f.summary(),null);
 });
 test('a stale previous-command runtime cannot suppress or process the next confirmation',()=>{
     const f=fixture(3);f.run();f.tick();f.tick();f.confirmation();
@@ -285,7 +267,7 @@ test('two commands survive replacement of the entire JavaScript realm using only
  const second=fixture(2,102000);second.write(confirm1.read());second.navigate('place',10);second.run();second.tick();second.tick();
  const confirm2=fixture(2,103000);confirm2.write(second.read());confirm2.navigate('confirm',10);confirm2.run();confirm2.tick();confirm2.success();
  assert.equal(first.counts().attacks+second.counts().attacks,2);assert.equal(confirm1.counts().confirmations+confirm2.counts().confirmations,2);
- assert.equal(confirm2.read(),null);assert.equal(confirm2.summary().counts.completed,2);
+ assert.equal(confirm2.read(),null);assert.equal(confirm2.summary(),null);
 });
 
 test('target adapter failure blocks attack and pauses the queue without success',()=>{
@@ -402,7 +384,7 @@ for (const mode of ['throwing','quota','normal']) test(`diagnostic logger ${mode
   f.window.EAS=f.sandbox.EAS;vm.runInContext(fs.readFileSync('core/logger.js','utf8'),f.sandbox);
  }
  f.run();for(let i=0;i<2;i++){f.tick();f.tick();f.confirmation();f.api().resumeConfirmation(f.window);f.window.__EASLogger?.flush();f.success();if(i===0)f.next();}
- assert.deepEqual(f.counts(),{preparations:2,attacks:2,confirmations:2});assert.equal(f.summary().counts.completed,2);assert.equal(f.read(),null);
+ assert.deepEqual(f.counts(),{preparations:2,attacks:2,confirmations:2});assert.equal(f.summary(),null);assert.equal(f.read(),null);
  if(mode==='normal')assert.equal(f.window.__EASLogger.entries().filter(e=>e.event==='EXECUTION_COMPLETE').length,1);
 });
 
@@ -571,7 +553,7 @@ test('existing, empty, existing baselines remain independent across three source
   f.confirmation();assert.deepEqual(f.read().queue[i].confirmationAttempt.outgoingSnapshot.beforeCommandIds,baselines[i]);
   if(i===1)f.outgoing([]);f.success();if(i<2)f.next();
  }
- assert.deepEqual(f.summary().counts,{total:3,completed:3,skipped:0,errors:0,remaining:0});
+ assert.equal(f.summary(),null);
  assert.equal(f.counts().attacks,3);assert.equal(f.counts().confirmations,3);
 });
 

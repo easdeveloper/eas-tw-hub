@@ -38,7 +38,7 @@
     };
     // HISTORY is never a source for resume, authorization or reconciliation.
     const ARCHIVE_PREFIX = 'eas_tw_market_offers_archive:';
-    const ARCHIVE_POLICY = Object.freeze({ maxCount: 10, maxAgeMs: 7 * 86400000, maxBytes: 256 * 1024 });
+    const ARCHIVE_POLICY = Object.freeze({ maxCount: 0, maxAgeMs: 86400000, maxBytes: 4096 });
     const STORAGE_CONTRACT = Object.freeze({ execution: 'CRITICAL', archive: 'HISTORY', history: 'HISTORY',
         config: 'CONFIG', analysis: 'CACHE', debugLog: 'DIAGNOSTIC' });
     const archiveLog = (event, data) => {
@@ -101,73 +101,132 @@
             executionId: value?.executionId, finishedAt: value?.finishedAt || value?.endedAt };
     };
     // Explicit maintenance only for legacy records. V1 and V2 use independent policy totals.
-    const retainArchives = ({ includeLegacy = false, now = Date.now() } = {}) => {
-        const result = { removed: [], preserved: [], bytes: 0, v2Bytes: 0, v2Count: 0, legacyBytes: 0, legacyCount: 0 };
-        try {
-            const activeRaw = localStorage.getItem('eas_tw_market_offers_execution');
-            const active = activeRaw ? JSON.parse(activeRaw) : null;
-            if (activeRaw && !active?.executionId) throw Error('ACTIVE_IDENTITY_UNAVAILABLE');
-            const v2Candidates = [], legacyCandidates = [];
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (!key?.startsWith(ARCHIVE_PREFIX)) continue;
-                const text = localStorage.getItem(key), bytes = 2 * (key.length + text.length);
-                result.bytes += bytes;
-                let value = null, info;
-                try { value = JSON.parse(text); info = inspectArchive(key, value); } catch {}
-                if (recognizedV2Archive(key, value)) { result.v2Count++; result.v2Bytes += bytes; }
-                if (info?.format === 'V1') { result.legacyCount++; result.legacyBytes += bytes; }
-                if (!info?.eligible || info.executionId === active?.executionId) result.preserved.push(key);
-                else if (recognizedV2Archive(key, value)) v2Candidates.push({ key, text, ...info, bytes });
-                else if (info.format === 'V1' && includeLegacy) legacyCandidates.push({ key, text, ...info, bytes });
-                else result.preserved.push(key);
-            }
-            const removeCandidates = (candidates, kind) => {
-                candidates.sort((a, b) => a.finishedAt - b.finishedAt || a.key.localeCompare(b.key));
-                for (const candidate of candidates) {
-                    const count = kind === 'V2' ? result.v2Count : result.legacyCount;
-                    const bytes = kind === 'V2' ? result.v2Bytes : result.legacyBytes;
-                    if (now - candidate.finishedAt <= ARCHIVE_POLICY.maxAgeMs && count <= ARCHIVE_POLICY.maxCount && bytes <= ARCHIVE_POLICY.maxBytes) continue;
-                // Recheck both ownership and value immediately before removal; no async gap.
-                    if (localStorage.getItem('eas_tw_market_offers_execution') !== activeRaw || localStorage.getItem(candidate.key) !== candidate.text) return false;
-                    localStorage.removeItem(candidate.key); result.removed.push(candidate.key);
-                    result.bytes -= candidate.bytes;
-                    if (kind === 'V2') { result.v2Bytes -= candidate.bytes; result.v2Count--; }
-                    else { result.legacyBytes -= candidate.bytes; result.legacyCount--; }
+    const retainArchives = () => ({ removed: [], policy: 'Legacy archives require explicit external backup.' });
+    // Kept as a compatibility hook for batch callers: no new archive is written.
+    const archiveBatch = context => EAS.Storage?.lifecycle?.retire(STORAGE_KEY, context)?.status === 'REMOVED' || compactUncertainExecution(context)?.allowed === true;
+    // Replacement needs reconciled outcomes; it has no history dependency.
+    const preserveTerminalHistory = context => EAS.Storage?.lifecycle?.proof(STORAGE_KEY, context) === true;
+
+    // Non-expiring operational guards, not execution archives. Never quota-evicted.
+    const UNCERTAIN_PREFIX = 'eas_tw_market_offers_uncertain:';
+    const validUncertainGuard = guard => guard?.version === 1 && guard.kind === 'market-offer-attempt-guard' &&
+        ['uncertain','reconciled'].includes(guard.state) && ['executionId','itemId','attemptId','villageId','origin','itemIdentity'].every(key => typeof guard[key] === 'string' && guard[key].length > 0 && guard[key].length <= 2048) &&
+        ['wood','stone','iron'].includes(guard.offerResource) && ['wood','stone','iron'].includes(guard.requestResource) && guard.offerResource !== guard.requestResource &&
+        ['offerAmount','requestAmount','repeatCount','maxTravelHours','submittedAt'].every(key => Number.isSafeInteger(guard[key]) && guard[key] > 0) &&
+        guard.origin === new URL(window.location.href).origin &&
+        guard.itemIdentity === JSON.stringify([guard.itemId,guard.villageId,guard.offerResource,guard.requestResource,guard.offerAmount,guard.requestAmount,guard.repeatCount,guard.maxTravelHours]) &&
+        (guard.state !== 'reconciled' || /^\d+$/.test(guard.offerId || ''));
+    const readUncertainAttempts = () => {
+        const records = [];
+        for (let index = 0; index < localStorage.length; index++) {
+            const key = localStorage.key(index);
+            if (!key?.startsWith(UNCERTAIN_PREFIX)) continue;
+            const raw = localStorage.getItem(key);
+            if (!raw || raw.length > 8192) throw Error('UNCERTAIN_MARKET_EVIDENCE_UNREADABLE');
+            const guard = JSON.parse(raw);
+            if (!validUncertainGuard(guard) || key !== UNCERTAIN_PREFIX + encodeURIComponent(guard.attemptId)) throw Error('UNCERTAIN_MARKET_EVIDENCE_UNREADABLE');
+            records.push(guard);
+        }
+        return records;
+    };
+    const findUncertainConflict = item => readUncertainAttempts().find(guard =>
+        guard.attemptId === item.attempt?.attemptId || guard.state === 'uncertain' && guard.villageId === String(item.villageId)) || null;
+    const checkUncertainQueue = queue => {
+        for (const item of queue || []) {
+            const guard = findUncertainConflict(item);
+            if (guard) return `UNCERTAIN_MARKET_ATTEMPT: villageId=${guard.villageId}, attemptId=${guard.attemptId}`;
+        }
+        return null;
+    };
+    const compactUncertainExecution = previous => {
+        if (previous?.version !== 3 || previous.state !== 'completed' || !(previous.finishedAt || previous.endedAt) ||
+            !Array.isArray(previous.queue) || previous.currentIndex !== previous.queue.length ||
+            previous.lock && !previous.lock.consumed && !previous.lock.releasedAt) return null;
+        const records = [], usedIds = new Set(previous.queue.filter(item => item.status === 'created').map(item => String(item.offerId)));
+        for (const item of previous.queue) {
+            if (EAS.Storage?.lifecycle?.marketItemBlocker?.(item, previous) === null) continue;
+            const attempt = item.attempt, manual = item.manualResolution;
+            const identity = JSON.stringify([item.id,String(item.villageId),item.offerResource,item.requestResource,item.offerAmount,item.requestAmount,item.repeatCount,item.maxTravelHours]);
+            if (item.status !== 'skipped' || item.offerId != null || item.confirmation != null || attempt?.state !== 'manually-skipped' || !attempt.submitAt ||
+                manual?.outcome !== 'error' || manual.action !== 'mark-error-and-skip' || manual.executionId !== previous.executionId ||
+                manual.itemId !== item.id || manual.attemptId !== attempt.attemptId || attempt.executionId !== previous.executionId ||
+                attempt.itemId !== item.id || attempt.sourceVillageId !== String(item.villageId) || attempt.itemIdentity !== identity) return null;
+            const guard = { version:1, kind:'market-offer-attempt-guard', executionId:previous.executionId,itemId:item.id,attemptId:attempt.attemptId,
+                villageId:String(item.villageId),origin:new URL(window.location.href).origin,itemIdentity:identity,
+                offerResource:item.offerResource,requestResource:item.requestResource,offerAmount:item.offerAmount,requestAmount:item.requestAmount,
+                repeatCount:item.repeatCount,maxTravelHours:item.maxTravelHours,submittedAt:attempt.submitAt,state:'uncertain' };
+            // Uses the existing one-to-one baseline/DOM reconciliation; no request or click.
+            try {
+                const result = reconcileBatchDom(item, window, previous);
+                if (result.success && /^\d+$/.test(result.offerId || '') && !usedIds.has(String(result.offerId))) {
+                    guard.state = 'reconciled'; guard.offerId = String(result.offerId);
                 }
-                return true;
-            };
-            if (!removeCandidates(v2Candidates, 'V2')) return result;
-            if (includeLegacy) removeCandidates(legacyCandidates, 'V1');
-        } catch { archiveLog('ARCHIVE_RETENTION_FAILED', { reason: 'STORAGE_OR_IDENTITY_UNAVAILABLE' }); }
-        return result;
-    };
-    const archiveBatch = context => {
-        if (!batchTerminal(context)) return false;
+            } catch { /* Unavailable current page evidence remains uncertain. */ }
+            if (!validUncertainGuard(guard) || JSON.stringify(guard).length > 8192) return null;
+            records.push(guard);
+        }
+        if (!records.length || new Set(records.map(record => record.attemptId)).size !== records.length) return null;
+        const matches = new Map();
+        for (const record of records) if (record.offerId) matches.set(record.offerId,(matches.get(record.offerId) || 0) + 1);
+        for (const record of records) if (record.offerId && matches.get(record.offerId) > 1) { record.state = 'uncertain'; delete record.offerId; }
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(previous)) return { allowed:false,reason:'STORAGE_CONTEXT_CHANGED' };
         try {
-            const key = ARCHIVE_PREFIX + context.executionId;
-            if (localStorage.getItem(key)) return true;
-            const text = JSON.stringify(compactArchive(context));
-            // Admission applies only to recognized compact V2 history; protected V2 still counts.
-            let count = 0, bytes = 2 * (key.length + text.length);
-            for (let i = 0; i < localStorage.length; i++) {
-                const storedKey = localStorage.key(i);
-                if (!storedKey?.startsWith(ARCHIVE_PREFIX)) continue;
-                const storedText = localStorage.getItem(storedKey);
-                let storedValue = null; try { storedValue = JSON.parse(storedText); } catch {}
-                if (recognizedV2Archive(storedKey, storedValue)) { count++; bytes += 2 * (storedKey.length + storedText.length); }
-            }
-            if (count >= ARCHIVE_POLICY.maxCount || bytes > ARCHIVE_POLICY.maxBytes) throw Error('ARCHIVE_BUDGET');
-            localStorage.setItem(key, text);
-            if (localStorage.getItem(key) !== text) throw Error('ARCHIVE_READBACK');
-            return true;
-        } catch { archiveLog('ARCHIVE_WRITE_FAILED', { executionId: context.executionId, criticalStatePreserved: true }); return false; }
+            const existing = readUncertainAttempts();
+            if (existing.length + records.filter(record => !existing.some(prior => prior.attemptId === record.attemptId)).length > 100) return {allowed:false,reason:'UNCERTAIN_MARKET_EVIDENCE_LIMIT'};
+            const durable = records.map(record => {
+                const key = UNCERTAIN_PREFIX + encodeURIComponent(record.attemptId), prior = localStorage.getItem(key);
+                if (prior !== null) {
+                    const saved = JSON.parse(prior);
+                    if (!validUncertainGuard(saved) || ['executionId','itemId','attemptId','villageId','origin','itemIdentity','submittedAt'].some(field => saved[field] !== record[field])) throw Error('UNCERTAIN_MARKET_EVIDENCE_CONFLICT');
+                    return {key,text:prior};
+                }
+                const text = JSON.stringify(record); localStorage.setItem(key,text);
+                if (localStorage.getItem(key) !== text) throw Error('UNCERTAIN_MARKET_EVIDENCE_READBACK_FAILED');
+                return {key,text};
+            });
+            if (localStorage.getItem(STORAGE_KEY) !== raw || durable.some(record => localStorage.getItem(record.key) !== record.text)) return {allowed:false,reason:'STORAGE_CONTEXT_CHANGED'};
+            localStorage.removeItem(STORAGE_KEY);
+            if (localStorage.getItem(STORAGE_KEY) !== null) return {allowed:false,reason:'UNCERTAIN_MARKET_CONTEXT_REMOVE_FAILED'};
+            return {allowed:true};
+        } catch(error) { return {allowed:false,reason:error.message || 'UNCERTAIN_MARKET_EVIDENCE_WRITE_FAILED'}; }
     };
-    // A failed optional history write cannot block replacement of a proven safe terminal
-    // record. Ambiguous/uncertain records still require preservation; never free critical
-    // state merely to make room. Replacement itself remains atomic + read-back checked.
-    const preserveTerminalHistory = context => archiveBatch(context) ||
-        inspectArchive(ARCHIVE_PREFIX + context.executionId, compactArchive(context)).eligible;
+
+    const prepareNewExecution = expected => {
+        try {
+            readUncertainAttempts(); // Corrupt/unreadable safety evidence blocks new work.
+            const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            if (expected !== undefined && JSON.stringify(previous) !== JSON.stringify(expected)) return { allowed: false, reason: 'STORAGE_CONTEXT_CHANGED' };
+            if (!previous) return { allowed: true };
+            if (!preserveTerminalHistory(previous)) {
+                const compacted = compactUncertainExecution(previous);
+                if (compacted) return compacted;
+                const blockers = previous.queue?.map(item => EAS.Storage?.lifecycle?.marketItemBlocker
+                    ? EAS.Storage.lifecycle.marketItemBlocker(item, previous) : 'RECONCILIATION_POLICY_UNAVAILABLE');
+                const index = blockers?.findIndex(reason => reason !== null);
+                const item = index >= 0 ? previous.queue[index] : null;
+                const detail = item ? blockers[index] : previous.lock && !previous.lock.consumed && !previous.lock.releasedAt ? 'ACTIVE_LOCK' : 'COMPLETION_UNPROVEN';
+                const unresolved = (blockers || []).flatMap((reason, queueIndex) => reason === null ? [] : [{
+                    queueIndex, itemNumber: queueIndex + 1, itemId: previous.queue[queueIndex]?.id ?? null,
+                    status: previous.queue[queueIndex]?.status ?? null, reason
+                }]);
+                // UI numbering is one-based; include the persisted value and zero-based
+                // index so an adjacent created item cannot be mistaken for the blocker.
+                const observed = detail === 'ITEM_UNRECONCILED: item.status' ?
+                    ` [status=${JSON.stringify(item?.status ?? null)}, queueIndex=${index}, itemId=${JSON.stringify(item?.id ?? null)}]` : '';
+                return { allowed: false, reason: `PREVIOUS_MARKET_EXECUTION_BLOCKED: ${detail}${item ? ` (item ${index + 1})` : ''}${observed}`,
+                    executionId: previous.executionId, blockers: unresolved };
+            }
+            const result = EAS.Storage.lifecycle.retire(STORAGE_KEY, previous);
+            return result.status === 'REMOVED' ? { allowed: true } : { allowed: false,
+                reason: result.reason === 'CONTEXT_CHANGED' ? 'STORAGE_CONTEXT_CHANGED' : `PREVIOUS_MARKET_EXECUTION_BLOCKED: ${result.reason}` };
+        } catch { return { allowed: false, reason: 'STORAGE_READ_FAILED' }; }
+    };
+
+    // Explicit maintenance only: keep authorization, locks, revisions and results.
+    const compactCompletedStorage = (options = {}) => EAS.Storage?.lifecycle?.cleanLegacy?.(options) ||
+        [{ status: 'BLOCKED', blockers: [{ code: 'MIGRATION_API_UNAVAILABLE' }] }];
+    EAS.MarketOffersExecution.compactCompletedStorage = compactCompletedStorage;
     const getArchivedBatch = executionId => {
         try {
             const key = ARCHIVE_PREFIX + executionId, value = JSON.parse(localStorage.getItem(key) || 'null');
@@ -182,27 +241,35 @@
     const isOwnOfferPage = (targetWindow = window) => { try { const params = new URL(targetWindow.location.href).searchParams; return params.get('screen') === 'market' && params.get('mode') === 'own_offer'; } catch { return false; } };
     const getDebugLogs = () => { try { return JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]'); } catch { return []; } };
     const clearDebugLogs = () => { try { localStorage.removeItem(DEBUG_LOG_KEY); } catch {} };
-    const logMarketOfferExecution = (event, data = {}) => { const entry = { timestamp: Date.now(), pageUrl: location.href, villageId: window.game_data?.village?.id ?? null, event, data }; try { const logs = getDebugLogs(); logs.push(entry); localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(logs.slice(-200))); } catch {} console.debug('[EAS Market Offers]', event, data); return entry; };
+    const logMarketOfferExecution = (event, data = {}) => { const entry = { timestamp: Date.now(), pageUrl: location.href, villageId: window.game_data?.village?.id ?? null, event, data }; try { const logs = getDebugLogs(); logs.push(entry); localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(EAS.Storage?.lifecycle?.boundRows(logs) || logs.slice(-50))); } catch {} console.debug('[EAS Market Offers]', event, data); return entry; };
     const logSmartOffer = (action, data = {}, error = null) => { const payload = { ...data, timestamp: Date.now() }; logMarketOfferExecution(`smartOffers.${action}`, payload); if (error) EAS.Log?.error?.('market.smartOffers', action, error, payload); else EAS.Log?.info?.('market.smartOffers', action, payload); return payload; };
     const recordItemEvent = (context, item, event, data = {}, targetWindow = window) => { const url = new URL(targetWindow.location.href); const entry = logMarketOfferExecution(event, { executionId: context?.executionId, itemId: item?.id, villageId: item?.villageId, ...data }); if (item) { item.diagnostic ||= {}; Object.assign(item.diagnostic, { executionId: context?.executionId, itemId: item.id, villageId: item.villageId, villageName: item.villageName, offerResource: item.offerResource, receiveResource: item.requestResource, amountPerOffer: item.amountPerOffer, repetitions: item.repeatCount, totalOffer: item.totalOfferAmount, expectedMerchants: item.merchantsRequired, currentUrl: url.href, pageMode: url.searchParams.get('mode'), persistedStatus: item.status, currentRuntimeStatus: getRuntime(targetWindow)?.preparing ? 'preparing' : item.status, lastEvent: event, lastEventAt: entry.timestamp, ...data }); item.diagnosticEvents = [...(item.diagnosticEvents || []), entry].slice(-20); if (context) save(context); } return entry; };
     const summarizeOfferExecution = (execution) => { const queue = execution?.queue || []; const activeIndex = queue.findIndex((item, index) => index >= Number(execution?.currentIndex || 0) && !TERMINAL.has(item.status)); const currentIndex = activeIndex < 0 ? queue.length : activeIndex; const currentItem = queue[currentIndex] || null; const nextItem = queue.slice(currentIndex + 1).find((item) => !TERMINAL.has(item.status)) || null; const statuses = { pending: 0, prepared: 0, submitting: 0, created: 0, skipped: 0, error: 0 }; queue.forEach((item) => { const status = isManualError(item) ? 'error' : item.status; if (Object.hasOwn(statuses, status)) statuses[status] += 1; }); return { executionVersion: execution?.version ?? null, currentIndex, queueLength: queue.length, statuses, currentItemId: currentItem?.id || null, currentItemVillageId: currentItem?.villageId || null, nextItemId: nextItem?.id || null, nextItemVillageId: nextItem?.villageId || null }; };
-    const read = () => { try { const context = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (context && (!Number.isFinite(Number(context.version)) || Number(context.version) < EXECUTION_VERSION)) { logMarketOfferExecution('execution-cleared', { reason: 'obsolete-version', summary: summarizeOfferExecution(context) }); localStorage.removeItem(STORAGE_KEY); return null; } if (context?.batchAuthorization && context.pauseReason === 'USER_STOP') { finalizeBatchStop(context); save(context); archiveBatch(context); } return context; } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'read-execution', message: error.message }); return null; } };
-    const save = (context) => {
+    const read = () => { try { const context = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (context && (!Number.isFinite(Number(context.version)) || Number(context.version) < EXECUTION_VERSION)) { logMarketOfferExecution('execution-cleared', { reason: 'obsolete-version', summary: summarizeOfferExecution(context) }); return context; } if (context?.batchAuthorization && context.pauseReason === 'USER_STOP') { finalizeBatchStop(context); save(context); archiveBatch(context); } return context; } catch (error) { logMarketOfferExecution('unexpected-error', { stage: 'read-execution', message: error.message }); return null; } };
+    const save = (context, retry = true) => {
+        EAS.MarketOffersExecution.lastSaveFailure = null;
+        const rejected = reason => { EAS.MarketOffersExecution.lastSaveFailure = reason; return false; };
         try {
             const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-            if (previous?.batchAuthorization && previous.executionId !== context.executionId && (!isExecutionFinished(previous) || !preserveTerminalHistory(previous))) return false;
-            if (context.batchAuthorization) {
-                if (previous && previous.executionId === context.executionId && Number(previous.revision || 0) !== Number(context.revision || 0)) return false;
-                if (previous && previous.executionId !== context.executionId && !isExecutionFinished(previous)) return false;
-                const candidate = { ...context, revision: Number(context.revision || 0) + 1 };
-                const text = JSON.stringify(candidate); localStorage.setItem(STORAGE_KEY, text);
-                if (localStorage.getItem(STORAGE_KEY) !== text) return false;
-                context.revision = candidate.revision; return true;
+            if (previous && previous.executionId !== context.executionId) {
+                const readiness = prepareNewExecution(previous);
+                if (!readiness.allowed) return rejected(readiness.reason);
             }
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(context)); return true;
-        } catch { return false; }
+            if (!previous || previous.executionId !== context.executionId) {
+                const conflict = checkUncertainQueue(context.queue);
+                if (conflict) return rejected(conflict);
+            }
+            if (context.batchAuthorization) {
+                if (previous && previous.executionId === context.executionId && Number(previous.revision || 0) !== Number(context.revision || 0)) return rejected('STORAGE_CONTEXT_CHANGED');
+                const candidate = { ...context, lifecycleVersion: previous?.executionId === context.executionId ? previous.lifecycleVersion : 1, revision: Number(context.revision || 0) + 1 };
+                const text = JSON.stringify(candidate); localStorage.setItem(STORAGE_KEY, text);
+                if (localStorage.getItem(STORAGE_KEY) !== text) return rejected('STORAGE_READBACK_FAILED');
+                context.revision = candidate.revision; context.lifecycleVersion = candidate.lifecycleVersion; return true;
+            }
+            const text=JSON.stringify(context);localStorage.setItem(STORAGE_KEY, text); return localStorage.getItem(STORAGE_KEY)===text;
+        } catch { if(retry){EAS.Storage?.lifecycle?.releaseOptional?.();return save(context,false);}return rejected('STORAGE_WRITE_FAILED'); }
     };
-    const remove = (reason = 'explicit-remove') => { const execution = read(); if (execution?.batchAuthorization && !preserveTerminalHistory(execution)) return false; logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); try { localStorage.removeItem(STORAGE_KEY); return true; } catch { return false; } };
+    const remove = (reason = 'explicit-remove') => { const execution = read(); if (execution && !preserveTerminalHistory(execution)) return false; logMarketOfferExecution('execution-cleared', { reason, summary: summarizeOfferExecution(execution) }); return !execution || EAS.Storage?.lifecycle?.retire(STORAGE_KEY,execution).status === 'REMOVED'; };
     const emit = (message) => { try { const channel = new BroadcastChannel(CHANNEL_NAME); channel.postMessage(message); channel.close(); } catch {} };
     const isExecutionFinished = (execution) => Boolean(execution && (batchTerminal(execution) || execution.finishedAt || execution.endedAt || (execution.queue || []).every((item) => TERMINAL.has(item.status))));
     const getMenuRuntime = (targetWindow = window) => targetWindow.EASMarketOfferMenuRuntime ||= { listenerInitialized: false, executionWindows: new Map(), handledExecutions: new Set(), channel: null };
@@ -263,7 +330,8 @@
     const cleanupMarketOfferRuntime = (targetWindow = window) => { const runtime = getRuntime(targetWindow); logMarketOfferExecution('runtime-cleanup', { initialized: runtime.initialized, preparedItemId: runtime.preparedItemId, timers: runtime.timers.size }); runtime.observer?.disconnect?.(); runtime.observer = null; runtime.timers.forEach((timer) => { targetWindow.clearTimeout(timer); targetWindow.clearInterval(timer); }); runtime.timers.clear(); runtime.preparing = false; return runtime; };
     const exportDiagnostic = (targetWindow = window) => { const execution = read(); const runtime = getRuntime(targetWindow); const currentItem = execution ? current(execution) : null; const url = new URL(targetWindow.location?.href || location.href); const tableSnapshot = currentItem ? snapshotOffers(targetWindow.document, currentItem) : snapshotOffers(targetWindow.document, {}); return { exportedAt: Date.now(), execution, currentItem, currentPage: { url: url.href, screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), villageId: getVillageId(targetWindow), formDetected: tableSnapshot.formDetected, ownOffersDetected: tableSnapshot.ownOffersDetected }, expectedOffer: currentItem ? { offerResource: currentItem.offerResource, offerAmount: currentItem.offerAmount, receiveResource: currentItem.requestResource, receiveAmount: currentItem.requestAmount, repetitions: currentItem.repeatCount, maxTravelHours: currentItem.maxTravelHours } : null, tableSnapshot, runtimeState: { initialized: runtime.initialized, preparing: runtime.preparing, preparedItemId: runtime.preparedItemId, paused: runtime.paused, timerCount: runtime.timers.size, observerActive: Boolean(runtime.observer) }, persistedState: currentItem?.diagnostic || null, timestamps: { executionCreatedAt: execution?.createdAt || null, clickTimestamp: currentItem?.clickTimestamp || null, navigationTimestamp: currentItem?.diagnostic?.navigationTimestamp || null, verificationRequiredAt: currentItem?.verificationRequiredAt || null }, lastEvents: getDebugLogs().slice(-20) }; };
     const registerPrepareAttempt = (runtime, itemId, now = Date.now()) => { const attempts = (runtime.prepareAttempts.get(itemId) || []).filter((timestamp) => now - timestamp < 10000); attempts.push(now); runtime.prepareAttempts.set(itemId, attempts); if (attempts.length > 3) runtime.paused = true; return { allowed: !runtime.paused, count: attempts.length }; };
-    const addHistory = (item, result, error = null) => { try { const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); history.unshift({ executedAt: Date.now(), villageId: item.villageId, offerResource: item.offerResource, offerAmount: item.offerAmount, requestResource: item.requestResource, requestAmount: item.requestAmount, repeatCount: item.repeatCount, totalOfferAmount: item.totalOfferAmount, totalRequestAmount: item.totalRequestAmount, result, error }); localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 200))); } catch {} };
+    const addHistory = () => {}; // Compatibility: no per-command history producer.
+
     const normalizeItem = (item) => {
         const repeatCount = Math.max(1, amount(item.repeatCount || 1)); const offerAmount = amount(item.amountPerOffer || item.offerAmount); const requestAmount = amount(item.requestAmountPerOffer || item.requestAmount);
         const totalOfferAmount = amount(item.totalOfferAmount || offerAmount * repeatCount); const totalRequestAmount = amount(item.totalRequestAmount || requestAmount * repeatCount);
@@ -362,7 +430,7 @@
     };
     const errorMessage = (doc) => {
         if (doc.querySelector('form#login, input[name="password"]')) return 'Sessão expirada';
-        const text = [...doc.querySelectorAll('.error, .error_box, .error-message, #error, .warn, .warning')].map((node) => node.textContent?.trim()).find(Boolean);
+        const text = [...doc.querySelectorAll('.error, .error_box, .error-message, #error, .warn, .warning')].filter(node => !node.closest(`#${PANEL_ID}, [data-eas-panel], .eas-panel, .eas-modal`)).map((node) => node.textContent?.trim()).find(Boolean);
         if (!text) return null;
         const known = [/comerciante/i, /recurso/i, /proporção|proporcao/i, /limite.*oferta/i, /quantidade/i, /mercado.*indisponível|mercado.*indisponivel/i, /sessão|sessao/i];
         return known.some((pattern) => pattern.test(text)) ? text : `Erro do Mercado: ${text}`;
@@ -484,6 +552,7 @@
         actions.push('skip', 'back'); return actions;
     };
     const mount = (targetWindow = window) => {
+        if (read()?.version !== 3) return false;
         logMarketOfferExecution('auto-init-start', { url: targetWindow.location.href }); const context = read(); if (!context) { logMarketOfferExecution('execution-missing'); logMarketOfferExecution('auto-init-skipped', { reason: 'no-active-execution' }); return false; } logMarketOfferExecution('execution-found', summarizeOfferExecution(context)); syncIndex(context); const item = current(context); logMarketOfferExecution(item ? 'current-item-found' : 'current-item-missing', summarizeOfferExecution(context)); const url = new URL(targetWindow.location.href); const screen = url.searchParams.get('screen'); const mode = url.searchParams.get('mode');
         if (screen !== 'market' || mode !== 'own_offer') { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-screen', screen, mode }); return false; }
         const doc = targetWindow.document; const runtime = getRuntime(targetWindow); const existingPanel = doc.getElementById(PANEL_ID); if (runtime.initialized && existingPanel) { logMarketOfferExecution('runtime-already-initialized', { summary: summarizeOfferExecution(context) }); logMarketOfferExecution('panel-reuse', { panelId: PANEL_ID }); return true; } runtime.initialized = true; const correctVillage = !item || getVillageId(targetWindow) === String(item.villageId); if (!correctVillage) logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-village', currentVillageId: getVillageId(targetWindow), expectedVillageId: item?.villageId }); let panel = existingPanel; const ensureExecutionPanel = () => { if (panel?.isConnected) return panel; recordItemEvent(context, current(context), 'smart-offer-execution-panel-mount-start', { panelExists: Boolean(doc.getElementById(PANEL_ID)) }, targetWindow); panel = doc.getElementById(PANEL_ID); if (!panel) { panel = doc.createElement('aside'); panel.id = PANEL_ID; panel.className = 'fake-execution-panel market-offers-execution-panel'; (doc.body || doc.documentElement).appendChild(panel); logMarketOfferExecution('panel-create', { panelId: PANEL_ID }); } else logMarketOfferExecution('panel-reuse', { panelId: PANEL_ID }); recordItemEvent(context, current(context), 'smart-offer-execution-panel-mounted', { panelExists: true, panelId: PANEL_ID }, targetWindow); return panel; }; ensureExecutionPanel(); let observer = null; let timeout = null; let clickListener = null; let preparedSubmit = null; let submissionLocked = false;
@@ -548,7 +617,7 @@
         else if (['pending', 'opening', 'preparing', 'prepared'].includes(item.status)) { if (item.status === 'preparing') { runtime.preparing = false; runtime.preparedItemId = null; recordItemEvent(context, item, 'smart-offer-preparation-resumed', { panelExists: Boolean(doc.getElementById(PANEL_ID)) }, targetWindow); } arm(); }
         return true;
     };
-    EAS.MarketOffersExecution.start = (context) => { if (read()?.batchAuthorization && !isExecutionFinished(read())) return false; const maxTravelHours = Math.max(1, amount(context.smartOfferConfig?.maxTravelHours || context.maxTravelHours || DEFAULT_MAX_TRAVEL_HOURS)); const queue = (context.queue || []).map((item) => normalizeItem({ ...item, maxTravelHours: item.maxTravelHours || maxTravelHours, status: 'pending', error: null })); const normalized = { ...context, smartOfferConfig: { ...(context.smartOfferConfig || {}), maxTravelHours }, calculationMode: context.calculationMode || 'per-village', version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, openerExpected: true, returnTarget: 'market-offers-menu', world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; logMarketOfferExecution('smart-offer-execution-start', { executionId: normalized.executionId, queueLength: queue.length, maxTravelHours }); queue.forEach((item) => recordItemEvent(normalized, item, 'smart-offer-item-loaded', { maxTravelHours }, window)); syncIndex(normalized); save(normalized); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
+    EAS.MarketOffersExecution.start = (context) => { if (read()?.batchAuthorization && !isExecutionFinished(read())) return false; const maxTravelHours = Math.max(1, amount(context.smartOfferConfig?.maxTravelHours || context.maxTravelHours || DEFAULT_MAX_TRAVEL_HOURS)); const queue = (context.queue || []).map((item) => normalizeItem({ ...item, maxTravelHours: item.maxTravelHours || maxTravelHours, status: 'pending', error: null })); const normalized = { ...context, smartOfferConfig: { ...(context.smartOfferConfig || {}), maxTravelHours }, calculationMode: context.calculationMode || 'per-village', version: EXECUTION_VERSION, executionId: context.executionId || `market-${Date.now()}-${Math.random().toString(36).slice(2)}`, openerExpected: true, returnTarget: 'market-offers-menu', world: EAS.World.getWorldName(), createdAt: Date.now(), currentIndex: 0, queue }; logMarketOfferExecution('smart-offer-execution-start', { executionId: normalized.executionId, queueLength: queue.length, maxTravelHours }); queue.forEach((item) => recordItemEvent(normalized, item, 'smart-offer-item-loaded', { maxTravelHours }, window)); syncIndex(normalized); if (!save(normalized)) throw Error(EAS.MarketOffersExecution.lastSaveFailure || 'STORAGE_WRITE_FAILED'); emit({ type: 'execution-started', executionId: normalized.executionId }); openCurrent(normalized); return true; };
     const initializeMarketOfferExecutionIfNeeded = (targetWindow = window) => { const batch = read(); if (batch?.batchAuthorization) { if (!canResumeBatch(batch)) { disposeBatch(batch, targetWindow); return false; } return batch.executionTab === targetWindow.name ? EAS.MarketOffersExecution.resumeBatch() : false; } const url = new URL(targetWindow.location.href); const pageData = { screen: url.searchParams.get('screen'), mode: url.searchParams.get('mode'), villageId: getVillageId(targetWindow), url: url.href }; logMarketOfferExecution('page-loaded', pageData); logMarketOfferExecution('auto-init-start'); if (isOwnOfferPage(targetWindow)) logMarketOfferExecution('smart-offer-page-detected', pageData); else { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-screen', ...pageData }); return false; } const execution = read(); if (!execution) { logMarketOfferExecution('execution-missing'); logMarketOfferExecution('smart-offer-resume-skipped-no-active-execution', pageData); return false; } logMarketOfferExecution('execution-found', summarizeOfferExecution(execution)); const item = getCurrentPendingOfferItem(execution); logMarketOfferExecution(item ? 'current-item-found' : 'current-item-missing', summarizeOfferExecution(execution)); if (!item && !execution.queue?.length) { logMarketOfferExecution('auto-init-skipped', { reason: 'no-current-item' }); return false; } if (item && getVillageId(targetWindow) !== String(item.villageId)) { logMarketOfferExecution('auto-init-skipped', { reason: 'wrong-village', currentVillageId: getVillageId(targetWindow), expectedVillageId: item.villageId }); return false; } return mount(targetWindow); };
     EAS.MarketOffersExecution.initialize = () => initializeMarketOfferExecutionIfNeeded(window);
 
@@ -568,6 +637,8 @@
             values.sellResource === item.offerResource && values.buyResource === item.requestResource;
     };
     const submitPreparedOffer = ({ context, item, prepared, targetWindow = window, commit }) => {
+        try { const conflict = checkUncertainQueue([item]); if (conflict) return {sent:false,reason:conflict}; }
+        catch { return {sent:false,reason:'UNCERTAIN_MARKET_EVIDENCE_UNREADABLE'}; }
         if (!prepared?.submit || prepared.submit.disabled || targetWindow.EASRateLimit?.check()) return { sent: false, reason: 'SUBMIT_BLOCKED' };
         if (context.batchAuthorization && !validateBatchForm(item, prepared.form, prepared.submit, targetWindow)) return { sent: false, reason: 'FORM_CHANGED' };
         const doc = targetWindow.document;
@@ -575,6 +646,8 @@
             Number(findField(doc, ['sell','offer_amount','amount_sell'])?.value) !== item.amountPerOffer ||
             Number(findField(doc, ['buy','request_amount','amount_buy'])?.value) !== item.requestAmountPerOffer) return { sent: false, reason: 'FORM_CHANGED' };
         if (commit() !== true || targetWindow.EASRateLimit?.check()) return { sent: false, reason: 'PERSISTENCE_OR_RATE_LIMIT' };
+        try { const conflict = checkUncertainQueue([item]); if (conflict) return {sent:false,reason:conflict}; }
+        catch { return {sent:false,reason:'UNCERTAIN_MARKET_EVIDENCE_UNREADABLE'}; }
         prepared.submit.click();
         return { sent: true };
     };
@@ -744,5 +817,5 @@
     window.EASMarketOffersDebug = { getLogs: getDebugLogs, clearLogs: clearDebugLogs, getExecution: read, getArchive: getArchivedBatch, getRuntime: () => getRuntime(window), exportDiagnostic: () => exportDiagnostic(window) };
     if (localStorage.getItem('eas_tw_market_offers_debug') === 'true' && !window.__easMarketOffersErrorLogging) { window.__easMarketOffersErrorLogging = true; window.addEventListener('error', (event) => logMarketOfferExecution('unexpected-error', { message: event.message, stack: event.error?.stack, file: event.filename, line: event.lineno, item: current(read()), url: location.href })); window.addEventListener('unhandledrejection', (event) => logMarketOfferExecution('unexpected-error', { message: event.reason?.message || String(event.reason), stack: event.reason?.stack, item: current(read()), url: location.href })); }
     registerMarketOfferMenuListener(window);
-    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, DEBUG_LOG_KEY, CHANNEL_NAME, EXECUTION_WINDOW_KEY, RETURN_MESSAGE_SOURCE, EXECUTION_VERSION, DEFAULT_MAX_TRAVEL_HOURS, MAX_AUTOMATIC_RETRIES, MAX_ADVANCE_ATTEMPTS, MARKET_SELECTORS, PANEL_ID, isOwnOfferPage, read, save, remove, current, getCurrentPendingOfferItem, getNextPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, getRuntime, getMenuRuntime, cleanupMarketOfferRuntime, registerPrepareAttempt, getDebugLogs, clearDebugLogs, logMarketOfferExecution, logSmartOffer, recordItemEvent, summarizeOfferExecution, completionSummary, isExecutionFinished, refreshExistingHubPanel, handleReturnMessage, registerMarketOfferMenuListener, renderReturnFallback, returnToMarketMenu, exportDiagnostic, injectLoader, watchExecutionWindow, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, reconcileQueueItem, reconcileUncertainOffer, compatibleOffer, promoteExecutionSnapshot, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, waitForElement, waitForMaxTravelTimeInput, setMaxTravelHours, snapshotOffers, detectOfferCreationSuccess, detectCreatedSmartOffer, classifyOfferResult, errorMessage, finishSuccess, advanceMarketOfferExecution, recoverAdvance, offerActionState, finishError });
+    Object.assign(EAS.MarketOffersExecution, { STORAGE_KEY, DEBUG_LOG_KEY, CHANNEL_NAME, EXECUTION_WINDOW_KEY, RETURN_MESSAGE_SOURCE, EXECUTION_VERSION, DEFAULT_MAX_TRAVEL_HOURS, MAX_AUTOMATIC_RETRIES, MAX_ADVANCE_ATTEMPTS, MARKET_SELECTORS, PANEL_ID, isOwnOfferPage, read, save, remove, prepareNewExecution, UNCERTAIN_PREFIX, readUncertainAttempts, findUncertainConflict, checkUncertainQueue, current, getCurrentPendingOfferItem, getNextPendingOfferItem, syncIndex, nextPendingIndex, normalizeItem, getRuntime, getMenuRuntime, cleanupMarketOfferRuntime, registerPrepareAttempt, getDebugLogs, clearDebugLogs, logMarketOfferExecution, logSmartOffer, recordItemEvent, summarizeOfferExecution, completionSummary, isExecutionFinished, refreshExistingHubPanel, handleReturnMessage, registerMarketOfferMenuListener, renderReturnFallback, returnToMarketMenu, exportDiagnostic, injectLoader, watchExecutionWindow, openCurrent, mount, initializeMarketOfferExecutionIfNeeded, validateQueueItem, reconcileQueueItem, reconcileUncertainOffer, compatibleOffer, promoteExecutionSnapshot, prepareItem, findRepeatField, fillRepeatCount, setOfferRepeatCount, waitForElement, waitForMaxTravelTimeInput, setMaxTravelHours, snapshotOffers, detectOfferCreationSuccess, detectCreatedSmartOffer, classifyOfferResult, errorMessage, finishSuccess, advanceMarketOfferExecution, recoverAdvance, offerActionState, finishError });
 })();

@@ -8,7 +8,7 @@ function fixture(options = {}) {
     const timers = new Map(), attempts = [], logs = [], archives = new Map(); let panel = false;
     const copy = x => x == null ? x : JSON.parse(JSON.stringify(x));
     const api = {
-        EXECUTION_VERSION: 3, read: () => copy(stored),
+        EXECUTION_VERSION: 3, read: () => copy(stored), prepareNewExecution: () => ({ allowed: true }),
         save(c) { if (options.storageFailure || stored && c.revision !== stored.revision) return false; c.revision++; stored = copy(c); return true; },
         isExecutionFinished: c => !!c.endedAt, normalizeItem: x => ({ ...x, amountPerOffer: x.offerAmount, requestAmountPerOffer: x.requestAmount }),
         refreshBatchVillage() {}, renderBatch() { panel = true; }, disposeBatch() { panel = false; },
@@ -62,9 +62,8 @@ test('normal completion persists terminal state before one archive and commits t
     assert.equal(completed.state, 'completed'); assert.equal(completed.currentIndex, 1);
     assert.equal(archivedState.state, 'completed');
     assert.equal(archivedState.revision, completed.revision);
-    assert.deepEqual(order, ['archive', 'commit']); assert.equal(committed, 1);
-    assert.equal(f.api.getArchivedBatch(completed.executionId).archiveKind, 'market-offers-history');
-    assert.equal(f.api.getArchivedBatch(completed.executionId).version, 2);
+    assert.deepEqual(order, ['commit', 'archive']); assert.equal(committed, 1);
+    assert.equal(f.api.getArchivedBatch(completed.executionId), null);
 });
 test('archive failure after terminal persistence cannot reopen or resend a completed batch', async () => {
     const f = fixture(); let archiveCalls = 0;
@@ -171,8 +170,7 @@ test('STOP is terminal and idempotent; navigation and F5 retain uncertain eviden
         await f.tick(100000);assert.equal(f.panel(),false);assert.equal(f.clicks(),1);assert.equal(f.timers.size,0);
         assert.equal(f.api.batchDurationMs(f.state()),duration);assert.equal(f.batch().continueUnsent(),false);
     }
-    assert.equal(f.api.getArchivedBatch(stopped.executionId).items[0].attemptId,attempt.attemptId);
-    assert.equal(f.api.getArchivedBatch(stopped.executionId).uncertainty,true);
+    assert.equal(f.api.getArchivedBatch(stopped.executionId),null);
     assert.deepEqual(f.state().queue[0].attempt,attempt);
 });
 test('STOP during the gap prevents next offer and clears pending timers',async()=>{

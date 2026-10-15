@@ -182,11 +182,11 @@
                 try {
                     const item = JSON.parse(localStorage.getItem(key));
 
-                    if (!item?.expiresAt || item.expiresAt <= now) {
+                    if (item?.scope && item.villageId && item.coordinate && Number.isFinite(item.expiresAt) && item.expiresAt <= now) {
                         localStorage.removeItem(key);
                     }
                 } catch (_error) {
-                    localStorage.removeItem(key);
+                    // Unknown records are not eligible for automatic cleanup.
                 }
             });
     };

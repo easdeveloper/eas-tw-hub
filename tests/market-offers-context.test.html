@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+window.game_data={world:'br143',player:{id:7},village:{id:9}};
+let analyses=0;
+window.EAS={Modules:{},Data:{Market:{get:()=>({updatedAt:1,merchantCapacity:1000}),getAll:()=>[],getById:()=>null}},
+ Utils:{formatNumber:String,formatDateTime:()=>'-',escapeHtml:String},
+ UI:{createWindow:({id})=>{const element=document.createElement('section');element.id=id;element.innerHTML='<div></div>';document.body.append(element);return{element,body:element.firstChild,close:()=>element.remove()}},
+ createInput:options=>Object.assign(document.createElement('input'),options),createField:({input})=>input,
+ createButton:({text,onClick})=>{const b=document.createElement('button');b.textContent=text;b.onclick=onClick;return b},showStatus:({target,message})=>target.textContent=message},
+ MarketEngine:{getAvailableResources:()=>({}),getProjectedResources:()=>({}),calculateGlobalResources:()=>({}),calculateResourceImbalance:()=>({percentages:{wood:0,stone:0,iron:0}}),getMerchantCapacity:()=>1000,
+ buildGlobalOfferSuggestions:()=>{analyses++;return{suggestions:[],villagePlans:[],summary:{},uncovered:{}}}}};
+</script>
+<script src="../core/storage.js"></script><script src="../services/market-offers-execution.js"></script><script src="../modules/market-smart-offers.js"></script>
+<script>
+try {
+ const check=(value,label)=>{if(!value)throw Error(label)},key=EAS.MarketOffersExecution.STORAGE_KEY;
+ const old={version:3,executionId:'old',state:'completed',currentIndex:39,pauseReason:null,finishedAt:1,batchAuthorization:{authorizedAt:1},queue:Array.from({length:39},(_,i)=>({status:'created',offerId:String(i),attempt:{state:'completed',submitAt:1},confirmation:{evidence:'new-compatible-offer-id'}}))};
+ localStorage.setItem(key,JSON.stringify(old));EAS.Modules.MarketSmartOffers.open();
+ const recalculate=[...document.querySelectorAll('button')].find(b=>b.textContent==='Recalcular sugestões');
+ recalculate.click();check(analyses===2,'fresh analysis runs after proven completion');check(localStorage.getItem(key)===null,'old context retired before analysis');
+ delete old.queue[38].offerId;const raw=JSON.stringify(old);localStorage.setItem(key,raw);
+ const analysis=localStorage.getItem('eas_tw_market_offers_analysis');recalculate.click();
+ check(analyses===2,'unproven old sends block replacement analysis');check(localStorage.getItem(key)===raw,'old evidence preserved');check(localStorage.getItem('eas_tw_market_offers_analysis')===analysis,'analysis not replaced when blocked');
+ check(document.body.textContent.includes('OFFER_ID_MISSING: item.offerId (item 39)'),'specific field and item are visible');
+ old.queue[37].status='pending';localStorage.setItem(key,JSON.stringify(old));recalculate.click();
+ check(document.body.textContent.includes('item 38')&&document.body.textContent.includes('status="pending"')&&document.body.textContent.includes('queueIndex=37'),'status blocker identifies persisted value and zero-based index');
+ check(localStorage.getItem(key)===JSON.stringify(old),'status diagnostics preserve evidence');
+ document.title='PASS';document.querySelector('#result').textContent='PASS — 8 assertions';
+} catch(error){document.title='FAIL';document.querySelector('#result').textContent='FAIL '+error.stack;}
+</script>

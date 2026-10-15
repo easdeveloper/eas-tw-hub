@@ -1896,6 +1896,22 @@
     const enqueue = (snapshot, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey(), createdAt = Date.now(), authorizeAutomaticAttack = false, targetWindow = typeof window === 'undefined' ? null : window } = {}) => {
         const derived = deriveExecutionUnits(snapshot);
         if (!derived.units.length || !integer(createdAt)) return { created: false, blockers: derived.blockers.length ? derived.blockers : ['EXECUTION_UNITS_EMPTY'], execution: null };
+        const enqueueClock=readAuthoritativeNowMs(targetWindow);
+        if(enqueueClock.available && derived.units.every(unit=>{
+            const times=integer(unit.executionSendAtMs)?[unit.executionSendAtMs]:(unit.approvedChildren||[]).map(child=>child.sendAtMs);
+            return times.length>0 && times.every(time=>integer(time)&&enqueueClock.nowMs>time+120000);
+        }))
+            return {created:false,blockers:['APPROVED_SNAPSHOT_EXPIRED'],execution:null};
+        // Retirement must not let a stale approved snapshot acquire a new execution ID.
+        try {
+            for(let i=0;i<storage.length;i++) {
+                const key=storage.key(i);
+                if(!key?.startsWith(`eas_tw_tactical_consumed:${scope}:`))continue;
+                const consumed=JSON.parse(storage.getItem(key));
+                if(consumed?.identity?.operationId===snapshot.operationId && consumed.identity.revision===snapshot.revision)
+                    return {created:false,duplicate:true,blockers:['APPROVED_SNAPSHOT_ALREADY_CONSUMED'],execution:null};
+            }
+        } catch { return {created:false,blockers:['CONSUMED_STATE_UNAVAILABLE'],execution:null}; }
         const executionId = unitId(snapshot, `schedule:${createdAt}`);
         let scheduledUnits = derived.units.map(unit => ({ ...copy(unit), executionId, account: accountFromScope(scope) }));
         if (authorizeAutomaticAttack === true) {
@@ -1914,7 +1930,7 @@
                 return authorized;
             });
         }
-        const execution = freeze({ executionId, snapshotIdentity: derived.snapshotIdentity,
+        const execution = freeze({ executionId, lifecycleVersion: 1, snapshotIdentity: derived.snapshotIdentity,
             approvedSnapshot: copy(snapshot), createdAt, state: 'SCHEDULED', units: scheduledUnits });
         const store = createStore(storage), root = store.read();
         const existing = (root.executions[scope] || []).find(item => item.executionId === execution.executionId || (authorizeAutomaticAttack === true && same(item.snapshotIdentity, execution.snapshotIdentity)));
@@ -2121,9 +2137,22 @@
         });
         return saved;
     };
+    const canDeleteResult = execution => Boolean(!execution?.lock && !execution?.claim && execution?.units?.length && execution.units.every(unit =>
+        !unit.lock && !unit.claim && unit.state === 'COMPLETED' && unit.outgoingReconciliation?.match &&
+        unit.completedCommandIds?.length === unit.expectedCommands && unit.attemptId && unit.submitAttempt?.attemptId === unit.attemptId));
+    const deleteResult = (executionId, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey() } = {}) => {
+        if (!storage) return false;
+        const raw = storage.getItem(STORAGE_KEY), store = createStore(storage), root = store.read();
+        const execution = root.executions[scope]?.find(item => item.executionId === executionId);
+        if (!canDeleteResult(execution) || execution.units.some(unit => { try { return JSON.parse(storage.getItem(`eas_tw_tactical_consumed:${scope}:${executionId}:${unit.executionUnitId}`))?.attemptId !== unit.attemptId; } catch { return true; } })) return false;
+        root.executions[scope] = root.executions[scope].filter(item => item.executionId !== executionId);
+        if (storage.getItem(STORAGE_KEY) !== raw || !store.write(root) || !same(store.read(), root)) return false;
+        EAS.Storage?.lifecycle?.closeTactical?.(execution, scope);
+        return true;
+    };
     const cancelStoredUnit = (executionId, executionUnitId, options = {}) => {
         const unit = list(options).find(execution => execution.executionId === executionId)?.units.find(item => item.executionUnitId === executionUnitId);
-        if (!unit || ['SENT', 'FAILED', 'UNCERTAIN', 'CANCELLED'].includes(unit.state)) return null;
+        if (!unit || ['SENT', 'FAILED', 'UNCERTAIN', 'CANCELLED', 'COMPLETED', 'SUBMITTING', 'RECONCILING'].includes(unit.state)) return null;
         const cancelled = copy(unit); cancelled.state = 'CANCELLED'; cancelled.cancelledAt = Date.now(); cancelled.preparationAuthorization = null;
         return updateStoredUnit(executionId, executionUnitId, cancelled, options);
     };
@@ -2144,6 +2173,6 @@
         reconcileNativeNobleRows, readNativeRows, parseNativeConfirmation, createNativeTrainRows, compareOutgoing,
         readSessionEvidence, rallyPageIdentity, applyApprovedComposition, openPreparedConfirmation, readSingleConfirmation, openConfirmationFromPrepared, captureConfirmation, parseNativeDuration, advanceConfirmationReady,
         buildRallyPointUrl, describeClockFrame, openRallyPoint, prepareRallyPoint, synchronizePrepared, finalizePrepared, collectClockSamples, initializePreparationPage, initializeSchedulerHooks, readTickDiagnostics, TICK_DIAGNOSTICS_KEY,
-        runStoredPrecheck, preparationAuthorizationValid, preparationDiagnostic, createStore, list, listActive, enqueue, updateStoredUnit, authorizeStoredUnit, cancelStoredUnit, reconcileStoredOutcome
+        runStoredPrecheck, preparationAuthorizationValid, preparationDiagnostic, createStore, canDeleteResult, deleteResult, list, listActive, enqueue, updateStoredUnit, authorizeStoredUnit, cancelStoredUnit, reconcileStoredOutcome
     });
 })();

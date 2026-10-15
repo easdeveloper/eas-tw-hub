@@ -23,7 +23,7 @@
     const events = () => JSON.parse(localStorage.getItem(key() + ':events') || '[]');
     const record = async event => navigator.locks.request(key() + ':events', async () => {
         const entries = events().filter(item => event.receivedAt - item.receivedAt < 30000);
-        entries.push(event); localStorage.setItem(key() + ':events', JSON.stringify(entries.slice(-50)));
+        entries.push(event);const kept=entries.slice(-50);while(kept.length && JSON.stringify(kept).length>32768)kept.shift();localStorage.setItem(key() + ':events', JSON.stringify(kept));
     });
     EAS.IncomingStore = { scope, key, read, write, prune, events, record };
 })();

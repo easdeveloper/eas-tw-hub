@@ -36,10 +36,12 @@
         try {
             if (timer !== null) { root.clearTimeout(timer); timer=null; }
             if (!pending.length) return;
+            const existing=root.localStorage.getItem(KEY);
+            if(existing){const stored=JSON.parse(existing);if(!Array.isArray(stored)||!stored.every(row=>Number.isFinite(row?.timestamp)&&typeof row.event==='string')){storageError='LOG_SCHEMA_UNRECOGNIZED';return;}}
             const rows=entries(); let text=JSON.stringify(rows);
             while(text.length>MAX_BYTES && rows.length) { rows.shift(); dropped++; text=JSON.stringify(rows); }
             root.localStorage.setItem(KEY,text); pending=[]; storageError=null;
-        } catch { storageError='LOG_STORAGE_UNAVAILABLE'; }
+        } catch { storageError='LOG_STORAGE_UNAVAILABLE'; try { const stored=JSON.parse(root.localStorage.getItem(KEY)||'null');if(Array.isArray(stored)&&stored.every(row=>Number.isFinite(row?.timestamp)&&typeof row.event==='string'))root.localStorage.removeItem(KEY); } catch {} }
     };
     const write = (level,module,event,data={}) => {
         try {

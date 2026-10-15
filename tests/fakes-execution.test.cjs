@@ -16,7 +16,7 @@ function fixture(status = 'forwarding') {
     const write = value => storage.set('eas_tw_fakes_execution', JSON.stringify(value));
     const read = () => JSON.parse(storage.get('eas_tw_fakes_execution') || 'null');
     write(context);
-    vm.createContext(sandbox); vm.runInContext(source,sandbox);
+    vm.createContext(sandbox); vm.runInContext(fs.readFileSync('core/storage.js','utf8'),sandbox); vm.runInContext(source,sandbox);
     return { sandbox, window, document, button, form, read, write, run: () => sandbox.EAS.FakesExecution.resumeConfirmation(window), clicks: () => clicks, reload: () => vm.runInContext(source,sandbox) };
 }
 test('valid confirmation clicks once, persisting before click; repeated bootstrap/reload cannot repeat', () => {

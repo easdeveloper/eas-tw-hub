@@ -96,6 +96,7 @@
         innerWidth <= 640
     );
     const notifyReady = () => {
+        window.EAS?.Storage?.lifecycle?.maintain?.();
         window.EAS?.UI?.FloatingPanel?.initialize({ minimizedByDefault: Boolean(window.__EAS_TW_RUNTIME_RESUMED__?.active) });
         window.__EASIndexBootstrap.completedAt = Date.now();
         window.__EASLoaderTrace?.('bootstrap-completed', { reason: 'dependencies-and-resume-completed' });
@@ -399,6 +400,7 @@
 
     const start = async () => {
         try {
+            window.EAS?.Storage?.lifecycle?.maintain?.();
             if (document.readyState === 'loading') await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             if (window.EAS?.UI?.toggle) {
                 if (!window.EAS.Minting) {
@@ -494,6 +496,7 @@
             if (!window.__EASLogger) await loadScript('core/logger.js').catch(() => {}); // Diagnostics must not block runtime loading.
             await loadScript('core/utils.js');
             await loadScript('core/storage.js');
+            window.EAS.Storage.lifecycle.maintain();
             await loadScript('core/observability.js');
             await loadScript('core/runtime.js');
             await loadScript('core/ui.js');

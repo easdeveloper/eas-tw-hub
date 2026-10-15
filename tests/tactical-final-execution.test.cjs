@@ -6,7 +6,7 @@ const plain = x => JSON.parse(JSON.stringify(x));
 function harness(type = 'attack', beforeIds = [], automatic = false) {
     let now = 500000, clicks = 0, uuid = 0, bot = false, observed = { available: true, commands: beforeIds.map(id => ({ id })) }, lock = false;
     const values = new Map(), timers = new Map(), listeners = new Map(); let serial = 0;
-    const storage = { getItem: k => values.get(k) ?? null, setItem: (k,v) => values.set(k,v) };
+    const storage = { get length(){return values.size},key:i=>[...values.keys()][i]??null,getItem: k => values.get(k) ?? null, setItem: (k,v) => values.set(k,v) };
     const button = { id: 'troop_confirm_submit', textContent: type === 'attack' ? 'Enviar ataque' : 'Enviar apoio', isConnected: true,
         getClientRects: () => [1], addEventListener() {}, removeEventListener() {}, click: () => { clicks++; } };
     const form = { addEventListener() {}, removeEventListener() {}, textContent: 'Destino (484|527)', querySelectorAll: selector => selector.startsWith('button') ? [button] : selector === 'input[name="source_village"]' ? [{ value: '10' }] : selector === '[data-unit]' ? [{ dataset: {unit:'axe',count:'1'} }] : [] };
@@ -28,9 +28,10 @@ function harness(type = 'attack', beforeIds = [], automatic = false) {
     for(const path of ['services/mass-snipe-precise.js','services/arrival-execution.js','services/tactical-operation-scheduler-adapter.js']) vm.runInContext(fs.readFileSync(path,'utf8'),ctx);
     const api=EAS.TacticalOperationSchedulerAdapter;
     const command={slotId:'one',parentSlotId:'one',commandType:type,source:{id:'10',coord:'500|500'},target:{coord:'484|527'},composition:{quantities:{axe:1}},sendAtMs:1000000,desiredArrivalMs:1010000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
-    const queued=api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'op',revision:1,validation:{valid:true},commands:[command]},{createdAt:1,authorizeAutomaticAttack:automatic,targetWindow:w});
+    const snapshot={snapshotKind:'tactical-approved-operation',version:1,operationId:'op',revision:1,validation:{valid:true},commands:[command]};
+    const queued=api.enqueue(snapshot,{createdAt:1,authorizeAutomaticAttack:automatic,targetWindow:w});
     const executionId=queued.execution.executionId,id=queued.execution.units[0].executionUnitId;
-    const read=()=>api.list()[0].units[0];
+    const read=()=>api.list()[0]?.units[0] || null;
     const save=unit=>api.updateStoredUnit(executionId,id,unit);
     let unit=automatic ? read() : api.authorizeStoredUnit(executionId,id,{authorizedAt:1});
     unit=save(api.advancePrecheck10m(unit,{now,sessionAvailable:true,accountValid:true,loggedIn:true,source:command.source,target:command.target}));
@@ -48,7 +49,7 @@ function harness(type = 'attack', beforeIds = [], automatic = false) {
         arm:options=>api.armFinalExecution(executionId,id,w,options),
         fire:()=>{now=1000000;const callbacks=[...timers.values()];timers.clear();callbacks.forEach(fn=>fn());return callbacks;},
         returnPage:()=>{w.location.href=w.location.href.replace('&try=confirm','');},
-        recover:()=>api.recoverFinalExecution(executionId,id,w)};
+        recover:()=>api.recoverFinalExecution(executionId,id,w),reenqueue:()=>api.enqueue(snapshot,{createdAt:2,targetWindow:w})};
 }
 for(const type of ['attack','support']) test(`${type}: exact final authorization, persisted attempt before one click, shared reconciliation`,async()=>{
     const h=harness(type); assert.equal(h.read().state,'READY_TO_SEND');
@@ -60,8 +61,10 @@ for(const type of ['attack','support']) test(`${type}: exact final authorization
     const callbacks=h.fire();callbacks.forEach(fn=>fn());assert.equal(h.button.calls,1);
     assert.equal(h.read().state,'UNCERTAIN');
     h.returnPage();h.observed({available:true,commands:[{id:'42',type,target:'484|527',sourceVillageId:'10',evidence:{clock:'server-wall',arrivalMs:1010001,precisionMs:1}}]});
-    assert.equal(h.recover().state,'COMPLETED');assert.deepEqual(plain(h.read().completedCommandIds),['42']);
-    assert.equal(h.read().executionTiming.serverArrivalDeviationMs,1);assert.equal(h.read().executionTiming.serverRecordedSubmissionMs,null);
+    const reconciled=h.recover();assert.equal(reconciled.state,'COMPLETED');assert.deepEqual(plain(reconciled.completedCommandIds),['42']);
+    assert.equal(reconciled.executionTiming.serverArrivalDeviationMs,1);assert.equal(reconciled.executionTiming.serverRecordedSubmissionMs,null);
+    assert.equal(h.read().state,'COMPLETED');assert.ok([...h.values.keys()].some(k=>k.startsWith('eas_tw_tactical_consumed:')));
+    assert.equal(h.reenqueue().blockers[0],'APPROVED_SNAPSHOT_ALREADY_CONSUMED');
     assert.equal((await h.arm({dryRun:false})).armed,false);
 });
 test('dry run executes scheduler but never invokes irreversible action or consumes attempt',async()=>{
@@ -108,8 +111,8 @@ test('another page runtime shares Web Lock, and old same-target ID cannot comple
     h.fire();h.returnPage();
     const old={id:'7',type:'attack',target:'484|527',sourceVillageId:'10',evidence:{clock:'server-wall',arrivalMs:1010001,precisionMs:1}};
     h.observed({available:true,commands:[old]});assert.equal(h.recover().state,'UNCERTAIN');
-    h.observed({available:true,commands:[old,{...old,id:'8'}]});assert.equal(h.recover().state,'COMPLETED');
-    assert.deepEqual(plain(h.read().completedCommandIds),['8']);assert.equal(h.clicks(),1);
+    h.observed({available:true,commands:[old,{...old,id:'8'}]});const reconciled=h.recover();assert.equal(reconciled.state,'COMPLETED');
+    assert.deepEqual(plain(reconciled.completedCommandIds),['8']);assert.equal(h.read().state,'COMPLETED');assert.equal(h.clicks(),1);
 });
 test('live target/composition changes and missing baseline stop the boundary',async()=>{
     const h=harness();h.authorize();await h.arm({dryRun:false});
@@ -149,4 +152,15 @@ test('creation consent is atomic, bound to immutable attack data, and duplicates
  const bad=harness();bad.w.game_data.player.id='8';
  assert.equal(bad.api.enqueue({...plain(bad.snapshot),operationId:'wrong-account'},{authorizeAutomaticAttack:true,targetWindow:bad.w}).created,false);
  assert.equal(bad.api.list().length,1);
+});
+
+test('explicit result deletion blocks uncertain sends and incomplete proof, retains consumed receipts',async()=>{
+ const h=harness();assert.equal(h.api.deleteResult(h.executionId),false);
+ h.authorize();await h.arm({dryRun:false});h.fire();h.returnPage();
+ h.observed({available:true,commands:[]});h.recover();assert.equal(h.api.deleteResult(h.executionId),false);
+ h.observed({available:true,commands:[{id:'42',type:'attack',target:'484|527',sourceVillageId:'10',evidence:{clock:'server-wall',arrivalMs:1010001,precisionMs:1}}]});
+ assert.equal(h.recover().state,'COMPLETED');assert.equal(h.api.canDeleteResult(h.api.list()[0]),true);
+ const receipt=[...h.values.keys()].find(k=>k.startsWith('eas_tw_tactical_consumed:'));const saved=h.values.get(receipt);
+ h.values.delete(receipt);assert.equal(h.api.deleteResult(h.executionId),false);h.values.set(receipt,saved);
+ assert.equal(h.api.deleteResult(h.executionId),true);assert.equal(h.read(),null);assert.ok(h.values.has(receipt));
 });
