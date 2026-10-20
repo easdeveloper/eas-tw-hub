@@ -1,0 +1,74 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+let now = Date.now(), clockAnchor = now, clockOffset = 0, missionCreates = 0, legacyInitializes = 0, openedUrl = null, submitClicks = 0;
+const setServerNow = value => { now = value; clockAnchor = Date.now(); clockOffset = now - clockAnchor; };
+window.game_data = { world: 'br-test', player: { id: 7 }, village: { id: 10, x: 500, y: 500 } };
+window.Timing = { getCurrentServerTime: () => Date.now() + clockOffset };
+window.EAS = {
+  Modules: {},
+  World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }), getServerNowTimestamp: () => now + (Date.now() - clockAnchor), getServerDateTime: () => ({ available: true }) },
+  Utils: { formatDateTime: value => String(value), parseCoordinate: value => { const match = /^(\d{1,3})\|(\d{1,3})$/.exec(String(value || '')); return match ? { coordinate: `${Number(match[1])}|${Number(match[2])}` } : null; }, escapeHtml: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) },
+  MassSnipeExecution: { getCurrentServerTimeMs: () => now + (Date.now() - clockAnchor) },
+  Place: {
+    buildPlaceUrl: id => { const url = new URL(location.href); url.search = ''; url.searchParams.set('screen', 'place'); url.searchParams.set('village', id); return url; },
+    getCommandForm: doc => doc.querySelector('#command-data-form, #command-confirm-form'),
+    getTargetInput: doc => doc.querySelector('input[name="input"]'), inspectTargetInputs: doc => { const input = doc.querySelector('input[name="input"]'); return { input, blocker: input ? null : 'TARGET_INPUT_NOT_FOUND', candidates: [] }; },
+    fillCommandTarget: (coord, targetWindow) => { const field = targetWindow.document.querySelector('input[name="input"]'); if (!field) return false; field.value = coord; return true; },
+    readCommandTarget: targetWindow => ({ actualTarget: targetWindow.document.querySelector('input[name="input"]')?.value || null })
+  },
+  MissionScheduler: {
+    initialize: () => { legacyInitializes += 1; }, load: () => ({ missions: [], settings: {}, logs: [] }),
+    getServerNow: () => new Date(now), sortMissions: values => values, detectMissionConflicts: () => [],
+    getVisualStatus: () => 'waiting', formatRemaining: () => '-', createMission: () => { missionCreates += 1; throw new Error('Legacy Scheduler mission creation forbidden'); }
+  },
+  ScheduledMissionExecution: { openAndPrepare: () => { throw new Error('Legacy execution forbidden'); }, initialize: () => { throw new Error('Legacy execution forbidden'); } },
+  UI: {
+    createWindow: () => { const body = document.createElement('div'); document.body.append(body); return { body, close: () => body.remove() }; },
+    createButton: ({ text, onClick }) => { const button = document.createElement('button'); button.textContent = text; button.onclick = onClick; return button; },
+    openMainWindow: () => {}
+  }
+};
+window.EASLoader = { loadScript: async () => {} };
+Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name, callback) => Promise.resolve().then(callback) } }); // headless virtual time cannot grant real Web Locks deterministically
+window.open = url => { openedUrl = String(url); return { focus() {} }; };
+</script>
+<script src="../services/place.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script src="../services/mission-scheduler.js"></script><script src="../modules/scheduled-missions.js"></script>
+<script>
+(async()=>{
+ if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));
+ const failures=[];let assertions=0;const check=(value,message)=>{assertions++;if(!value)failures.push(message);};
+ const adapter=EAS.TacticalOperationSchedulerAdapter,key='eas_tw_scheduler_v2',scope='br-test:7';
+ localStorage.removeItem(adapter.STORAGE_KEY);EAS.MissionScheduler.initialize=()=>{};
+ const base={type:'attack',world:'br-test',playerId:'7',villageId:'10',villageCoord:'500|500',targetCoord:'484|527',troops:{axe:10},sendTime:now-172800000,sendTimestamp:now-172800000,createdAt:now-172800000,updatedAt:now,alertsEmitted:{}};
+ const missions=[{...base,id:'cancel-old',status:'cancelled'},
+  {...base,id:'late-old',type:'support',status:'late',lastError:'SEND_WINDOW_MISSED'},
+  {...base,id:'parser-old',status:'error',lastError:'UNCLASSIFIED_COMMAND_MARKERS',attackClicked:true,submitAuthorization:{missionId:'parser-old',allowedStage:'attack-confirmation',used:false}},
+  {...base,id:'uncertain-old',status:'error',submitAttemptId:'attempt-old',finalClickConsumed:true,lastError:'UNCLASSIFIED_COMMAND_MARKERS'},
+  {...base,id:'active',status:'prepared',sendTime:now+3600000,sendTimestamp:now+3600000}];
+ localStorage.setItem(key,JSON.stringify({version:2,contexts:{[scope]:{missions,activeMissionId:'active',currentMissionId:'active',tabExecutions:{old:{missionId:'late-old'},keep:{missionId:'active'}}}}}));
+ localStorage.setItem('eas_tw_scheduler',JSON.stringify({missions}));
+ let confirmed=false;window.confirm=()=>confirmed;
+ const wait=()=>new Promise(resolve=>setTimeout(resolve,40));let win=await EAS.Modules.ScheduledMissions.open();await wait();
+ const card=id=>win.body.querySelector(`[data-id="${id}"]`);
+ check(card('late-old').textContent.includes(key),'legacy card identifies its persisted source');
+ check(!card('late-old').querySelector('[data-delete]').disabled,'late support is individually removable');
+ check(!card('parser-old').querySelector('[data-delete]').disabled,'first native click is not final submit');
+ check(!card('cancel-old').querySelector('[data-cancel]'),'cancelled history has delete, not cancel');
+ check(card('uncertain-old').querySelector('[data-delete]').disabled&&card('uncertain-old').textContent.includes('LEGACY_SEND_EVIDENCE_DEDUPLICATION_UNPROVEN'),'uncertain final attempt displays exact protection reason');
+ check(card('active').querySelector('[data-delete]').disabled&&card('active').textContent.includes('MISSION_ACTIVE'),'active mission is protected with reason');
+ card('late-old').querySelector('[data-delete]').click();await wait();check(EAS.MissionScheduler.load().missions.length===5,'declined delete preserves storage');
+ confirmed=true;card('late-old').querySelector('[data-delete]').click();await wait();
+ check(!EAS.MissionScheduler.load().missions.some(m=>m.id==='late-old'),'individual deletion persists');
+ check(JSON.parse(localStorage.getItem(key)).contexts[scope].tabExecutions.old===undefined,'orphan tab removed');
+ [...win.body.querySelectorAll('button')].find(button=>button.textContent==='Limpar histórico geral').click();await wait();
+ check(EAS.MissionScheduler.load().missions.length===2,'general cleanup includes the other old terminal cards');
+ check(EAS.MissionScheduler.load().missions.find(m=>m.id==='uncertain-old').submitAttemptId==='attempt-old','uncertain evidence is preserved without relabelling');
+ win.close();win=await EAS.Modules.ScheduledMissions.open();await wait();
+ check(!card('late-old')&&!card('cancel-old')&&!card('parser-old'),'reopening from fresh storage does not reimport deleted v1 history');
+ check(Boolean(card('uncertain-old'))&&Boolean(card('active')),'protected histories and active mission survive reopening');
+ check(submitClicks===0,'cleanup never submits');
+ document.title=failures.length?'FAIL':'PASS';document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
+})().catch(error=>{document.title='FAIL';document.getElementById('result').textContent=error.stack;});
+</script>

@@ -523,3 +523,27 @@ test('missing or invalid native server calendar is never reconstructed from the 
   assert.equal(f.api.readAttackFinalClock(f.w).diagnostic.reason,'TIMING_PROVIDER_ERROR');
  }
 });
+
+for(const support of [false,true])test(`phase1 ${support?'SUPPORT':'ATTACK'} fractional Timing arms and clicks once without changing the time window`,async()=>{
+ const f=await finalReadyFixture(support,true,'real');f.w.EAS.MassSnipeExecution.getCurrentServerTimeMs=()=>f.clockNow()+0.875;
+ await f.tick(SEND-10000);assert.equal(f.read().state,'READY_TO_SEND',JSON.stringify(f.read().blockers));assert.ok(f.read().finalAuthorization);
+ f.fire();f.fire();assert.equal(f.c.finalClicks,1);assert.equal(f.read().state,'UNCERTAIN');assert.equal(f.read().executionTiming.localDeviationMs,0.875);
+ await f.tick(SEND+1000);assert.equal(f.c.finalClicks,1);
+});
+test('phase1 silent session storage failure blocks confirmation navigation before any click',async()=>{
+ const f=await confirmFixture();f.w.sessionStorage.setItem=()=>{};await f.c.open();
+ assert.equal(f.clicks(),0);assert.equal(f.read().state,'BLOCKED');assert.ok(f.read().blockers.includes('PREPARATION_CONTEXT_STORAGE_FAILED'));assert.equal(f.read().confirmationIntent,undefined);
+});
+test('phase1 source identity uses native village coordinates without a loaded Utils module and rejects actual disagreement',()=>{
+ const f=fixture();f.w.location.href='https://br143.tribalwars.com.br/game.php?screen=place&village=10';delete f.w.EAS.Utils;
+ assert.equal(f.api.rallyPageIdentity(f.w,f.read()).sourceCorrect,true);
+ f.w.location.href='https://br143.tribalwars.com.br/game.php?screen=place';assert.equal(f.api.rallyPageIdentity(f.w,f.read()).sourceCorrect,true);
+ f.w.location.href+='&village=11';assert.equal(f.api.rallyPageIdentity(f.w,f.read()).sourceCorrect,false);
+ f.w.location.href='https://br143.tribalwars.com.br/game.php?screen=place&village=10';f.w.game_data.village.id=11;assert.equal(f.api.rallyPageIdentity(f.w,f.read()).sourceCorrect,false);
+});
+test('phase1 root write verifies readback and preserves concurrent or corrupt storage',()=>{
+ const f=fixture(),store=f.api.createStore(f.storage),root=store.read();root.extra='candidate';
+ f.storage.setItem=()=>{};assert.equal(store.write(root),false);
+ const original=f.values.get(f.api.STORAGE_KEY);f.values.set(f.api.STORAGE_KEY,'CORRUPT');const invalid=f.api.createStore(f.storage);invalid.read();assert.equal(invalid.write(root),false);assert.equal(f.values.get(f.api.STORAGE_KEY),'CORRUPT');
+ f.values.set(f.api.STORAGE_KEY,original);const concurrent=f.api.createStore(f.storage),before=concurrent.read();f.values.set(f.api.STORAGE_KEY,JSON.stringify({...before,anotherTab:true}));assert.equal(concurrent.write(before),false);assert.equal(JSON.parse(f.values.get(f.api.STORAGE_KEY)).anotherTab,true);
+});

@@ -539,10 +539,11 @@
         const url = (() => { try { return new URL(targetWindow.location.href); } catch { return null; } })();
         const village = targetWindow.game_data?.village || {};
         const sourceId = identity(village.id || url?.searchParams.get('village'));
-        const sourceCoord = targetWindow.EAS?.Utils?.parseCoordinate?.(`${village.x ?? ''}|${village.y ?? ''}`)?.coordinate || null;
+        const sourceCoord = [village.x,village.y].every(value => /^\d{1,3}$/.test(String(value ?? '')))
+            ? `${Number(village.x)}|${Number(village.y)}` : null;
         return { pageValid: url?.searchParams.get('screen') === 'place' && url.searchParams.get('try') !== 'confirm',
             sourceId, sourceCoord, sourceCorrect: sourceId === String(unit.source?.id) && sourceCoord === unit.source?.coord &&
-                url?.searchParams.get('village') === String(unit.source?.id) };
+                (!url?.searchParams.has('village') || url.searchParams.get('village') === String(unit.source?.id)) };
     };
 
     const setInputValue = (input, value, targetWindow) => {
@@ -668,6 +669,11 @@
             source: { id: identityResult.sourceId, coord: identityResult.sourceCoord }, target: { coord: unit.target.coord }, composition: actual };
     };
 
+    const persistPreparationContext = (targetWindow, context) => {
+        try { const text = JSON.stringify(context); targetWindow.sessionStorage.setItem('eas_tactical_preparation_context',text);
+            return targetWindow.sessionStorage.getItem('eas_tactical_preparation_context') === text;
+        } catch { return false; }
+    };
     const openPreparedConfirmation = (unit, targetWindow) => {
         if (!unit?.preparationAuthorization || unit.preparationAuthorization.executionUnitId !== unit.executionUnitId || unit.state !== 'PRECHECK_10M')
             return { valid: false, blocker: 'PREPARATION_AUTHORIZATION_MISSING' };
@@ -688,9 +694,9 @@
             : '#target_attack, input[name="attack"], button[name="attack"]';
         const button = form?.querySelector(selector);
         if (!button || button.disabled) return { valid: false, blocker: 'RALLY_POINT_COMMAND_CONTROL_UNAVAILABLE' };
-        try { targetWindow.sessionStorage.setItem('eas_tactical_preparation_context', JSON.stringify({
+        if (!persistPreparationContext(targetWindow, {
             executionId: unit.executionId || null, executionUnitId: unit.executionUnitId, operationId: unit.operationId, revision: unit.revision
-        })); } catch { return { valid: false, blocker: 'PREPARATION_CONTEXT_STORAGE_FAILED' }; }
+        })) return { valid: false, blocker: 'PREPARATION_CONTEXT_STORAGE_FAILED' };
         const baseline = captureExecutionBaseline(unit, targetWindow);
         if (!baseline.valid) return baseline;
         button.click();
@@ -1009,7 +1015,7 @@
             const navigationId = unit.rallyPreparation.navigationId;
             let outgoingEvidence = null;
             try {
-                const observed = EAS.FakesExecution?.readOutgoingCommands?.(targetWindow);
+                const observed = readSingleOutgoing(targetWindow,{baselineOnly:true});
                 if (observed?.available && Array.isArray(observed.commands) && observed.commands.every(command => /^\d+$/.test(command.id)))
                     outgoingEvidence = { identity: executionIdentity(unit), capturedAt: timing.nowMs,
                         commandIds: [...new Set(observed.commands.map(command => command.id))] };
@@ -1018,8 +1024,8 @@
                 deadlineAtMs: Math.min(timing.nowMs + 20000, unit.executionSendAtMs - FINAL_CHECK_END_MS), commandType: unit.commandType,
                 source: { id: String(unit.source.id), coord: unit.source.coord }, target: { coord: unit.target.coord },
                 composition: nonzeroComposition(unit.approvedCommand.composition.quantities) };
-            try { targetWindow.sessionStorage.setItem('eas_tactical_preparation_context', JSON.stringify({
-                executionId, executionUnitId, operationId: unit.operationId, revision: unit.revision })); } catch { return fail('PREPARATION_CONTEXT_STORAGE_FAILED'); }
+            if (!persistPreparationContext(targetWindow, {
+                executionId, executionUnitId, operationId: unit.operationId, revision: unit.revision })) return fail('PREPARATION_CONTEXT_STORAGE_FAILED');
             if (!updateStoredUnit(executionId, executionUnitId, { ...copy(unit), confirmationIntent: intent })) return fail('PERSISTED_STATE_TRANSITION_REJECTED');
             executionLog('TACTICAL_CONFIRMATION_NAVIGATION_STARTED', unit, { navigationId, deadlineAtMs: intent.deadlineAtMs });
             try { controls[0].click(); } catch { return fail('CONFIRMATION_NAVIGATION_FAILED'); }
@@ -1225,7 +1231,7 @@
             button.addEventListener('click', async () => { button.disabled = true; try { await handler(); } catch (error) { status.textContent = `BLOCKED: ${error?.message || 'PREPARATION_FAILED'}`; } finally { button.disabled = false; } });
             actions.append(button); return button;
         };
-        const automaticAttack = unit.kind === SINGLE && unit.commandType === 'attack';
+        const automaticAttack = unit.kind === SINGLE && ['attack','support'].includes(unit.commandType);
         const finalActions = () => {
             if (automaticAttack) return;
             if (activeArms.has(`${executionId}:${executionUnitId}`) || unit.executionTiming?.dryRun) return;
@@ -1366,9 +1372,17 @@
     };
 
     const createStore = storage => {
-        const read = () => { try { const value = JSON.parse(storage?.getItem(STORAGE_KEY) || 'null'); if (value?.version === VERSION && value.executions) { for (const [scope, executions] of Object.entries(value.executions)) for (const execution of executions) for (const unit of execution.units || []) { if (!Object.hasOwn(unit, 'account')) unit.account = accountFromScope(scope);
-            if (unit.state === 'PREPARED' && unit.nextCheckpoint == null && integer(unit.executionSendAtMs)) { unit.nextCheckpoint = 'SYNC_2M'; unit.nextCheckpointAtMs = unit.executionSendAtMs - 120000; } } return value; } return { version: VERSION, executions: {} }; } catch { return { version: VERSION, executions: {} }; } };
-        const write = value => { try { storage?.setItem(STORAGE_KEY, JSON.stringify(value)); return true; } catch { return false; } };
+        let observedRaw, readable = true;
+        const read = () => { try { observedRaw = storage?.getItem(STORAGE_KEY) ?? null; const value = JSON.parse(observedRaw || 'null');
+            readable = observedRaw === null || value?.version === VERSION && value.executions && typeof value.executions === 'object' && !Array.isArray(value.executions) && Object.values(value.executions).every(rows => Array.isArray(rows) && rows.every(execution => Array.isArray(execution?.units)));
+            if (readable && value?.version === VERSION) { for (const [scope, executions] of Object.entries(value.executions)) for (const execution of executions) for (const unit of execution.units || []) { if (!Object.hasOwn(unit, 'account')) unit.account = accountFromScope(scope);
+            if (unit.state === 'PREPARED' && unit.nextCheckpoint == null && integer(unit.executionSendAtMs)) { unit.nextCheckpoint = 'SYNC_2M'; unit.nextCheckpointAtMs = unit.executionSendAtMs - 120000; } } return value; } return { version: VERSION, executions: {} }; } catch { readable = false; return { version: VERSION, executions: {} }; } };
+        const write = value => { try {
+            if (observedRaw === undefined) read();
+            if (!readable || !storage?.setItem || !storage?.getItem || observedRaw !== undefined && storage.getItem(STORAGE_KEY) !== observedRaw) return false;
+            const text = JSON.stringify(value); storage.setItem(STORAGE_KEY,text);
+            return storage.getItem(STORAGE_KEY) === text;
+        } catch { return false; } };
         return { read, write };
     };
     const contextKey = () => `${EAS.World?.getWorldName?.() || window.game_data?.world || location.hostname}:${String(EAS.World?.getPlayer?.()?.id || window.game_data?.player?.id || 0)}`;
@@ -1524,7 +1538,7 @@
         same(unit.earlySendConsent.identity, earlySendIdentity(unit)));
     const authorizeEarlySend = (executionId, executionUnitId, mode, targetWindow = window) => {
         const unit = lookup(executionId, executionUnitId), session = readSessionEvidence(targetWindow, unit);
-        const now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        const now = readAuthoritativeNowMs(targetWindow).nowMs;
         if (!unit || unit.kind !== SINGLE || !['SCHEDULED', 'PRECHECK_10M'].includes(unit.state) ||
             !preparationAuthorizationValid(unit) || !['real', 'dry-run'].includes(mode) || unit.attemptId || unit.finalAuthorization ||
             !session.accountValid || !session.sessionAvailable || !integer(now) || now >= unit.executionSendAtMs) return null;
@@ -1534,7 +1548,7 @@
         return saved;
     };
     const automaticFinalRuns = new WeakMap();
-    const singleAttack = unit => unit?.kind === SINGLE && unit.commandType === 'attack';
+    const singlePreciseCommand = unit => unit?.kind === SINGLE && ['attack','support'].includes(unit.commandType);
     // Lifecycle/audit fields are integer milliseconds; the precise scheduler must
     // keep the original Timing-backed value, including its fractional part.
     const readAttackFinalClock = (targetWindow = window) => {
@@ -1583,7 +1597,7 @@
         catch { return { available: false, nowMs: null, diagnostic: { reason: 'ATTACK_CLOCK_MODULE_LOAD_FAILED' } }; }
         return readAttackFinalClock(targetWindow);
     };
-    const finalNowMs = (unit, targetWindow) => singleAttack(unit) ? readAttackFinalClock(targetWindow).nowMs
+    const finalNowMs = (unit, targetWindow) => singlePreciseCommand(unit) ? readAttackFinalClock(targetWindow).nowMs
         : targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
     const runAutomaticFinal = async (executionId, executionUnitId, targetWindow = window) => {
         const key = `${executionId}:${executionUnitId}`;
@@ -1594,7 +1608,7 @@
         if (!unit || unit.kind !== SINGLE || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(unit.state) ||
             !confirmedTabMatches(unit, targetWindow)) return;
         let now = null, clock = null;
-        if (singleAttack(unit)) {
+        if (singlePreciseCommand(unit)) {
             clock = await ensureAttackFinalClock(targetWindow);
             unit = lookup(executionId, executionUnitId);
             if (!unit || !['CONFIRMATION_READY', 'READY_TO_SEND'].includes(unit.state) || !confirmedTabMatches(unit, targetWindow)) return;
@@ -1637,16 +1651,58 @@
         Array.isArray(unit.outgoingBaseline.commandIds) && integer(unit.outgoingBaseline.capturedAt));
     const executionLog = (event, unit, details = {}) => { try { EAS.Logger?.info?.('tactical-execution', event, {
         executionId: unit.executionId, executionUnitId: unit.executionUnitId, attemptId: unit.attemptId, state: unit.state, ...details }); } catch {} };
+    const readSingleOutgoing = (targetWindow, { baselineOnly = false, baselineIds = [] } = {}) => {
+        const reader = EAS.FakesExecution?.readOutgoingCommands;
+        if (!reader) return { available:false,commands:[],reason:'OUTGOING_READER_UNAVAILABLE' };
+        const options = { readRowEvidence:EAS.ArrivalExecution?.readArrivalEvidence }, doc = targetWindow.document;
+        const container = doc.querySelector('#commands_outgoings');
+        if (!container?.querySelectorAll) return reader(targetWindow,options);
+        const rows = [...container.querySelectorAll('tr.command-row')];
+        const ownId = row => {
+            if (row.querySelector('.quickedit-in')) return null;
+            const markers = [...row.querySelectorAll('[data-command-id], .quickedit-out[data-id], .command-cancel[data-id]')];
+            const ids = markers.map(node => String(node.dataset.commandId ?? node.dataset.id ?? ''));
+            const links = [...row.querySelectorAll('a[href*="screen=info_command"]')];
+            let sourceProven = false;
+            for (const link of links) {
+                const url = new URL(link.href,targetWindow.location.href);
+                if (url.origin !== new URL(targetWindow.location.href).origin || url.searchParams.get('type') !== 'own' ||
+                    url.searchParams.get('village') !== String(targetWindow.game_data?.village?.id)) return null;
+                sourceProven = true; ids.push(url.searchParams.get('id'));
+            }
+            for (const node of markers.filter(node => node.dataset.home != null)) {
+                if (String(node.dataset.home) !== String(targetWindow.game_data?.village?.id)) return null;
+                sourceProven = true;
+            }
+            return sourceProven && ids.length && ids.every(id => /^[1-9]\d*$/.test(id) && id === ids[0]) ? ids[0] : null;
+        };
+        // Keep unrelated incoming tables out of the outgoing inventory. Old baseline
+        // rows may be ignored for matching, but a new unknown row still blocks.
+        const selected = rows.filter(row => !baselineIds.includes(ownId(row)));
+        const scopedContainer = { querySelector:selector => container.querySelector(selector),
+            querySelectorAll:selector => selector === 'tr.command-row' ? selected : container.querySelectorAll(selector) };
+        const scopedDocument = { readyState:doc.readyState,
+            querySelector:selector => selector === '#commands_outgoings' ? scopedContainer : doc.querySelector(selector),
+            querySelectorAll:selector => selector === '.command-row' ? selected : doc.querySelectorAll(selector) };
+        const observed = reader({document:scopedDocument,location:targetWindow.location,game_data:targetWindow.game_data},options);
+        if (baselineOnly && observed?.reason === 'UNCLASSIFIED_COMMAND_MARKERS') {
+            const ids = rows.map(ownId);
+            if (ids.length && ids.every(Boolean) && new Set(ids).size === ids.length)
+                return { available:true,commands:ids.map(id => ({id})),source:'tactical-own-outgoing-id-inventory' };
+        }
+        return observed;
+    };
     const captureExecutionBaseline = (unit, targetWindow = window) => {
         const stored = lookup(unit.executionId, unit.executionUnitId);
         if (!stored || stored.state !== 'PRECHECK_10M' || stored.attemptId || wasConsumed(stored, targetWindow.localStorage))
             return { valid: false, blocker: 'BASELINE_ATTEMPT_ALREADY_EXISTS_OR_INVALID' };
         const page = rallyPageIdentity(targetWindow, stored);
         if (!page.pageValid || !page.sourceCorrect) return { valid: false, blocker: 'BASELINE_SOURCE_MISMATCH' };
-        const observed = EAS.FakesExecution?.readOutgoingCommands?.(targetWindow);
+        const observed = stored.kind === SINGLE ? readSingleOutgoing(targetWindow,{baselineOnly:true}) : EAS.FakesExecution?.readOutgoingCommands?.(targetWindow);
         if (!observed?.available || !Array.isArray(observed.commands) || observed.commands.some(c => !/^\d+$/.test(c.id)))
             return { valid: false, blocker: observed?.reason || 'OUTGOING_BASELINE_UNAVAILABLE' };
-        const now = targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
+        const now = stored.kind === SINGLE ? readAuthoritativeNowMs(targetWindow).nowMs
+            : targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
         if (!integer(now) || !targetWindow.crypto?.randomUUID) return { valid: false, blocker: 'BASELINE_IDENTITY_UNAVAILABLE' };
         const next = copy(stored); next.attemptId = targetWindow.crypto.randomUUID();
         next.outgoingBaseline = { attemptId: next.attemptId, identity: executionIdentity(next), capturedAt: now,
@@ -1688,7 +1744,7 @@
         const fail = blocker => ({ valid: false, blocker });
         const initial = lookup(executionId, executionUnitId);
         if (!initial || initial.kind !== SINGLE || initial.state !== 'CONFIRMATION_READY') return fail('FINAL_CHECK_STATE_INELIGIBLE');
-        if (singleAttack(initial) && !(await ensureAttackFinalClock(targetWindow)).available) return fail('CLOCK_UNAVAILABLE');
+        if (singlePreciseCommand(initial) && !(await ensureAttackFinalClock(targetWindow)).available) return fail('CLOCK_UNAVAILABLE');
         try { if (!await ensurePreciseScheduler(targetWindow)) return fail('PRECISE_SCHEDULER_UNAVAILABLE'); }
         catch { return fail('PRECISE_SCHEDULER_LOAD_FAILED'); }
         const unit = lookup(executionId, executionUnitId);
@@ -1731,7 +1787,7 @@
         if (!dryRun && !authorizationValid(unit)) return { valid: false, blocker: 'FINAL_AUTHORIZATION_REQUIRED' };
         if (!baselineValid(unit) || wasConsumed(unit, targetWindow.localStorage)) return { valid: false, blocker: 'BASELINE_MISSING_OR_ATTEMPT_CONSUMED' };
         const session = readSessionEvidence(targetWindow, unit);
-        const attackClock = singleAttack(unit) ? readAttackFinalClock(targetWindow) : null;
+        const attackClock = singlePreciseCommand(unit) ? readAttackFinalClock(targetWindow) : null;
         const now = attackClock ? attackClock.nowMs : targetWindow.EAS?.MassSnipeExecution?.getCurrentServerTimeMs?.();
         if (!integer(now) || (!attackClock && (typeof targetWindow.Timing?.getCurrentServerTime !== 'function' ||
             !Number.isFinite(targetWindow.Timing.getCurrentServerTime()))) || !unit.clockEvidence?.valid ||
@@ -1860,7 +1916,7 @@
         if (unit.kind === SINGLE && baselineValid(unit) && authorizationValid(unit) &&
             same(unit.submitAttempt?.identity, executionIdentity(unit)) && unit.outgoingBaseline.capturedAt <= unit.submitAttempt?.submittedAt &&
             unit.submitAttempt?.attemptId === unit.attemptId && page.pageValid && page.sourceCorrect) {
-            const observed = EAS.FakesExecution?.readOutgoingCommands?.(targetWindow, { readRowEvidence: EAS.ArrivalExecution?.readArrivalEvidence });
+            const observed = readSingleOutgoing(targetWindow,{baselineIds:unit.outgoingBaseline.commandIds});
             const verification = { baseline: unit.outgoingBaseline, sourceVillageId: String(unit.source.id), commandType: unit.commandType,
                 targetCoord: unit.target.coord, travelTimeMs: unit.approvedCommand.travelTimeMs,
                 submitStartedAt: unit.submitAttempt.submittedAt, submitWallTimeMs: unit.submitAttempt.submittedAt,
@@ -1893,7 +1949,7 @@
     const listActive = (options = {}) => list(options).map(execution => ({ ...execution,
         units: execution.units.filter(unit => !['CANCELLED', 'SENT', 'COMPLETED', 'FAILED', 'UNCERTAIN'].includes(unit.state))
     })).filter(execution => execution.units.length > 0);
-    const enqueue = (snapshot, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey(), createdAt = Date.now(), authorizeAutomaticAttack = false, targetWindow = typeof window === 'undefined' ? null : window } = {}) => {
+    const enqueue = (snapshot, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey(), createdAt = Date.now(), authorizeAutomaticAttack = false, authorizeAutomaticOperation = false, targetWindow = typeof window === 'undefined' ? null : window } = {}) => {
         const derived = deriveExecutionUnits(snapshot);
         if (!derived.units.length || !integer(createdAt)) return { created: false, blockers: derived.blockers.length ? derived.blockers : ['EXECUTION_UNITS_EMPTY'], execution: null };
         const enqueueClock=readAuthoritativeNowMs(targetWindow);
@@ -1914,9 +1970,9 @@
         } catch { return {created:false,blockers:['CONSUMED_STATE_UNAVAILABLE'],execution:null}; }
         const executionId = unitId(snapshot, `schedule:${createdAt}`);
         let scheduledUnits = derived.units.map(unit => ({ ...copy(unit), executionId, account: accountFromScope(scope) }));
-        if (authorizeAutomaticAttack === true) {
+        if (authorizeAutomaticAttack === true || authorizeAutomaticOperation === true) {
             const timing = readAuthoritativeNowMs(targetWindow), now = timing.available ? timing.nowMs : null;
-            if (!integer(now) || scheduledUnits.some(unit => unit.kind !== SINGLE || unit.commandType !== 'attack' || unit.state !== 'SCHEDULED' || now >= unit.executionSendAtMs))
+            if (!integer(now) || scheduledUnits.some(unit => unit.kind !== SINGLE || !(authorizeAutomaticOperation === true ? ['attack','support'].includes(unit.commandType) : unit.commandType === 'attack') || unit.state !== 'SCHEDULED' || now >= unit.executionSendAtMs))
                 return { created: false, blockers: ['AUTOMATIC_ATTACK_CREATION_INVALID'], execution: null };
             for (const unit of scheduledUnits) {
                 const session = readSessionEvidence(targetWindow, unit);
@@ -1933,7 +1989,7 @@
         const execution = freeze({ executionId, lifecycleVersion: 1, snapshotIdentity: derived.snapshotIdentity,
             approvedSnapshot: copy(snapshot), createdAt, state: 'SCHEDULED', units: scheduledUnits });
         const store = createStore(storage), root = store.read();
-        const existing = (root.executions[scope] || []).find(item => item.executionId === execution.executionId || (authorizeAutomaticAttack === true && same(item.snapshotIdentity, execution.snapshotIdentity)));
+        const existing = (root.executions[scope] || []).find(item => item.executionId === execution.executionId || ((authorizeAutomaticAttack === true || authorizeAutomaticOperation === true) && same(item.snapshotIdentity, execution.snapshotIdentity)));
         if (existing) return { created: false, duplicate: true, blockers: [], execution: freeze(copy(existing)) };
         root.executions[scope] = [...(root.executions[scope] || []), execution];
         return store.write(root) ? { created: true, blockers: derived.blockers, execution } : { created: false, blockers: ['TACTICAL_SCHEDULER_STORAGE_FAILED'], execution: null };
@@ -2137,18 +2193,236 @@
         });
         return saved;
     };
-    const canDeleteResult = execution => Boolean(!execution?.lock && !execution?.claim && execution?.units?.length && execution.units.every(unit =>
-        !unit.lock && !unit.claim && unit.state === 'COMPLETED' && unit.outgoingReconciliation?.match &&
-        unit.completedCommandIds?.length === unit.expectedCommands && unit.attemptId && unit.submitAttempt?.attemptId === unit.attemptId));
+    const canDeleteResult = execution => Boolean(!execution?.lock && !execution?.claim && execution?.units?.length && execution.units.every(unit => {
+        if (unit.lock || unit.claim) return false;
+        if (['CANCELLED','BLOCKED'].includes(unit.state)) return !unit.attemptId && !unit.submitAttempt && !unit.finalAuthorization && !unit.outgoingBaseline &&
+            !unit.executionTiming && !unit.completedCommandIds?.length && !unit.outgoingReconciliation && !unit.submitAt && !unit.confirmationAttempt;
+        const match = unit.outgoingReconciliation?.match;
+        return unit.kind === SINGLE && unit.state === 'COMPLETED' && match && !match.inventoryOnly && !unit.outgoingReconciliation.reason &&
+            unit.completedCommandIds?.length === 1 && unit.expectedCommands === 1 && /^\d+$/.test(String(match.id)) &&
+            unit.completedCommandIds[0] === match.id && match.type === unit.commandType && match.target === unit.target?.coord &&
+            String(match.sourceVillageId) === String(unit.source?.id) && unit.attemptId && baselineValid(unit) &&
+            !unit.outgoingBaseline.commandIds.includes(match.id) && unit.submitAttempt?.attemptId === unit.attemptId &&
+            same(unit.submitAttempt.identity, executionIdentity(unit)) && unit.outgoingReconciliation.evidence?.strategy === 'new-outgoing-id' &&
+            same(unit.outgoingReconciliation.evidence.beforeCommandIds, unit.outgoingBaseline.commandIds);
+    }));
+    const generalHistoryEligible = execution => Boolean(!execution?.lock && !execution?.claim && execution?.units?.length &&
+        typeof execution.executionId==='string' && execution.units.every(unit=>unit.kind===SINGLE && ['attack','support'].includes(unit.commandType) &&
+            ['COMPLETED','CANCELLED','BLOCKED','UNCERTAIN','FAILED','SENT'].includes(unit.state) && !unit.lock && !unit.claim &&
+            unit.executionId===execution.executionId && typeof unit.executionUnitId==='string' &&
+            typeof unit.operationId==='string' && unit.operationId===execution.snapshotIdentity?.operationId &&
+            integer(unit.revision) && unit.revision===execution.snapshotIdentity?.revision &&
+            /^\d+$/.test(String(unit.source?.id)) && /^\d{1,3}\|\d{1,3}$/.test(unit.source?.coord || '') &&
+            /^\d{1,3}\|\d{1,3}$/.test(unit.target?.coord || '') && integer(unit.executionSendAtMs) &&
+            unit.approvedCommand?.commandType===unit.commandType && unit.approvedCommand?.composition?.quantities));
+    const generalReceipt = (execution, unit) => {
+        const proven=canDeleteResult({...execution,units:[unit]}) && unit.state==='COMPLETED';
+        const unsent=canDeleteResult({...execution,units:[unit]}) && ['CANCELLED','BLOCKED'].includes(unit.state);
+        return {lifecycleVersion:1,kind:'tactical-history-consumed',attemptId:unit.attemptId || unit.submitAttempt?.attemptId || null,
+            identity:{operationId:unit.operationId,revision:unit.revision},executionUnitId:unit.executionUnitId,
+            state:proven?'COMPLETED':unsent?unit.state:'UNCERTAIN',originalState:unit.state,reconciled:proven,
+            outcome:proven?'CONFIRMED':unsent?'NOT_SENT':'UNRECONCILED',uncertain:!proven&&!unsent,
+            commandIds:proven?copy(unit.completedCommandIds):[],
+            source:{id:String(unit.source.id),coord:unit.source.coord},target:{coord:unit.target.coord},commandType:unit.commandType,
+            troops:copy(unit.approvedCommand.composition.quantities),sendAtMs:unit.executionSendAtMs,
+            submitAttemptId:unit.submitAttempt?.attemptId ?? null,submittedAt:unit.submitAttempt?.submittedAt ?? unit.submitAt ?? null};
+    };
+    const receiptCompatible = (claim, execution, unit) => !claim ||
+        (claim.attemptId===(unit.attemptId || unit.submitAttempt?.attemptId || null) &&
+            (same(claim.identity,executionIdentity(unit)) || claim.lifecycleVersion===1 &&
+                (claim.reconciled===true || claim.kind==='tactical-history-consumed') &&
+                same(claim.identity,{operationId:unit.operationId,revision:unit.revision})));
+    const deleteGeneralResult = (executionId,{storage,scope}) => {
+        const raw=storage.getItem(STORAGE_KEY),store=createStore(storage);store.read();
+        const root=JSON.parse(raw || 'null');
+        const execution=root?.executions?.[scope]?.find(item=>item.executionId===executionId);
+        if(!generalHistoryEligible(execution))return false;
+        // Consumed keys are deny-only. No preparation/final authorization is copied.
+        for(const unit of execution.units){
+            const key=`eas_tw_tactical_consumed:${scope}:${executionId}:${unit.executionUnitId}`,prior=storage.getItem(key);
+            if(!receiptCompatible(JSON.parse(prior || 'null'),execution,unit))return false;
+            const text=JSON.stringify(generalReceipt(execution,unit));
+            if(storage.getItem(STORAGE_KEY)!==raw || storage.getItem(key)!==prior)return false;
+            storage.setItem(key,text);if(storage.getItem(key)!==text)return false;
+        }
+        // Recheck every receipt before discarding any full evidence.
+        if(execution.units.some(unit=>storage.getItem(`eas_tw_tactical_consumed:${scope}:${executionId}:${unit.executionUnitId}`)!==JSON.stringify(generalReceipt(execution,unit))))return false;
+        root.executions[scope]=root.executions[scope].filter(item=>item.executionId!==executionId);
+        return storage.getItem(STORAGE_KEY)===raw && store.write(root) && storage.getItem(STORAGE_KEY)===JSON.stringify(root);
+    };
     const deleteResult = (executionId, { storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey() } = {}) => {
         if (!storage) return false;
-        const raw = storage.getItem(STORAGE_KEY), store = createStore(storage), root = store.read();
-        const execution = root.executions[scope]?.find(item => item.executionId === executionId);
-        if (!canDeleteResult(execution) || execution.units.some(unit => { try { return JSON.parse(storage.getItem(`eas_tw_tactical_consumed:${scope}:${executionId}:${unit.executionUnitId}`))?.attemptId !== unit.attemptId; } catch { return true; } })) return false;
+        const raw = storage.getItem(STORAGE_KEY), store = createStore(storage);store.read();
+        const root=JSON.parse(raw || 'null');
+        const execution = root?.executions?.[scope]?.find(item => item.executionId === executionId);
+        if (!canDeleteResult(execution)) return false;
+        // Shrink existing consumed claims before removing their full execution. These
+        // identity tombstones do not expire: enqueue already consults these keys.
+        for (const unit of execution.units.filter(item => item.state === 'COMPLETED')) {
+            const key = `eas_tw_tactical_consumed:${scope}:${executionId}:${unit.executionUnitId}`;
+            const prior = storage.getItem(key); let claim;
+            try { claim = JSON.parse(prior); } catch { return false; }
+            if (claim?.attemptId !== unit.attemptId || !(same(claim.identity, executionIdentity(unit)) ||
+                claim.lifecycleVersion === 1 && claim.reconciled === true && same(claim.identity,{operationId:unit.operationId,revision:unit.revision}))) return false;
+            const compact = JSON.stringify({ lifecycleVersion:1, attemptId:unit.attemptId,
+                identity:{operationId:unit.operationId,revision:unit.revision}, reconciled:true });
+            try {
+                if (storage.getItem(STORAGE_KEY) !== raw || storage.getItem(key) !== prior) return false;
+                storage.setItem(key,compact);
+                if (storage.getItem(key) !== compact) return false;
+            } catch { return false; }
+        }
         root.executions[scope] = root.executions[scope].filter(item => item.executionId !== executionId);
-        if (storage.getItem(STORAGE_KEY) !== raw || !store.write(root) || !same(store.read(), root)) return false;
-        EAS.Storage?.lifecycle?.closeTactical?.(execution, scope);
+        if (storage.getItem(STORAGE_KEY) !== raw || !store.write(root) || storage.getItem(STORAGE_KEY)!==JSON.stringify(root)) return false;
         return true;
+    };
+    const HISTORY_RETENTION_MS = 7 * 86400000, HISTORY_RESULT_LIMIT = 100;
+    const legacyHistoryKey = 'eas_tw_scheduler_v2';
+    // Arrival's existing immutable lock is read by allowed()/beforeSubmit(), even
+    // for an old object retained by another tab. Never use tactical receipts here.
+    const arrivalHistoryKey = mission => `eas_tw_arrival_consumed:${mission.world}:${mission.playerId}:${mission.id}:${mission.attemptId}`;
+    const arrivalHistoryOutcome = mission => {
+        const v=mission.verification;
+        if(['sent','completed'].includes(mission.status) && mission.finalClickConsumed===true && mission.outgoingCommandId &&
+            v?.status==='proven' && v.matchedCommandId===mission.outgoingCommandId &&
+            Array.isArray(v.baseline?.commandIds) && !v.baseline.commandIds.includes(mission.outgoingCommandId) &&
+            v.afterCommandIds?.includes(mission.outgoingCommandId)) return 'PROVEN_SUCCESS';
+        return mission.finalClickConsumed || mission.submitAttemptId || mission.submitStartedAt || mission.verification || mission.submitAuthorization?.used
+            ? 'UNCERTAIN' : 'UNSENT_BLOCKED';
+    };
+    const arrivalHistoryBlocker = (mission,context,scope,mode,storage) => {
+        if(mode==='safe')return 'LEGACY_MIGRATION_REQUIRES_BACKUP';
+        if(!['cancelled','error','late','blocked','failed','sent','completed','uncertain'].includes(mission.status))return 'MISSION_ACTIVE';
+        if(mission.lock || mission.claim || ['activeMissionId','preparingMissionId','confirmationMissionId','submittingMissionId'].some(key=>context[key]===mission.id))return 'MISSION_EXECUTION_REFERENCE_ACTIVE';
+        if(![mission.id,mission.attemptId,mission.world,String(mission.playerId||'')].every(value=>typeof value==='string' && /^[\w-]+$/.test(value)) ||
+            `${mission.world}:${mission.playerId}`!==scope || !['attack','support'].includes(mission.type) || mission.commandType!==mission.type)return 'LEGACY_ARRIVAL_IDENTITY_UNPROVEN';
+        if(!Array.isArray(context.history) || !context.tabExecutions || !Array.isArray(context.logs) || context.missions.filter(row=>row.id===mission.id).length!==1)return 'LEGACY_HISTORY_SCHEMA_UNRECOGNIZED';
+        for(const evidence of [mission.outgoingBaseline,mission.verification,mission.verification?.baseline,mission.submitAuthorization]) {
+            if(evidence && (evidence.missionId!==mission.id || evidence.attemptId!==mission.attemptId))return 'LEGACY_ARRIVAL_IDENTITY_UNPROVEN';
+        }
+        if(mission.submitAttemptId && mission.submitAttemptId!==mission.attemptId)return 'LEGACY_ARRIVAL_IDENTITY_UNPROVEN';
+        if(context.history.some(row=>row.id===mission.id && JSON.stringify(row)!==JSON.stringify(mission)))return 'LEGACY_HISTORY_COPY_DIVERGED';
+        if(context.submitAuthorization?.missionId===mission.id || context.submitAttemptId===mission.attemptId)return 'MISSION_EXECUTION_REFERENCE_ACTIVE';
+        const receipt=JSON.parse(storage.getItem(arrivalHistoryKey(mission))||'null');
+        if(receipt && (receipt.missionId!==mission.id || receipt.attemptId!==mission.attemptId))return 'LEGACY_ARRIVAL_RECEIPT_CONFLICT';
+        if(mode==='completed' && arrivalHistoryOutcome(mission)!=='PROVEN_SUCCESS')return 'NOT_COMPLETED_WITH_SUCCESS_PROOF';
+        return null;
+    };
+    const legacyHistoryBlocker = (mission, context, mode='general') => {
+        if (!mission || typeof mission.id!=='string') return 'LEGACY_IDENTITY_MISSING';
+        if (!['cancelled','error','late','blocked','failed','source-village-lost','completed','sent','verification-required','uncertain'].includes(mission.status)) return 'MISSION_ACTIVE';
+        if (mission.lock || mission.claim || ['activeMissionId','preparingMissionId','confirmationMissionId','submittingMissionId'].some(key=>context[key]===mission.id)) return 'MISSION_EXECUTION_REFERENCE_ACTIVE';
+        // The old executor does not consult tactical consumed keys. A new receipt
+        // there would not preserve its duplicate protection; keep unresolved sends.
+        if (mission.attemptId || mission.submitAttemptId || mission.submitStartedAt || mission.submitAttempt || mission.finalClickConsumed ||
+            mission.outgoingBaseline || mission.verification || mission.sentAt || mission.outgoingCommandId || mission.commandId || mission.confirmationSubmitted ||
+            mission.submitAuthorization?.used || mission.submitAuthorization?.submitAttemptId ||
+            context.submitAuthorization?.missionId===mission.id && (context.submitAuthorization.used || context.submitAttemptId)) return 'LEGACY_SEND_EVIDENCE_DEDUPLICATION_UNPROVEN';
+        if (['completed','sent','verification-required','uncertain'].includes(mission.status)) return 'LEGACY_OUTCOME_OR_DEDUPLICATION_UNPROVEN';
+        if (mode==='completed') return 'NOT_COMPLETED_WITH_SUCCESS_PROOF';
+        // attackClicked / attackClickAttemptId are the first native click, not the
+        // final submit. Only an explicit, unused confirmation authorization proves it.
+        if ((mission.attackClicked || mission.attackClickAttemptId || mission.submitAuthorization) &&
+            !(mission.submitAuthorization?.missionId===mission.id && mission.submitAuthorization.used===false &&
+                mission.submitAuthorization.allowedStage==='attack-confirmation')) return 'LEGACY_CONFIRMATION_EVIDENCE_AMBIGUOUS';
+        return null;
+    };
+    const legacyHistoryEligible = (mission, context) => legacyHistoryBlocker(mission,context)===null;
+    const historyPreview = ({ storage = typeof localStorage === 'undefined' ? null : localStorage, scope = contextKey(), mode='safe' } = {}) => {
+        if(!['safe','completed','general'].includes(mode))throw Error('HISTORY_MODE_INVALID');
+        const raw = storage.getItem(STORAGE_KEY), root = JSON.parse(raw || 'null');
+        if (root !== null && (root.version !== VERSION || !root.executions || !Array.isArray(root.executions[scope] || []))) throw Error('HISTORY_SCHEMA_UNRECOGNIZED');
+        const rows = root?.executions[scope] || [];
+        const eligible = rows.filter(execution=>(mode==='general'?generalHistoryEligible(execution):canDeleteResult(execution)) &&
+            (mode!=='completed' || execution.units.every(unit=>unit.state==='COMPLETED')) && execution.units.every(unit=>{
+            if(mode==='general')return receiptCompatible(JSON.parse(storage.getItem(`eas_tw_tactical_consumed:${scope}:${execution.executionId}:${unit.executionUnitId}`)||'null'),execution,unit);
+            if(unit.state!=='COMPLETED')return true;
+            const claim=JSON.parse(storage.getItem(`eas_tw_tactical_consumed:${scope}:${execution.executionId}:${unit.executionUnitId}`)||'null');
+            return claim?.attemptId===unit.attemptId && (same(claim.identity,executionIdentity(unit)) ||
+                claim.lifecycleVersion===1 && claim.reconciled===true && same(claim.identity,{operationId:unit.operationId,revision:unit.revision}));
+        })).map(execution => ({executionId:execution.executionId,
+            raw:JSON.stringify(execution), timestamp:Math.max(...execution.units.map(unit=>Number(unit.cancelledAt || unit.executionSendAtMs || execution.createdAt || 0)))}));
+        const legacyRaw = storage.getItem(legacyHistoryKey), legacy = JSON.parse(legacyRaw || 'null');
+        if (legacy !== null && (legacy.version!==2 || !legacy.contexts || typeof legacy.contexts!=='object')) throw Error('LEGACY_HISTORY_SCHEMA_UNRECOGNIZED');
+        const context = legacy?.contexts[scope], missions = context?.missions || [];
+        if (!Array.isArray(missions)) throw Error('LEGACY_HISTORY_SCHEMA_UNRECOGNIZED');
+        const blocker=mission=>mission.sourceModule==='arrival-planner'?arrivalHistoryBlocker(mission,context,scope,mode,storage):legacyHistoryBlocker(mission,context,mode);
+        const legacyEligible = missions.filter(mission=>blocker(mission)===null).map(mission=>({kind:'legacy',executionId:mission.id,
+            raw:JSON.stringify(mission),timestamp:Number(mission.updatedAt || mission.createdAt || 0)}));
+        let claimCharacters=0;
+        for(let i=0;i<(storage.length || 0);i++){const key=storage.key(i);if(key?.startsWith(`eas_tw_tactical_consumed:${scope}:`) || key?.startsWith(`eas_tw_arrival_consumed:${scope}:`))claimCharacters+=(key.length+(storage.getItem(key)?.length || 0));}
+        const activeCount=rows.filter(execution=>execution.units?.some(unit=>!['COMPLETED','CANCELLED','BLOCKED','UNCERTAIN','FAILED','SENT'].includes(unit.state))).length+
+            missions.filter(mission=>!['completed','sent','cancelled','error','late','verification-required'].includes(mission.status)).length;
+        const protectedRecords=missions.map(mission=>({kind:'legacy',executionId:mission.id,reason:blocker(mission)})).filter(row=>row.reason);
+        for(const execution of rows)if(!eligible.some(row=>row.executionId===execution.executionId))protectedRecords.push({executionId:execution.executionId,
+            reason:execution.units?.some(unit=>!['COMPLETED','CANCELLED','BLOCKED','UNCERTAIN','FAILED','SENT'].includes(unit.state))?'MISSION_ACTIVE':'TACTICAL_IDENTITY_LOCK_OR_RECEIPT_UNPROVEN'});
+        return { scope, mode, eligible:[...eligible,...legacyEligible], protectedRecords, activeCount, protectedCount:rows.length+missions.length-eligible.length-legacyEligible.length,
+            bytes:((raw?.length || 0)+(legacyRaw?.length || 0)+claimCharacters)*2 };
+    };
+    const cleanHistory = async ({ preview, automatic = false, storage = typeof localStorage === 'undefined' ? null : localStorage,
+        scope = contextKey(), now = Date.now(), targetWindow = typeof window === 'undefined' ? null : window, backup = null } = {}) => {
+        let removed = 0, beforeBytes = 0;
+        try {
+            const mode=automatic?'safe':preview?.mode || 'safe';
+            const current = historyPreview({storage,scope,mode}); beforeBytes = current.bytes;
+            if(automatic && current.activeCount) return {success:true,removed:0,beforeBytes,afterBytes:beforeBytes,deferred:true};
+            if (!automatic && (!preview || preview.scope !== scope)) throw Error('HISTORY_PREVIEW_REQUIRED');
+            const candidates = automatic ? current.eligible.sort((a,b)=>b.timestamp-a.timestamp).filter((row,index)=>row.timestamp < now-HISTORY_RETENTION_MS || index>=HISTORY_RESULT_LIMIT) : preview.eligible;
+            for (const row of candidates) {
+                const latest=historyPreview({storage,scope,mode});
+                if(automatic && latest.activeCount) return {success:true,removed,beforeBytes,afterBytes:latest.bytes,deferred:true};
+                const fresh = latest.eligible.find(item=>item.executionId===row.executionId && item.kind===row.kind);
+                if (!fresh || fresh.raw !== row.raw) throw Error('HISTORY_CONTEXT_CHANGED');
+                if (row.kind==='legacy') {
+                    const raw=storage.getItem(legacyHistoryKey), root=JSON.parse(raw), context=root.contexts[scope];
+                    const mission=context.missions.find(item=>item.id===row.executionId);
+                    const arrival=mission?.sourceModule==='arrival-planner';
+                    let persistedReceiptText=null;
+                    if ((arrival?arrivalHistoryBlocker(mission,context,scope,mode,storage)!==null:!legacyHistoryEligible(mission,context)) || JSON.stringify(mission)!==row.raw) throw Error('HISTORY_CONTEXT_CHANGED');
+                    if(arrival){
+                        const saved=backup?.key===legacyHistoryKey && JSON.parse(backup.raw||'null');
+                        if(!saved || !saved.contexts?.[scope]?.missions?.some(item=>JSON.stringify(item)===row.raw))throw Error('LEGACY_EXACT_BACKUP_REQUIRED');
+                        if(targetWindow?.localStorage!==storage || typeof targetWindow?.EAS?.ArrivalExecution?.allowed!=='function')throw Error('LEGACY_ARRIVAL_CONSUMER_UNAVAILABLE');
+                        const key=arrivalHistoryKey(mission),prior=storage.getItem(key),claim=JSON.parse(prior||'null');
+                        const probe={...mission,mode:'arrival_attack',status:'ready',arrivalAuthorized:true,finalClickConsumed:false,submitAttemptId:null};
+                        if(prior===null && targetWindow.EAS.ArrivalExecution.allowed(probe)!==true)throw Error('LEGACY_RECEIPT_CONSUMER_UNPROVEN');
+                        const receipt=claim?.historyReceiptVersion===1?claim:{historyReceiptVersion:1,missionId:mission.id,attemptId:mission.attemptId,
+                            world:mission.world,playerId:mission.playerId,originalStatus:mission.status,
+                            outcome:prior!==null && arrivalHistoryOutcome(mission)==='UNSENT_BLOCKED'?'UNCERTAIN':arrivalHistoryOutcome(mission),
+                            outgoingCommandId:mission.outgoingCommandId||null,verificationStatus:mission.verification?.status||null,
+                            reason:mission.verification?.reason||mission.verification?.lastReason||mission.lastError||null,
+                            blockedAt:now,...(claim?.consumedAt!=null?{consumedAt:claim.consumedAt}:{})};
+                        const receiptText=JSON.stringify(receipt);
+                        persistedReceiptText=receiptText;
+                        if(storage.getItem(key)!==prior)throw Error('HISTORY_CONTEXT_CHANGED');
+                        storage.setItem(key,receiptText);
+                        if(storage.getItem(key)!==receiptText)throw Error('LEGACY_RECEIPT_READBACK_FAILED');
+                        // Probe the actual consumer with a formerly sendable object,
+                        // neutralizing terminal/status/authorization short circuits.
+                        if(targetWindow.EAS.ArrivalExecution.allowed(probe)!==false || storage.getItem(key)!==receiptText)throw Error('LEGACY_RECEIPT_CONSUMER_UNPROVEN');
+                        context.history=context.history.filter(item=>item.id!==mission.id);
+                        context.logs=context.logs.filter(item=>!['scheduler-start','scheduled-mission-main-menu-suppressed'].includes(item.event));
+                    }
+                    context.missions=context.missions.filter(item=>item.id!==mission.id);
+                    if(context.currentMissionId===mission.id)context.currentMissionId=null;
+                    if(arrival && context.lastCompletedMissionId===mission.id){context.lastCompletedMissionId=null;context.lastCompletedAuxWindowName=null;}
+                    if (context.tabExecutions) for(const [id,tab] of Object.entries(context.tabExecutions)) if(tab?.missionId===mission.id) delete context.tabExecutions[id];
+                    const text=JSON.stringify(root);
+                    if(storage.getItem(legacyHistoryKey)!==raw) throw Error('HISTORY_CONTEXT_CHANGED');
+                    storage.setItem(legacyHistoryKey,text);
+                    if(storage.getItem(legacyHistoryKey)!==text) throw Error('HISTORY_DELETE_OR_READBACK_FAILED');
+                    if(arrival && storage.getItem(arrivalHistoryKey(mission))!==persistedReceiptText)throw Error('LEGACY_RECEIPT_READBACK_FAILED');
+                } else if (!(mode==='general'?deleteGeneralResult(row.executionId,{storage,scope}):deleteResult(row.executionId,{storage,scope}))) throw Error('HISTORY_DELETE_OR_READBACK_FAILED');
+                removed++;
+                // Only this tab's exact retired preparation reference can be orphaned.
+                const session = targetWindow?.sessionStorage, key = 'eas_tactical_preparation_context';
+                if (session && row.kind!=='legacy') { const raw = session.getItem(key), context = JSON.parse(raw || 'null');
+                    if (context?.executionId === row.executionId) { session.removeItem(key); if (session.getItem(key)!==null) throw Error('HISTORY_AUXILIARY_READBACK_FAILED'); } }
+                await new Promise(resolve=>setTimeout(resolve,0));
+            }
+            const remaining=historyPreview({storage,scope,mode});
+            return {success:true,removed,protectedCount:remaining.protectedCount,beforeBytes,afterBytes:remaining.bytes};
+        } catch (error) { return {success:false,removed,beforeBytes,error:error.message || 'HISTORY_STORAGE_UNAVAILABLE'}; }
     };
     const cancelStoredUnit = (executionId, executionUnitId, options = {}) => {
         const unit = list(options).find(execution => execution.executionId === executionId)?.units.find(item => item.executionUnitId === executionUnitId);
@@ -2173,6 +2447,7 @@
         reconcileNativeNobleRows, readNativeRows, parseNativeConfirmation, createNativeTrainRows, compareOutgoing,
         readSessionEvidence, rallyPageIdentity, applyApprovedComposition, openPreparedConfirmation, readSingleConfirmation, openConfirmationFromPrepared, captureConfirmation, parseNativeDuration, advanceConfirmationReady,
         buildRallyPointUrl, describeClockFrame, openRallyPoint, prepareRallyPoint, synchronizePrepared, finalizePrepared, collectClockSamples, initializePreparationPage, initializeSchedulerHooks, readTickDiagnostics, TICK_DIAGNOSTICS_KEY,
+        historyPreview, cleanHistory, HISTORY_RETENTION_MS, HISTORY_RESULT_LIMIT,
         runStoredPrecheck, preparationAuthorizationValid, preparationDiagnostic, createStore, canDeleteResult, deleteResult, list, listActive, enqueue, updateStoredUnit, authorizeStoredUnit, cancelStoredUnit, reconcileStoredOutcome
     });
 })();

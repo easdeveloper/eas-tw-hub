@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+window.game_data={world:'br143',player:{id:'6562420'}};
+window.EAS={Modules:{},World:{getWorldName:()=> 'br143',getPlayer:()=>({id:'6562420'}),getServerNowTimestamp:()=>Date.now()},
+ Utils:{formatDateTime:x=>String(x),escapeHtml:x=>String(x??'').replaceAll('<','&lt;')},
+ ArrivalPlanner:{antiMissionValid:()=>true,log(){}},MassSnipeExecution:{getCurrentServerTimeMs:()=>Date.now()},
+ ScheduledMissionExecution:{openAndPrepare(){throw Error('Execution forbidden');},executeScheduledAttackSend(){throw Error('Send forbidden');}},
+ UI:{createWindow(){const body=document.createElement('section');document.body.append(body);return {body,close:()=>body.remove()};},createButton({text,onClick}){const b=document.createElement('button');b.textContent=text;b.onclick=onClick;return b;}}};
+window.EASLoader={loadScript:async()=>{throw Error('Unexpected loader request');}};
+Object.defineProperty(navigator,'locks',{configurable:true,value:{request:async(_name,_options,callback)=>callback({})}});
+</script>
+<script src="../services/mission-scheduler.js"></script>
+<script src="../services/arrival-execution.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script src="../modules/scheduled-missions.js"></script>
+<script>
+(async()=>{
+ const key='eas_tw_scheduler_v2',scope='br143:6562420',phaseKey='legacy-migration-browser-phase';
+ const fixture=await(await fetch('fixtures/legacy-scheduler-export.json')).json(),original=fixture.contexts[scope].missions;
+ let assertions=0;const check=(value,message)=>{assertions++;if(!value)throw Error(message);};
+ const pause=()=>new Promise(resolve=>setTimeout(resolve,30));
+ const wait=async predicate=>{for(let i=0;i<200&&!predicate();i++)await pause();check(predicate(),'UI cleanup settles');};
+ EAS.MissionScheduler.initialize=()=>{};EAS.TacticalOperationSchedulerAdapter.initializeSchedulerHooks=()=>false;
+ const phase=sessionStorage.getItem(phaseKey);
+ if(phase){
+  sessionStorage.removeItem(phaseKey);check(EAS.MissionScheduler.load().missions.length===0,'full page reload keeps deleted records absent');
+  for(const mission of original){
+   const probe={...mission,mode:'arrival_attack',status:'ready',arrivalAuthorized:true,finalClickConsumed:false,submitAttemptId:null};
+   check(!EAS.ArrivalExecution.allowed(probe),'real Arrival consumer rejects stale authorized object after reload');
+   check(await EAS.ArrivalExecution.submit(probe,window)===false,'existing submit guard rejects removed mission without reaching sender');
+  }
+  const records=original.map(m=>JSON.parse(localStorage.getItem(`eas_tw_arrival_consumed:${scope}:${m.id}:${m.attemptId}`)));
+  check(records.filter(r=>r.outcome==='UNCERTAIN').length===2,'two uncertain attempts keep uncertain outcome');
+  check(records.filter(r=>r.outcome==='UNSENT_BLOCKED').length===7,'seven unsubmitted attempts are preventive blocks');
+  check(records.filter(r=>r.outcome==='PROVEN_SUCCESS').length===1,'one proven outgoing command');
+  const win=await EAS.Modules.ScheduledMissions.open();await pause();check(!win.body.querySelector('[data-id]'),'no legacy cards reappear');
+  document.title='PASS';document.getElementById('result').textContent=`PASS ${Number(phase)+assertions} assertions, including full page reload`;return;
+ }
+ for(const mission of original)localStorage.removeItem(`eas_tw_arrival_consumed:${scope}:${mission.id}:${mission.attemptId}`);
+ localStorage.setItem(key,JSON.stringify(fixture));let confirmations=0,saveBackup=false,downloads=0;
+ window.confirm=()=>{confirmations++;return confirmations%2===1||saveBackup;};
+ HTMLAnchorElement.prototype.click=function(){if(this.download.startsWith('eas-scheduler-backup-'))downloads++;};
+ const win=await EAS.Modules.ScheduledMissions.open();await pause();
+ const button=text=>[...win.body.querySelectorAll('button')].find(b=>b.textContent===text);
+ check(win.body.querySelectorAll('[data-id]').length===10,'export renders ten cards');
+ check([...win.body.querySelectorAll('[data-delete]')].every(b=>!b.disabled),'all ten individual deletions eligible');
+ button('Limpar concluídos').click();await pause();check(EAS.MissionScheduler.load().missions.length===10,'declining backup confirmation preserves all originals');
+ check(downloads===1,'original backup offered before mutation');
+ saveBackup=true;button('Limpar concluídos').click();await wait(()=>EAS.MissionScheduler.load().missions.length===9);await pause();
+ check(!EAS.MissionScheduler.load().missions.some(m=>m.id===original.find(m=>m.outgoingCommandId).id),'completed mode only removes proven success');
+ const individual=win.body.querySelector('[data-delete]');check(Boolean(individual),'individual historical deletion available');individual.click();
+ await wait(()=>EAS.MissionScheduler.load().missions.length===8);await pause();
+ button('Limpar histórico geral').click();await wait(()=>EAS.MissionScheduler.load().missions.length===0);await pause();
+ check(EAS.MissionScheduler.load().history.length===0,'duplicate full history removed');
+ check(downloads===4,'each explicit migration offers backup');
+ sessionStorage.setItem(phaseKey,String(assertions));location.reload();
+})().catch(error=>{sessionStorage.removeItem('legacy-migration-browser-phase');document.title='FAIL';document.getElementById('result').textContent=error.stack;});
+</script>

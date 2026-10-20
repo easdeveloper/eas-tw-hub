@@ -31,22 +31,25 @@ window.__executionApiReads = 0;
  EAS.MassSnipeExecution={getCurrentServerTimeMs:()=>Date.UTC(2026,9,5)+0.75};
  EAS.MissionScheduler={initialize:()=>{starts++}};
  const api=EAS.TacticalOperationSchedulerAdapter;
+ for(const commandType of ['attack','support']) {
+ localStorage.removeItem(api.STORAGE_KEY);const initialStarts=starts;
  const win=await EAS.Modules.TacticalOperationPlanner.open(),root=win.body.querySelector('.tactical-operation-planner');
  root.querySelector('[data-op-target-input]').value='501|501';root.querySelector('[data-op-date]').value='06/10/2026';root.querySelector('[data-op-time]').value='08:00:00.000';
  const done=new Promise(r=>root.addEventListener('tactical-operation-analysis-finished',r,{once:true}));root.querySelector('[data-op-analyze]').click();await done;
  const id=EAS.Modules.TacticalOperationPlanner.getState().draft.operation.slots[0].id;
- let role=root.querySelector(`[data-role="${id}"]`);role.value='attack';role.dispatchEvent(new Event('change',{bubbles:true}));
+ let role=root.querySelector(`[data-role="${id}"]`);role.value=commandType;role.dispatchEvent(new Event('change',{bubbles:true}));
  root.querySelector(`[data-custom="${id}"]`).click();const troop=[...root.querySelectorAll('[data-quantity]')].find(x=>x.dataset.unit==='spear');troop.value='10';troop.dispatchEvent(new Event('change',{bubbles:true}));root.querySelector(`[data-confirm="${id}"]`).click();
  root.querySelector('[data-op-review]').click();const view=win.body.querySelector('[data-final-review]'),button=view.querySelector('[data-final-approve]');
- check(button.textContent.includes('autorizar ataque real'), 'creation action explicitly authorizes a real attack');
+ check(button.textContent.includes('agendar operação real automática'), 'creation action explicitly schedules real attack/support execution');
  check(view.querySelector('[data-final-status]').textContent.includes('envio REAL'), 'visible consent describes real automatic execution');
  check(api.list().length===0, 'viewing review never grants consent or creates an execution');
  await button.onclick();const execution=api.list()[0],unit=execution?.units[0];
  check(api.list().length===1 && api.preparationAuthorizationValid(unit), 'one creation click atomically persists preparation');
  check(api.earlySendValid(unit) && unit.earlySendConsent.origin==='explicit-operation-creation', 'same creation click persists exact real-send consent');
- check(starts===1, 'creation starts scheduler ticking without another user action');
+ check(starts===initialStarts+1, 'creation starts scheduler ticking without another user action');
  check(!view.querySelector('[data-final-queue]'), 'no separate enqueue or authorization button');
- check(button.disabled && view.querySelector('[data-final-status]').textContent.includes('criado e autorizado'), 'creation becomes status only');
+ check(button.disabled && view.querySelector('[data-final-status]').textContent.includes('criada e autorizada'), 'creation becomes status only');
+ }
  document.title=failures.length?'FAIL':'PASS';document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions`;
 })().catch(e=>{document.title='FAIL';document.getElementById('result').textContent=e.stack});
 </script></body></html>

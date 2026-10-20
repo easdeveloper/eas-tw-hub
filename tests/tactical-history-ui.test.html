@@ -1,0 +1,73 @@
+<!doctype html><meta charset="utf-8"><title>running</title><pre id="result">running</pre>
+<script>
+let now = Date.now(), clockAnchor = now, clockOffset = 0, missionCreates = 0, legacyInitializes = 0, openedUrl = null, submitClicks = 0;
+const setServerNow = value => { now = value; clockAnchor = Date.now(); clockOffset = now - clockAnchor; };
+window.game_data = { world: 'br-test', player: { id: 7 }, village: { id: 10, x: 500, y: 500 } };
+window.Timing = { getCurrentServerTime: () => Date.now() + clockOffset };
+window.EAS = {
+  Modules: {},
+  World: { getWorldName: () => 'br-test', getPlayer: () => ({ id: 7 }), getServerNowTimestamp: () => now + (Date.now() - clockAnchor), getServerDateTime: () => ({ available: true }) },
+  Utils: { formatDateTime: value => String(value), parseCoordinate: value => { const match = /^(\d{1,3})\|(\d{1,3})$/.exec(String(value || '')); return match ? { coordinate: `${Number(match[1])}|${Number(match[2])}` } : null; }, escapeHtml: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) },
+  MassSnipeExecution: { getCurrentServerTimeMs: () => now + (Date.now() - clockAnchor) },
+  Place: {
+    buildPlaceUrl: id => { const url = new URL(location.href); url.search = ''; url.searchParams.set('screen', 'place'); url.searchParams.set('village', id); return url; },
+    getCommandForm: doc => doc.querySelector('#command-data-form, #command-confirm-form'),
+    getTargetInput: doc => doc.querySelector('input[name="input"]'), inspectTargetInputs: doc => { const input = doc.querySelector('input[name="input"]'); return { input, blocker: input ? null : 'TARGET_INPUT_NOT_FOUND', candidates: [] }; },
+    fillCommandTarget: (coord, targetWindow) => { const field = targetWindow.document.querySelector('input[name="input"]'); if (!field) return false; field.value = coord; return true; },
+    readCommandTarget: targetWindow => ({ actualTarget: targetWindow.document.querySelector('input[name="input"]')?.value || null })
+  },
+  MissionScheduler: {
+    initialize: () => { legacyInitializes += 1; }, load: () => ({ missions: [], settings: {}, logs: [] }),
+    getServerNow: () => new Date(now), sortMissions: values => values, detectMissionConflicts: () => [],
+    getVisualStatus: () => 'waiting', formatRemaining: () => '-', createMission: () => { missionCreates += 1; throw new Error('Legacy Scheduler mission creation forbidden'); }
+  },
+  ScheduledMissionExecution: { openAndPrepare: () => { throw new Error('Legacy execution forbidden'); }, initialize: () => { throw new Error('Legacy execution forbidden'); } },
+  UI: {
+    createWindow: () => { const body = document.createElement('div'); document.body.append(body); return { body, close: () => body.remove() }; },
+    createButton: ({ text, onClick }) => { const button = document.createElement('button'); button.textContent = text; button.onclick = onClick; return button; },
+    openMainWindow: () => {}
+  }
+};
+window.EASLoader = { loadScript: async () => {} };
+Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name, callback) => Promise.resolve().then(callback) } }); // headless virtual time cannot grant real Web Locks deterministically
+window.open = url => { openedUrl = String(url); return { focus() {} }; };
+</script>
+<script src="../services/place.js"></script>
+<script src="../services/tactical-operation-scheduler-adapter.js"></script>
+<script src="../modules/scheduled-missions.js"></script>
+<script>
+(async()=>{
+ if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));
+ const api=EAS.TacticalOperationSchedulerAdapter,failures=[];let assertions=0;
+ const check=(value,message)=>{assertions++;if(!value)failures.push(message);};
+ localStorage.removeItem(api.STORAGE_KEY);
+ const command={slotId:'one',parentSlotId:'one',commandType:'support',source:{id:'10',coord:'500|500'},target:{coord:'484|527'},composition:{quantities:{light:400}},sendAtMs:now+3600000,desiredArrivalMs:now+3610000,travelTimeMs:10000,validationStatus:'ready',blockers:[]};
+ for(let i=0;i<5;i++)api.enqueue({snapshotKind:'tactical-approved-operation',version:1,operationId:'history-'+i,revision:1,target:command.target,validation:{valid:true},commands:[command]},{createdAt:now+i});
+ const root=JSON.parse(localStorage.getItem(api.STORAGE_KEY)),rows=root.executions['br-test:7'];
+ ['CANCELLED','BLOCKED','UNCERTAIN','SCHEDULED','COMPLETED'].forEach((state,i)=>{rows[i].units[0].state=state;rows[i].units[0].cancelledAt=now;});
+ rows[2].units[0].attemptId='uncertain-attempt';
+ localStorage.setItem(api.STORAGE_KEY,JSON.stringify(root));
+ let approve=false,prompts=[];window.confirm=message=>{prompts.push(message);return approve;};
+ const win=await EAS.Modules.ScheduledMissions.open();
+ const wait=()=>new Promise(resolve=>setTimeout(resolve,30));await wait();
+ const button=label=>[...win.body.querySelectorAll('button')].find(node=>node.textContent===label);
+ check(Boolean(button('Limpar histórico geral'))&&Boolean(button('Limpar concluídos'))&&!button('Limpar históricos'),'two cleanup modes replace the old button');
+ button('Limpar concluídos').click();await wait();check(api.list().length===5&&prompts.length===0,'completed mode excludes unproven results');
+ check(win.body.querySelectorAll('[data-delete-result]').length===4,'all compactable terminal results get individual delete actions');
+ const before=api.historyPreview().bytes;
+ win.body.querySelector('[data-delete-result]').click();await wait();
+ check(api.list().length===5,'declining confirmation changes no records');
+ approve=true;win.body.querySelector('[data-delete-result]').click();await wait();
+ check(api.list().length===4,'individual deletion removes persisted record');
+ button('Limpar histórico geral').click();await wait();
+ check(prompts.at(-1).includes('3 registro(s)'),'batch preview names eligible count');
+ check(api.list().length===1,'general cleanup removes all terminal history');
+ const receipts=Object.keys(localStorage).filter(key=>key.startsWith('eas_tw_tactical_consumed:br-test:7:')).map(key=>JSON.parse(localStorage.getItem(key)));check(receipts.some(claim=>claim.state==='UNCERTAIN'&&claim.attemptId==='uncertain-attempt'&&claim.uncertain===true),'uncertain evidence survives in compact deny-only receipt');
+ check(api.list().some(e=>e.units[0].state==='SCHEDULED'),'scheduled operation survives');
+ check(receipts.some(claim=>claim.originalState==='COMPLETED'&&claim.outcome==='UNRECONCILED'),'unproven success is never promoted to confirmed');
+ check(api.historyPreview().bytes<before,'storage shrinks after removal');
+ check(win.body.textContent.includes('bytes'),'storage measurement shown');
+ check(submitClicks===0&&missionCreates===0,'cleanup never sends or creates commands');
+ document.title=failures.length?'FAIL':'PASS';document.getElementById('result').textContent=failures.length?failures.join('\n'):`PASS ${assertions} assertions; ${before} -> ${api.historyPreview().bytes} bytes`;
+})().catch(error=>{document.title='FAIL';document.getElementById('result').textContent=error.stack;});
+</script>
